@@ -3,4 +3,7 @@ def greet(name: str) -> str:
 
 
 def farewell(name: str) -> str:
-    return "goodbye"
+    cleaned = name.strip()
+    if not cleaned:
+        return "Goodbye."
+    return f"Goodbye, {cleaned}."
