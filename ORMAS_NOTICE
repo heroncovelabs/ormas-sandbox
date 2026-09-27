@@ -1,0 +1,11 @@
+Ormas benchmark task ho06-more-itertools-running-statistics (public).
+
+This repository is a snapshot of https://github.com/more-itertools/more-itertools at commit
+9210d54527ddfa63ebe75cd5b5daa0201902c674 (the base of https://github.com/more-itertools/more-itertools/pull/1135),
+licensed MIT; see the project's license files, which are unchanged.
+
+Added by Ormas for the benchmark, and frozen (do not edit):
+  ormas_acceptance_test.py   acceptance driver (runs in a separate checker container)
+  oss_checks/                candidate-side acceptance checks
+  requirements.lock          pinned wheels for the checker (Linux x86_64, CPython 3.12)
+  ORMAS_NOTICE               this file
