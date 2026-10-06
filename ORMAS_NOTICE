@@ -1,0 +1,5 @@
+This branch is an Ormas battery task (hb2, card fca28708) built from swebench-verified:django__django-15268@0ab58c120939093fea90822f376e1866fc714d1f (https://github.com/django/django).
+Benchmark: swebench-verified; instance django__django-15268; annotated difficulty 1-4 hours.
+Upstream code is unmodified except for the benchmark's test patch; tracked symlinks were replaced by
+copies of their targets. Upstream license: BSD-3-Clause (see the upstream LICENSE/COPYING file).
+Added files: ORMAS_NOTICE, ormas_acceptance_test.py, requirements.lock.
