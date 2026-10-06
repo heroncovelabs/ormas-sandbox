@@ -1,0 +1,5 @@
+This branch is an Ormas battery task (hb2, card fca28708) built from swebench-verified:pydata__xarray-6992@45c0a114e2b7b27b83c9618bc05b36afac82183c (https://github.com/pydata/xarray).
+Benchmark: swebench-verified; instance pydata__xarray-6992; annotated difficulty >4 hours.
+Upstream code is unmodified except for the benchmark's test patch; tracked symlinks were replaced by
+copies of their targets. Upstream license: Apache-2.0 (see the upstream LICENSE/COPYING file).
+Added files: ORMAS_NOTICE, ormas_acceptance_test.py, requirements.lock.
