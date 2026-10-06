@@ -1,0 +1,5 @@
+This branch is an Ormas battery task (hb2, card fca28708) built from swebench-verified:pylint-dev__pylint-8898@1f8c4d9eb185c16a2c1d881c054f015e1c2eb334 (https://github.com/pylint-dev/pylint).
+Benchmark: swebench-verified; instance pylint-dev__pylint-8898; annotated difficulty 1-4 hours.
+Upstream code is unmodified except for the benchmark's test patch; tracked symlinks were replaced by
+copies of their targets. Upstream license: GPL-2.0 (see the upstream LICENSE/COPYING file).
+Added files: ORMAS_NOTICE, ormas_acceptance_test.py, requirements.lock.
