@@ -1,0 +1,5 @@
+This branch is an Ormas battery task (hb2, card fca28708) built from swebench-verified:sympy__sympy-18199@ba80d1e493f21431b4bf729b3e0452cd47eb9566 (https://github.com/sympy/sympy).
+Benchmark: swebench-verified; instance sympy__sympy-18199; annotated difficulty 1-4 hours.
+Upstream code is unmodified except for the benchmark's test patch; tracked symlinks were replaced by
+copies of their targets. Upstream license: BSD-3-Clause (see the upstream LICENSE/COPYING file).
+Added files: ORMAS_NOTICE, ormas_acceptance_test.py, requirements.lock.
