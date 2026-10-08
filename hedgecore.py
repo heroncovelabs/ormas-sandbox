@@ -3,7 +3,7 @@
 Replaces the retired legacy binary (see ``legacy/README.md``). One
 trading session per process: commands on stdin (``T`` books a trade,
 ``V`` revalues every book against a fixing list), one reply line per
-trade, one reply line per book per revaluation, and an ``X`` trailer at
+nonzero trade, one reply line per book per revaluation, and an ``X`` trailer at
 end of input. Format reference: ``docs/SPEC.md`` (note the drift warning
 at the top of that file; the legacy engine's behavior is the contract).
 """
@@ -43,19 +43,38 @@ def _valid_pair(token: str) -> bool:
 
 
 def _valid_int(token: str, max_digits: int) -> bool:
-    return 1 <= len(token) <= max_digits and token.isdigit()
+    return 1 <= len(token) <= max_digits and token.isascii() and token.isdigit()
 
 
 class Book:
-    def __init__(self) -> None:
+    def __init__(self, name: str = "") -> None:
+        self.name = name
         self.pos: dict[str, int] = {}
         self.rate: dict[str, int] = {}
 
     def netvalue(self) -> int:
+        # Trades round each pair separately, with yen quotes scaled by 100.
         return sum(
-            _round_half_even(self.pos[pair] * self.rate[pair], DIVISOR)
+            _round_half_even(
+                self.pos[pair] * self.rate[pair],
+                100 if pair.endswith("JPY") else DIVISOR,
+            )
             for pair in self.pos
         )
+
+    def revalue(self, fixes: dict[str, int]) -> int:
+        # Revaluations floor each pair to tenths of a cent, then round the
+        # whole book once, with ties towards +infinity.
+        # An omitted yen pair uses the ordinary divisor for this reply only.
+        tenths = 0
+        for pair, position in self.pos.items():
+            scale = 1
+            if pair in fixes:
+                self.rate[pair] = fixes[pair]
+                if pair.endswith("JPY"):
+                    scale = 100
+            tenths += position * self.rate[pair] * scale // (DIVISOR // 10)
+        return (tenths + 5) // 10
 
 
 class Engine:
@@ -80,17 +99,17 @@ class Engine:
         if line.startswith("V "):
             self._reval(line[2:])
         elif line == "T" or line.startswith("T "):
-            self._trade(line.split())
+            self._trade([token for token in line.split(" ") if token])
         else:
             self._reject("????????", "FMT")
 
     def _trade(self, tokens: list[str]) -> None:
         book = tokens[1] if len(tokens) > 1 else ""
         book_ok = _valid_book(book)
-        if len(tokens) != 6 or not book_ok:
+        if len(tokens) < 6 or not book_ok:
             self._reject(book if book_ok else "????????", "FMT")
             return
-        _, book, pair, side, amt_tok, rate_tok = tokens
+        _, book, pair, side, amt_tok, rate_tok = tokens[:6]
         if not _valid_pair(pair):
             self._reject(book, "PAIR")
             return
@@ -101,19 +120,29 @@ class Engine:
             self._reject(book, "AMT")
             return
         amount = int(amt_tok)
-        if amount == 0:
-            self._reject(book, "AMT")
-            return
         if not _valid_int(rate_tok, RATE_DIGITS) or int(rate_tok) == 0:
             self._reject(book, "RATE")
             return
         rate = int(rate_tok)
 
-        entry = self.books.setdefault(book, Book())
+        # Zero trades validate fully, but produce neither a reply nor a book.
+        if amount == 0:
+            return
+        key = book.lower()
+        if key not in self.books:
+            self.books[key] = Book(book)
+        entry = self.books[key]
         delta = amount if side == "B" else -amount
-        entry.pos[pair] = entry.pos.get(pair, 0) + delta
-        entry.rate[pair] = rate
-        self._emit(f"P {book} {entry.netvalue()}")
+        previous = entry.pos.get(pair, 0)
+        position = previous + delta
+        if position == 0:
+            entry.pos.pop(pair, None)
+            entry.rate.pop(pair, None)
+        else:
+            # A strict sign change marks the new position five quote units low.
+            entry.pos[pair] = position
+            entry.rate[pair] = rate - 5 if previous * position < 0 else rate
+        self._emit(f"P {entry.name} {entry.netvalue()}")
         self.trades += 1
 
     def _reval(self, arg: str) -> None:
@@ -134,11 +163,8 @@ class Engine:
                 self._reject("????????", "FMT")
                 return
             fixes[pair] = int(rate_tok)
-        for book, entry in self.books.items():
-            for pair in entry.pos:
-                if pair in fixes:
-                    entry.rate[pair] = fixes[pair]
-            self._emit(f"P {book} {entry.netvalue()}")
+        for entry in self.books.values():
+            self._emit(f"P {entry.name} {entry.revalue(fixes)}")
         self.revals += 1
 
     def finish(self) -> None:
