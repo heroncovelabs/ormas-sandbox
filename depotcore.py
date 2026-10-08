@@ -15,13 +15,15 @@ CAP = 4
 
 
 class Parcel:
-    __slots__ = ("pid", "sender", "lane", "heft", "state", "stamp", "bounced")
+    __slots__ = ("pid", "sender", "lane", "heft", "credit", "score", "state", "stamp", "bounced")
 
     def __init__(self, pid, sender, lane, heft):
         self.pid = pid
         self.sender = sender
         self.lane = lane
         self.heft = heft
+        self.credit = 0
+        self.score = heft
         self.state = BAY
         self.stamp = 0
         self.bounced = False
@@ -37,6 +39,10 @@ class Engine:
         self.bay: list[str] = []    # lodge order
         self.ledge: list[str] = []  # bounce order
         self.stamp_next = 1
+        self.lodges: dict[str, int] = {}
+        self.returns: dict[str, int] = {}
+        self.wear: dict[str, int] = {}
+        self.ledger: list[tuple] = []
         self.window: list[str] = []
         self.window_open = False
         self.window_bounced: set[str] = set()
@@ -53,7 +59,7 @@ class Engine:
 
     @staticmethod
     def _tok_ok(tok):
-        return 1 <= len(tok) <= 8 and tok.isalnum()
+        return 1 <= len(tok) <= 8 and tok.isascii() and tok.isalnum()
 
     def _close_window(self):
         for pid in self.window:
@@ -106,6 +112,8 @@ class Engine:
             self._emit(f"R {s} DUP")
             return
         self.senders[s] = True
+        self.lodges[s] = 0
+        self.returns[s] = 0
         self.c_reg += 1
         self._emit(f"OK {s}")
 
@@ -121,6 +129,7 @@ class Engine:
             self._emit(f"R {l} DUP")
             return
         self.shelves[l] = []
+        self.wear[l] = 0
         self.lane_order.append(l)
         self.c_lane += 1
         self._emit(f"OK {l}")
@@ -134,7 +143,7 @@ class Engine:
             if not self._tok_ok(tok):
                 self._emit(f"R {tok} FMT")
                 return
-        if not (htok.isdigit() and 1 <= len(htok) <= 3):
+        if not (htok.isascii() and htok.isdigit() and 1 <= len(htok) <= 3):
             self._emit(f"R {htok} HEFT")
             return
         heft = int(htok)
@@ -150,12 +159,28 @@ class Engine:
         if pid in self.parcels:
             self._emit(f"R {pid} DUP")
             return
-        self.parcels[pid] = Parcel(pid, s, l, heft)
+        p = Parcel(pid, s, l, heft)
+        self.lodges[s] += 1
+        p.credit = (15 if self.lodges[s] % 3 == 0 else 0) - (
+            10 if self.returns[s] >= 2 else 0
+        )
+        self.parcels[pid] = p
+        self.ledger.append(("LODGE", pid))
         self.bay.append(pid)
         self.c_lodge += 1
         self._emit(f"OK {pid}")
 
+    @staticmethod
+    def _adjust(heft, delta):
+        if not delta:
+            return heft
+        score = max(1, heft + delta)
+        # The legacy adjustment skips exact multiples of twenty-five.
+        return score + (score % 25 == 0)
+
     def _place(self, p):
+        if p.state == BAY:
+            p.score = self._adjust(p.heft, p.credit - 5 * self.wear[p.lane])
         p.stamp = self.stamp_next
         self.stamp_next += 1
         p.state = SHELVED
@@ -167,13 +192,16 @@ class Engine:
             self._emit("R SHELVE FMT")
             return
         n = 0
-        for pid in self.bay:
-            self._place(self.parcels[pid])
-            n += 1
-        self.bay = []
         for pid in self.ledge:
             self._place(self.parcels[pid])
             n += 1
+        for l in self.lane_order:
+            for pid in self.bay:
+                p = self.parcels[pid]
+                if p.lane == l:
+                    self._place(p)
+                    n += 1
+        self.bay = []
         self.ledge = []
         self._emit(f"OK {n}")
 
@@ -190,26 +218,22 @@ class Engine:
             return
         shelf = self.shelves[l]
         self.c_round += 1
+        capacity = 3 if self.wear[l] >= 3 else CAP
+        self.wear[l] += 1
         if not shelf:
             self._emit(f"VOID {l}")
             return
         self._close_window()
         manifest = []
-        k = min(CAP, len(shelf))
+        k = min(capacity, len(shelf))
         for _ in range(k):
-            best = None
-            for pid in shelf:
-                p = self.parcels[pid]
-                if (
-                    best is None
-                    or p.heft > best.heft
-                    or (p.heft == best.heft and p.stamp < best.stamp)
-                ):
-                    best = p
+            best = min((self.parcels[pid] for pid in shelf),
+                       key=lambda p: (-p.score, p.stamp))
             shelf.remove(best.pid)
             best.state = OUT
             manifest.append(best.pid)
             self._emit(f"OUT {best.pid}")
+        self.ledger.append(("ROUND", l, tuple(manifest)))
         self.window = manifest
         self.window_open = True
         self.window_bounced = set()
@@ -235,6 +259,9 @@ class Engine:
         self.window_bounced.add(pid)
         p.state = LEDGE
         p.bounced = True
+        p.score = self._adjust(p.score, -40)
+        self.returns[p.sender] += 1
+        self.ledger.append(("BOUNCE", pid))
         self.ledge.append(pid)
         self.c_bounce += 1
         self._emit(f"OK {pid}")
@@ -264,6 +291,44 @@ class Engine:
             self._emit("R SQUARE FMT")
             return
         self.c_square += 1
+        self._close_window()
+        self.bay = []
+        self.ledge = []
+        self.shelves = {l: [] for l in self.lane_order}
+        self.wear = {l: 0 for l in self.lane_order}
+        replay_stamp = 1
+        bases = {}
+        lodges = dict.fromkeys(self.senders, 0)
+        for p in self.parcels.values():
+            p.state = GONE
+            p.bounced = False
+        # Only lodgements, actual departures and returns enter the recount.
+        # Shelving, empty rounds and withdrawals have no ledger counterpart.
+        for event in self.ledger:
+            kind = event[0]
+            if kind == "ROUND":
+                _, l, manifest = event
+                self.wear[l] += 1
+                for pid in manifest:
+                    p = self.parcels[pid]
+                    self.shelves[l].remove(pid)
+                    p.state = GONE
+                continue
+            p = self.parcels[event[1]]
+            if kind == "LODGE":
+                lodges[p.sender] += 1
+                credit = 15 if lodges[p.sender] % 3 == 0 else 0
+                p.score = self._adjust(p.heft, credit - 5 * self.wear[p.lane])
+                bases[p.pid] = p.score
+            else:
+                # Replay returns derive from the lodged score, not the score
+                # of the previous dispatch: repeated sag is lost on recount.
+                p.score = self._adjust(bases[p.pid], -40)
+                p.bounced = True
+            p.state = SHELVED
+            p.stamp = replay_stamp
+            replay_stamp += 1
+            self.shelves[p.lane].append(p.pid)
         for l in self.lane_order:
             names = " ".join(self.shelves[l])
             self._emit(f"SQ {l} {names}" if names else f"SQ {l}")
@@ -295,9 +360,11 @@ class Engine:
             self._emit(f"R {s} WHO")
             return
         held = [
-            p for p in self.parcels.values() if p.sender == s and p.state == SHELVED
+            self.parcels[pid]
+            for l in self.lane_order
+            for pid in self.shelves[l]
+            if self.parcels[pid].sender == s
         ]
-        held.sort(key=lambda p: p.stamp)
         joined = " ".join(p.pid for p in held)
         self._emit(f"FOR {s} {joined}" if joined else f"FOR {s}")
 
