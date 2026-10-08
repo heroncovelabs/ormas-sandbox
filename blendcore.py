@@ -15,6 +15,7 @@ import sys
 
 ID_MAX = 8
 NO_TANK = "????????"
+VOLUME_MAX = 9_999_999
 
 
 def _valid_id(token: str) -> bool:
@@ -26,11 +27,13 @@ def _digits(token: str) -> bool:
 
 
 class Tank:
-    def __init__(self, pigment: str, volume: int) -> None:
+    def __init__(self, pigment: str, volume: int, name: str) -> None:
+        self.name = name
         self.pigment = pigment
         self.volume = volume
         self.fills = volume
         self.dispensed = 0
+        self.loss = 0
 
 
 class Engine:
@@ -39,16 +42,22 @@ class Engine:
     def __init__(self) -> None:
         self.tanks: dict[str, Tank] = {}
         self.jobs: dict[str, int] = {}
+        self.job_names: dict[str, str] = {}
         self.fills = 0
         self.dispenses = 0
         self.reconciles = 0
         self.rejected = 0
 
     def handle(self, line: str) -> list[str]:
-        tokens = line.split()
-        if not tokens:
+        # The wire format uses literal spaces, not arbitrary whitespace.
+        # CR and NUL terminate a command just as they do in the old reader.
+        line = line.split("\x00", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
+        if not line:
             return []
-        if line == "R":
+        tokens = [token for token in line.split(" ") if token]
+        if line.startswith(" ") or not tokens:
+            replies = [f"N {NO_TANK} FMT"]
+        elif line == "R":
             replies = self._reconcile()
         elif tokens[0] == "T":
             replies = [self._fill(tokens)]
@@ -68,7 +77,7 @@ class Engine:
 
     def _fill(self, tokens: list[str]) -> str:
         tank = tokens[1] if len(tokens) >= 2 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -76,20 +85,22 @@ class Engine:
         if not _digits(vol_tok) or not 2 <= len(vol_tok) <= 7:
             return f"N {tank} VOL"
         volume = int(vol_tok)
-        t = self.tanks.get(tokens[1])
+        key = tokens[1].lower()
+        t = self.tanks.get(key)
         if t is not None:
             if t.pigment != tokens[2]:
                 return f"N {tank} PIGMENT"
-            t.volume += volume
-            t.fills += volume
+            # Physical storage and the fill ledger each have their own cap.
+            t.volume = min(VOLUME_MAX, t.volume + volume)
+            t.fills = min(VOLUME_MAX, t.fills + volume)
         else:
-            self.tanks[tokens[1]] = Tank(tokens[2], volume)
+            self.tanks[key] = Tank(tokens[2], volume, tokens[1])
         self.fills += 1
         return f"OK {len(self.tanks)}"
 
     def _dispense(self, tokens: list[str]) -> str:
         tank = tokens[2] if len(tokens) >= 3 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -97,25 +108,42 @@ class Engine:
         if not _digits(amt_tok) or len(amt_tok) > 6 or int(amt_tok) < 1:
             return f"N {tank} AMT"
         amount = int(amt_tok)
-        t = self.tanks.get(tokens[2])
+        t = self.tanks.get(tokens[2].lower())
         if t is None:
             return f"N {tank} FMT"
-        if amount > t.volume:
+        if amount > t.volume + 20:
             return f"N {tank} DRY"
-        t.volume -= amount
-        t.dispensed += amount
-        total = self.jobs.get(tokens[1], 0) + amount
-        self.jobs[tokens[1]] = total
+        granted = min(amount, t.volume)
+        t.volume -= granted
+        t.dispensed += granted
+
+        # Hose loss is not credited to the job. White-base stock has an
+        # additional bulk loss, selected by a literal uppercase W.
+        loss = granted // 500
+        if "W" in t.pigment and granted >= 1000:
+            loss += granted // 500
+        loss = min(loss, t.volume)
+        t.volume -= loss
+        t.loss += loss
+
+        key = tokens[1].lower()
+        name = self.job_names.setdefault(key, tokens[1])
+        total = self.jobs.get(key, 0) + granted
+        self.jobs[key] = total
         self.dispenses += 1
-        return f"J {tokens[1]} {total}"
+        return f"J {name} {total}"
 
     def _reconcile(self) -> list[str]:
         replies = []
-        for tank_id, t in self.tanks.items():
-            # SPEC: the book volume is fills minus dispenses; reconcile
-            # is an identity check against the live volume.
-            book = t.fills - t.dispensed
-            replies.append(f"B {tank_id} {book}")
+        for t in self.tanks.values():
+            # Small hose losses are restored from the ledger; larger losses
+            # write off half their accumulated amount. Reconciliation starts
+            # a new ledger epoch at that adjusted volume, including live stock.
+            writeoff = t.loss // 2 if t.loss > 50 else 0
+            book = max(0, t.fills - t.dispensed - writeoff)
+            t.volume = t.fills = book
+            t.dispensed = t.loss = 0
+            replies.append(f"B {t.name} {book}")
         replies.append(f"REND {len(self.tanks)}")
         self.reconciles += 1
         return replies
