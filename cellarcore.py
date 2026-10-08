@@ -8,6 +8,7 @@ warning; the engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 ALNUM = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
@@ -27,7 +28,8 @@ def _is_num(tok: str, maxlen: int) -> bool:
 class Wheel:
     __slots__ = (
         "wid", "cls", "state", "lay_seq", "settle", "rack",
-        "taps_since_grade",
+        "taps", "recorded_taps", "live_taps", "shifts", "age",
+        "waiver", "shifts_at_grade", "drop_rack", "drop_turn",
     )
 
     def __init__(self, wid: str, cls: int, lay_seq: int):
@@ -37,16 +39,24 @@ class Wheel:
         self.lay_seq = lay_seq
         self.settle = cls
         self.rack = None
-        self.taps_since_grade = 0
+        # All samples break standing ties; only racked samples enter the ledger.
+        # The live sample streak ends at a turn, not at a grading.
+        self.taps = self.recorded_taps = self.live_taps = 0
+        self.shifts = self.age = self.shifts_at_grade = 0
+        # A turn can grant one grading exemption for three moves since grading.
+        self.waiver = False
+        self.drop_rack = None
+        self.drop_turn = -1
 
 
 class Rack:
-    __slots__ = ("rid", "span", "open_seq", "order")
+    __slots__ = ("rid", "span", "open_seq", "order", "drops")
 
     def __init__(self, rid: str, span: int, open_seq: int):
         self.rid = rid
         self.span = span
         self.open_seq = open_seq
+        self.drops = 0
         self.order: list[Wheel] = []   # standing order, front first
 
 
@@ -78,9 +88,11 @@ class Engine:
 
     # ------------------------------------------------------- mechanics
     def _wins(self, a: Wheel, ka: int, b: Wheel, kb: int) -> bool:
-        """Standing comparator: settle descending, ties by lay order."""
+        """Standing ties prefer the less-sampled wheel, then lay order."""
         if ka != kb:
             return ka > kb
+        if a.taps != b.taps:
+            return a.taps < b.taps
         return a.lay_seq < b.lay_seq
 
     def _insert(self, rack: Rack, w: Wheel) -> None:
@@ -113,11 +125,21 @@ class Engine:
         if not 1 <= cls <= 999:
             self._reject(parts, "RNG")
             return
-        if wid in self.wheels:
+        if wid in self.wheels and self.wheels[wid].state != RETIRED:
             self._reject(parts, "DUP")
             return
         self.lay_seq += 1
-        w = Wheel(wid, cls, self.lay_seq)
+        w = self.wheels.get(wid)
+        if w is None:
+            w = Wheel(wid, cls, self.lay_seq)
+        else:
+            # Reused names keep their ledger history, but start a new live lay.
+            w.cls = w.settle = cls
+            w.state = SILL
+            w.lay_seq = self.lay_seq
+            w.live_taps = 0
+            w.drop_rack = None
+            w.drop_turn = -1
         self.wheels[wid] = w
         self.sill.append(w)
         self.cLAY += 1
@@ -158,6 +180,8 @@ class Engine:
             self._reject(parts, "FULL")
             return
         self.sill.remove(w)
+        if w.drop_rack is r and w.drop_turn == self.turn_no:
+            w.settle = w.cls
         self._insert(r, w)
         w.state = RACKED
         w.rack = r
@@ -176,8 +200,11 @@ class Engine:
         if w.state == RETIRED:
             self._reject(parts, "STATE")
             return
-        w.settle -= 3
-        w.taps_since_grade += 1
+        w.settle -= 3 + 2 * (w.age % 2) + (4 if w.live_taps else 0)
+        w.live_taps += 1
+        w.taps += 1
+        if w.state == RACKED:
+            w.recorded_taps += 1
         self.cTAP += 1
         self._emit(f"OK {w.wid}")
 
@@ -197,22 +224,35 @@ class Engine:
         if len(r.order) >= r.span:
             self._reject(parts, "FULL")
             return
-        w.settle -= 5
+        w.settle -= 5 + 2 * (w.age % 2) + (4 if w.shifts else 0)
+        w.shifts += 1
+        # A further move invalidates the exemption until another turn.
+        w.waiver = False
         w.rack.order.remove(w)
         self._insert(r, w)
         w.rack = r
         self.cSHIFT += 1
         self._emit(f"OK {len(r.order)}")
 
+    def _round_racks(self) -> list[Rack]:
+        # Three lifetime drops put a rack behind all undemoted racks.
+        return sorted(self.rack_list, key=lambda r: (r.drops >= 3, r.open_seq))
+
     def _cmd_TURN(self, parts: list[str]) -> None:
         self.turn_no += 1
         self.cTURN += 1
         self._emit(f"TR {self.turn_no}")
-        for r in self.rack_list:
+        for r in self._round_racks():
             pre = list(r.order)
-            slumped = [w for w in pre if w.settle <= 0]
-            if slumped:
-                r.order = [w for w in r.order if w.settle > 0]
+            for w in pre:
+                # Reconciliation replaces the running value, then ages the wheel.
+                w.settle = w.cls - 3 * w.recorded_taps - 5 * w.shifts - w.age
+                w.age += 1
+                w.live_taps = 0
+                w.waiver = w.shifts - w.shifts_at_grade >= 3
+            slumped = [w for w in pre if w.settle <= 7]
+            r.order = [w for w in pre if w.settle > 7]
+            r.drops += len(slumped)
             self._relist(r)
             self._emit(f"RK {r.rid}")
             for w in r.order:
@@ -220,6 +260,8 @@ class Engine:
             for w in slumped:
                 w.state = SILL
                 w.rack = None
+                w.drop_rack = r
+                w.drop_turn = self.turn_no
                 self.sill.append(w)
                 self._emit(f"DN {w.wid}")
 
@@ -227,28 +269,22 @@ class Engine:
         self.grade_no += 1
         self.cGRADE += 1
         self._emit(f"GD {self.grade_no}")
-        pool: list[Wheel] = []
-        for r in self.rack_list:
-            pool.extend(r.order)
-        graded: list[Wheel] = []
-        for w in pool:
-            pos = len(graded)
-            for i, o in enumerate(graded):
-                if self._wins(w, w.settle, o, o.settle):
-                    pos = i
-                    break
-            graded.insert(pos, w)
+        pool = [w for r in self.rack_list for w in r.order]
+        graded = sorted(pool, key=lambda w: (
+            -(w.cls - 4 * w.recorded_taps), w.taps, w.lay_seq,
+        ))
         for w in graded:
             self._emit(f"G {w.wid}")
         for w in graded:
-            if w.taps_since_grade >= 4:
+            if w.recorded_taps >= 4 and not w.waiver:
                 w.rack.order.remove(w)
                 w.rack = None
                 w.state = RETIRED
                 self.cRET += 1
                 self._emit(f"RET {w.wid}")
         for w in self.wheels.values():
-            w.taps_since_grade = 0
+            w.waiver = False
+            w.shifts_at_grade = w.shifts
 
     def _cmd_VIEW(self, parts: list[str]) -> None:
         rid = parts[1]
@@ -263,7 +299,7 @@ class Engine:
         self._emit(f"ON {r.rid}{ids}")
 
     def _cmd_HALL(self, parts: list[str]) -> None:
-        ids = "".join(" " + r.rid for r in self.rack_list)
+        ids = "".join(" " + r.rid for r in self._round_racks())
         self._emit(f"HALL{ids}")
         wids = "".join(" " + w.wid for w in self.sill)
         self._emit(f"SILL{wids}")
@@ -287,7 +323,10 @@ class Engine:
 
     # ------------------------------------------------------------ glue
     def handle(self, line: str) -> None:
-        parts = line.split()
+        # The terminal reader truncates at CR or NUL. Only ASCII separators
+        # delimit tokens; Unicode whitespace is part of a (malformed) token.
+        line = re.split(r"[\r\x00]", line, maxsplit=1)[0]
+        parts = [p for p in re.split(r"[ \t\v\f\n]+", line) if p]
         if not parts:
             return
         kind = parts[0]
@@ -325,8 +364,9 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    for line in sys.stdin.buffer:
+        # Preserve CR within a physical line for the terminal truncation rule.
+        engine.handle(line.decode("utf-8", errors="surrogateescape"))
     engine.finish()
 
 
