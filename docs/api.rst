@@ -298,6 +298,11 @@ These tools work with most numeric data types.
 
 .. autofunction:: dft
 .. autofunction:: idft
+.. autofunction:: running_min
+.. autofunction:: running_max
+.. autofunction:: running_statistics
+.. autoclass:: Stats
+    :members:
 
 ----
 
@@ -309,6 +314,7 @@ These tools work with most numeric data types.
 .. autofunction:: polynomial_from_roots
 .. autofunction:: polynomial_derivative
 .. autofunction:: polynomial_eval
+.. autofunction:: running_mean
 .. autofunction:: running_median
 .. autofunction:: sum_of_squares
 

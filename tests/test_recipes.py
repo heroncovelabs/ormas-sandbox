@@ -1529,6 +1529,51 @@ class RunningMeanTests(TestCase):
                 actual = list(mi.running_mean(iterable))
                 self.assertEqual(actual, expected)
 
+    def test_windowed(self):
+        for convert in (int, float, Fraction, Decimal, complex):
+            data = list(map(convert, [5, 9, 4, 12, 8, 9]))
+            for maxlen in (1, 2, 3, 10):
+                with self.subTest(convert=convert, maxlen=maxlen):
+                    expected = [
+                        sum(data[max(0, i - maxlen) : i]) / min(i, maxlen)
+                        for i in range(1, len(data) + 1)
+                    ]
+                    self.assertEqual(
+                        list(mi.running_mean(iter(data), maxlen=maxlen)),
+                        expected,
+                    )
+        self.assertEqual(list(mi.running_mean([], maxlen=3)), [])
+        data = [1 + 2j, 3 - 4j, 5 + 6j]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=2)), [1 + 2j, 2 - 1j, 4 + 1j]
+        )
+        self.assertEqual(
+            list(mi.running_mean(data)), [1 + 2j, 2 - 1j, 3 + 4j / 3]
+        )
+
+    def test_error_cases(self):
+        for maxlen in (None, 3):
+            with self.assertRaises(TypeError):
+                mi.running_mean(1234, maxlen=maxlen)
+        for maxlen in (0, -1):
+            with self.assertRaises(ValueError):
+                mi.running_mean([], maxlen=maxlen)
+        with self.assertRaises(TypeError):
+            mi.running_mean([], maxlen=3.0)
+
+    def test_windowed_resets_sum(self):
+        # Expired values must not affect later windows through cancellation
+        # or non-finite arithmetic.
+        for data in (
+            [1e16, 1.0, 1.0],
+            [Decimal('1e100'), Decimal(1), Decimal(1)],
+            [float('inf'), 1.0, 1.0],
+        ):
+            with self.subTest(data=data):
+                self.assertEqual(
+                    list(mi.running_mean(data, maxlen=2))[-1], 1.0
+                )
+
 
 class RunningMedianTests(TestCase):
     def test_vs_statistics_median(self):

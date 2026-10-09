@@ -3,6 +3,7 @@ import math
 from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import cached_property, partial, wraps
 from heapq import heapify, heapreplace
 from itertools import (
@@ -31,6 +32,7 @@ from operator import (
     getitem,
     is_not,
     itemgetter,
+    index,
     lt,
     neg,
     sub,
@@ -48,6 +50,8 @@ from .recipes import (
     is_prime,
     nth,
     powerset,
+    running_mean,
+    running_median,
     sieve,
     take,
     unique_everseen,
@@ -58,6 +62,7 @@ from .recipes import (
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -143,6 +148,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_min',
+    'running_max',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -5441,3 +5449,143 @@ class _concurrent_tee:
                     link[1] = [None, None]
         value, self.link = link
         return value
+
+
+def _running_extreme(iterator, maxlen, compare):
+    if maxlen is None:
+        extreme = _marker
+        for value in iterator:
+            if isinstance(value, complex):
+                raise TypeError('Complex numbers are not orderable')
+            if extreme is _marker or compare(value, extreme):
+                extreme = value
+            yield extreme
+        return
+
+    # Keep candidates in monotonic order, expiring them by input position.
+    candidates = deque()
+    for i, value in enumerate(iterator):
+        if isinstance(value, complex):
+            raise TypeError('Complex numbers are not orderable')
+        if candidates and candidates[0][0] <= i - maxlen:
+            candidates.popleft()
+        while candidates and compare(value, candidates[-1][1]):
+            candidates.pop()
+        candidates.append((i, value))
+        yield candidates[0][1]
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the minimum of values seen so far or in a sliding window.
+
+    Set *maxlen* to a positive integer to use only the last *maxlen* values.
+    The default, *None*, uses all values seen so far.
+
+        >>> list(running_min([5, 9, 4, 12, 8, 9]))
+        [5, 5, 4, 4, 4, 4]
+        >>> list(running_min([5, 9, 4, 12, 8, 9], maxlen=3))
+        [5, 5, 4, 4, 4, 8]
+
+    Supports int, float, Decimal, and Fraction, but not complex numbers.
+    Each result is yielded as soon as its input is read. Unbounded operation
+    uses constant space; windowed operation uses O(*maxlen*) space and
+    amortized constant time per input.
+
+    Non-iterable input raises TypeError at call time. Non-positive *maxlen*
+    raises ValueError at call time.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return _running_extreme(iterator, maxlen, lt)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the maximum of values seen so far or in a sliding window.
+
+    Set *maxlen* to a positive integer to use only the last *maxlen* values.
+    The default, *None*, uses all values seen so far.
+
+        >>> list(running_max([5, 9, 4, 12, 8, 9]))
+        [5, 9, 9, 12, 12, 12]
+        >>> list(running_max([5, 9, 4, 12, 8, 9], maxlen=3))
+        [5, 9, 9, 12, 12, 12]
+
+    Supports the same types, streaming behavior, complexity, and call-time
+    validation as :func:`running_min`.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return _running_extreme(iterator, maxlen, gt)
+
+
+@dataclass(frozen=True)
+class Stats:
+    """An immutable record of running statistics.
+
+    Fields, in construction order, are *size*, *minimum*, *median*, *maximum*,
+    and *mean*. Access fields by name: the record is not a sequence and does
+    not support indexing, iteration, or len(). Records compare and hash by
+    value and have no instance __dict__.
+
+        >>> stats = Stats(3, 1, 2, 3, 2.0)
+        >>> stats.size, stats.minimum, stats.median, stats.maximum, stats.mean
+        (3, 1, 2, 3, 2.0)
+    """
+
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+
+    size: int
+    minimum: object
+    median: object
+    maximum: object
+    mean: object
+
+    def __reduce__(self):
+        return type(self), (
+            self.size, self.minimum, self.median, self.maximum, self.mean
+        )
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield :class:`Stats` records for values seen so far or in a window.
+
+    Set *maxlen* to a positive integer to use only the last *maxlen* values.
+    The default, *None*, uses all values seen so far. Each record contains
+    the window's size, minimum, median, maximum, and mean. The median and
+    mean are computed as by :func:`running_median` and :func:`running_mean`.
+
+        >>> stats = list(running_statistics([5, 9, 4], maxlen=2))
+        >>> [(s.size, s.minimum, s.median, s.maximum, s.mean) for s in stats]
+        [(1, 5, 5, 5, 5.0), (2, 5, 7.0, 9, 7.0), (2, 4, 6.5, 9, 6.5)]
+
+    Supports int, float, Decimal, and Fraction, but not complex numbers.
+    Each input produces one record without reading ahead, even for infinite
+    inputs. The unbounded median stores all inputs; a window bounds storage
+    to O(*maxlen*).
+
+    Non-iterable input raises TypeError at call time. Non-positive *maxlen*
+    raises ValueError at call time.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+
+    minimum, median, maximum, mean = tee(iterator, 4)
+    results = zip(
+        running_min(minimum, maxlen=maxlen),
+        running_median(median, maxlen=maxlen),
+        running_max(maximum, maxlen=maxlen),
+        running_mean(mean, maxlen=maxlen),
+    )
+    return (
+        Stats(i if maxlen is None else min(i, maxlen), *values)
+        for i, values in enumerate(results, 1)
+    )

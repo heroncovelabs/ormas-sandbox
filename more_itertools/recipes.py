@@ -33,7 +33,7 @@ from itertools import (
     zip_longest,
 )
 from math import prod, comb, isqrt, gcd
-from operator import mul, getitem, index, is_, itemgetter, truediv
+from operator import add, mul, getitem, index, is_, itemgetter, truediv
 from random import randrange, sample, choice, shuffle
 from sys import hexversion
 
@@ -1408,8 +1408,23 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _running_mean_windowed(iterator, maxlen):
+    window = deque()
+    for value in iterator:
+        window.append(value)
+        if len(window) > maxlen:
+            window.popleft()
+        # Sum the current window in input order, as accumulate() does.
+        # Subtracting expired values would retain rounding errors or NaNs.
+        total = reduce(add, window)
+        yield total / len(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of values seen so far or in a sliding window.
+
+    Set *maxlen* to a positive integer to use only the last *maxlen* values.
+    The default, *None*, uses all values seen so far.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1434,21 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+    >>> list(running_mean([100, 200, 600], maxlen=2))
+    [100.0, 150.0, 400.0]
+
+    Supports int, float, Decimal, Fraction, and complex numbers.
+    Each input produces one result without reading ahead. Non-iterable input
+    raises TypeError at call time; non-positive *maxlen* raises ValueError at
+    call time.
     """
-    return map(truediv, accumulate(iterable), count(1))
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+        return _running_mean_windowed(iterator, maxlen)
+    return map(truediv, accumulate(iterator), count(1))
 
 
 def random_derangement(iterable):

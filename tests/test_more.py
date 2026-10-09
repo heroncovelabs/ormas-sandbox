@@ -6646,3 +6646,114 @@ class TestConcurrentTee(TestCase):
         with self.assertRaises(ValueError):
             non_concurrent_source = producer(limit)
             mi.concurrent_tee(non_concurrent_source, n=-1)  # Negative n
+
+
+class RunningStatisticsTests(TestCase):
+    functions = (mi.running_min, mi.running_max, mi.running_statistics)
+
+    def test_exports(self):
+        namespace = {}
+        exec('from more_itertools import *', namespace)
+        for name in (
+            'Stats', 'running_min', 'running_max', 'running_statistics'
+        ):
+            self.assertIs(namespace[name], getattr(mi, name))
+
+    def test_extrema(self):
+        rng = Random(1234)
+        datasets = [
+            [5, 9, 4, 12, 8, 9],
+            [7] * 20 + [2] * 20 + [9] * 20,
+            [rng.randrange(-100, 100) for _ in range(100)],
+        ]
+        for data in datasets:
+            for convert in (int, float, Fraction, Decimal):
+                values = list(map(convert, data))
+                for maxlen in (None, 1, 2, 3, 10, 200):
+                    for function, extreme in (
+                        (mi.running_min, min), (mi.running_max, max)
+                    ):
+                        with self.subTest(function=function, maxlen=maxlen):
+                            expected = [
+                                extreme(values[max(0, i - maxlen) : i])
+                                if maxlen is not None else extreme(values[:i])
+                                for i in range(1, len(values) + 1)
+                            ]
+                            actual = list(function(values, maxlen=maxlen))
+                            self.assertEqual(actual, expected)
+                            self.assertTrue(
+                                all(type(x) is convert for x in actual)
+                            )
+
+    def test_statistics(self):
+        for convert in (int, float, Fraction, Decimal):
+            data = list(map(convert, [5, 9, 4, 12, 8, 9]))
+            for maxlen in (None, 1, 2, 3, 10):
+                medians = list(mi.running_median(data, maxlen=maxlen))
+                means = list(mi.running_mean(data, maxlen=maxlen))
+                actual = list(mi.running_statistics(data, maxlen=maxlen))
+                for i, record in enumerate(actual, 1):
+                    start = 0 if maxlen is None else max(0, i - maxlen)
+                    window = data[start:i]
+                    self.assertEqual(
+                        record,
+                        mi.Stats(
+                            len(window), min(window), medians[i - 1],
+                            max(window), means[i - 1],
+                        ),
+                    )
+
+    def test_errors_and_empty(self):
+        for function in self.functions:
+            for maxlen in (None, 1, 3):
+                with self.subTest(function=function, maxlen=maxlen):
+                    self.assertEqual(list(function([], maxlen=maxlen)), [])
+                    with self.assertRaises(TypeError):
+                        function(1234, maxlen=maxlen)
+                    for data in ([1j], [1, 2j]):
+                        with self.assertRaises(TypeError):
+                            list(function(data, maxlen=maxlen))
+            for maxlen in (0, -1, -5):
+                with self.assertRaises(ValueError):
+                    function([], maxlen=maxlen)
+            with self.assertRaises(TypeError):
+                function([], maxlen=3.0)
+
+    def test_streaming(self):
+        for function in self.functions + (mi.running_mean,):
+            for maxlen in (None, 3):
+                consumed = []
+
+                def source():
+                    for value in count():
+                        consumed.append(value)
+                        yield value
+
+                result = function(source(), maxlen=maxlen)
+                self.assertEqual(consumed, [])
+                for i in range(10):
+                    next(result)
+                    self.assertEqual(consumed, list(range(i + 1)))
+
+
+class StatsTests(TestCase):
+    def test_record(self):
+        record = mi.Stats(3, 1, 2, 3, 2.0)
+        other = mi.Stats(size=3, minimum=1, median=2, maximum=3, mean=2.0)
+        self.assertEqual(record, other)
+        self.assertEqual(hash(record), hash(other))
+        self.assertEqual(len({record, other}), 1)
+        self.assertEqual(loads(dumps(record)), record)
+        self.assertNotEqual(record, mi.Stats(4, 1, 2, 3, 2.0))
+        self.assertFalse(hasattr(record, '__dict__'))
+        self.assertFalse(isinstance(record, Sequence))
+        for field in ('size', 'minimum', 'median', 'maximum', 'mean', 'extra'):
+            with self.assertRaises(AttributeError):
+                setattr(record, field, 0)
+            with self.assertRaises(AttributeError):
+                delattr(record, field)
+        for action in (
+            lambda: len(record), lambda: record[0], lambda: iter(record)
+        ):
+            with self.assertRaises(TypeError):
+                action()
