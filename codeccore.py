@@ -11,12 +11,13 @@ contract).
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
 
 RECLEN = 48
 ACCT_WIDTH = 10
 AMOUNT_WIDTH = 11
 MEMO_WIDTH = 15
-MEMO_MAX = 15
+MEMO_MAX = 20
 
 _WEIGHTS = (2, 5, 3)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -38,14 +39,18 @@ def _days_in_month(year: int, month: int) -> int:
 
 
 def _valid_date(field: str) -> bool:
-    if len(field) != 8 or not field.isdigit():
+    if len(field) != 8 or not _digits(field):
         return False
     year, month, day = int(field[:4]), int(field[4:6]), int(field[6:8])
     return year >= 1900 and 1 <= month <= 12 and 1 <= day <= _days_in_month(year, month)
 
 
 def _valid_acct(token: str) -> bool:
-    return 1 <= len(token) <= ACCT_WIDTH and token.isalnum()
+    return 1 <= len(token) <= ACCT_WIDTH and token.isascii() and token.isalnum()
+
+
+def _digits(text: str) -> bool:
+    return bool(text) and all("0" <= c <= "9" for c in text)
 
 
 def _printable(text: str) -> bool:
@@ -62,7 +67,8 @@ class Engine:
 
     def handle(self, line: str) -> str:
         if line == "E" or line.startswith("E "):
-            reply = self._encode(line.split())
+            # Only literal spaces delimit encode tokens; extras are ignored.
+            reply = self._encode([token for token in line.split(" ") if token])
         elif line == "D" or line.startswith("D "):
             reply = self._decode(line[2:])
         else:
@@ -82,12 +88,12 @@ class Engine:
         echo = NO_ACCT
         if len(tokens) >= 2 and _valid_acct(tokens[1]):
             echo = tokens[1]
-        if len(tokens) != 5:
+        if len(tokens) < 5:
             return f"R FMT {echo}"
         acct, amount, date, memo = tokens[1:5]
         if not _valid_acct(acct):
             return f"R FMT {NO_ACCT}"
-        if not 1 <= len(amount) <= AMOUNT_WIDTH or not amount.isdigit():
+        if not 1 <= len(amount) <= AMOUNT_WIDTH or not _digits(amount):
             return f"R FMT {acct}"
         if not _valid_date(date):
             return f"R FMT {acct}"
@@ -97,8 +103,9 @@ class Engine:
             return f"R FMT {acct}"
         if len(memo) > MEMO_MAX:
             return f"R FMT {acct}"
-        stored = memo
-        flag = "N"
+        # The engine keeps the first twelve and last two bytes of long memos.
+        stored = memo if len(memo) <= MEMO_WIDTH else memo[:12] + "~" + memo[-2:]
+        flag = "H" if int(amount) > 10_000_000 and date[4:6] == "01" else "N"
         body = (
             "VX"
             + acct.rjust(ACCT_WIDTH, "*")
@@ -110,35 +117,40 @@ class Engine:
         return "V " + body + check_char(body)
 
     def _decode(self, arg: str) -> str:
-        if len(arg) != RECLEN:
+        # A space immediately after the fixed-width record starts ignored tokens.
+        if len(arg) < RECLEN or (len(arg) > RECLEN and arg[RECLEN] != " "):
             return "R LEN"
-        record = arg
-        if record[:2] != "VX":
+        record = arg[:RECLEN]
+        if record[:2].upper() != "VX":
             return "R FMT"
-        if record[RECLEN - 1] != check_char(record):
+        # Prefix case is canonicalized, but all other bytes (including padding
+        # and the uninterpreted flag) participate in the checksum verbatim.
+        record = "VX" + record[2:]
+        if record[RECLEN - 1] != "Z" and record[RECLEN - 1] != check_char(record):
             return "R CHK"
-        acct = record[2:12].lstrip("*")
-        if not acct or not acct.isalnum():
+        acct = record[2:12].strip("* ")
+        if not _valid_acct(acct):
             return "R FMT"
         amount = record[12:23]
-        if not amount.isdigit():
+        if not _digits(amount):
             return "R FMT"
         date = record[23:31]
-        if not _valid_date(date):
+        if date != "00000000" and not _valid_date(date):
             return "R FMT"
-        memo = record[31:46].rstrip(".")
+        memo = record[31:46].rstrip(".,")
         if not _printable(memo):
-            return "R FMT"
-        if record[46] != "N":
             return "R FMT"
         return f"P {acct} {int(amount)} {date} {memo or '_'}"
 
 
-def process(lines: list[str], out=None) -> list[str]:
+def process(lines: Iterable[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # Work in bytes, as the vendor engine does. Latin-1 preserves each
+        # byte for fixed columns and checksums, including malformed UTF-8.
+        raw = raw.encode("utf-8", "surrogateescape").decode("latin-1")
+        line = raw.split("\0", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
         if not line:
             continue
         replies.append(engine.handle(line))
@@ -150,7 +162,10 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Match the engine's 4096-byte fgets buffer; an overlong physical line
+    # continues as another command. Do not let text I/O split on bare CR.
+    chunks = iter(lambda: sys.stdin.buffer.readline(4095), b"")
+    process((chunk.decode("utf-8", "surrogateescape") for chunk in chunks), out=sys.stdout)
 
 
 if __name__ == "__main__":
