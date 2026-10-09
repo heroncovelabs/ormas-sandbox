@@ -3,4 +3,7 @@ def greet(name: str) -> str:
 
 
 def farewell(name: str) -> str:
-    return "goodbye"
+    name = name.strip()
+    if not name:
+        return "Goodbye."
+    return f"Goodbye, {name}."
