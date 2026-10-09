@@ -1,0 +1,3 @@
+bugfixes:
+  - Configuration type coercion now preserves data tags, normalizes sequence and mapping inputs, and reports invalid conversions consistently.
+  - Non-strict boolean conversion now returns false for unhashable values instead of raising an error.
