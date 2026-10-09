@@ -11,6 +11,7 @@ of that file; the legacy engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 ID_MAX = 8
@@ -27,6 +28,10 @@ class Singer:
         self.row = row
         self.index = index  # enrollment order
         self.standing = 0  # bench standing (never printed)
+        self.streak = 0  # rehearsals since the last absence
+        self.misses = 0  # lifetime absences
+        self.weary = False  # cleared by carrying a concert
+        self.last_rehearsal = 0
 
 
 class Engine:
@@ -52,7 +57,10 @@ class Engine:
         self.rejected += 1
 
     def handle(self, line: str) -> None:
-        tokens = line.rstrip("\r\n").split()
+        # The engine treats CR and NUL as end-of-line and splits only on
+        # spaces and tabs. Other whitespace remains part of the token.
+        line = re.split(r"[\r\n\x00]", line, maxsplit=1)[0].strip(" \t")
+        tokens = re.split(r"[ \t]+", line) if line else []
         if not tokens:
             return
         kind = tokens[0]
@@ -83,7 +91,12 @@ class Engine:
         if tokens[1] in self.singers:
             self._reject(singer, "DUP")
             return
-        self.singers[tokens[1]] = Singer(int(tokens[2]), len(self.order))
+        sg = Singer(int(tokens[2]), len(self.order))
+        # After the first concert, each weary incumbent contributes a
+        # row's worth of settling-in credit to a newcomer.
+        if self.concerts:
+            sg.standing = sg.row * sum(s.weary for s in self.singers.values())
+        self.singers[tokens[1]] = sg
         self.order.append(tokens[1])
         self.ledger.append(("E", tokens[1]))
         self.enrolled += 1
@@ -101,7 +114,12 @@ class Engine:
         if sg is None:
             self._reject(singer, "UNKNOWN")
             return
-        sg.standing += sg.row
+        sg.streak += 1
+        credit = sg.row + (2 if sg.streak >= 2 else 0)
+        if sg.weary:
+            credit //= 2
+        sg.standing += credit
+        sg.last_rehearsal = self.rehearsals + 1
         self.ledger.append(("P", tokens[1]))
         self.rehearsals += 1
         self._emit(f"P {tokens[1]}")
@@ -119,31 +137,39 @@ class Engine:
             self._reject(singer, "UNKNOWN")
             return
         sg.standing = max(0, sg.standing - 2 * sg.row)
+        sg.streak = 0
+        sg.misses += 1
+        sg.weary = sg.misses >= 3
         self.ledger.append(("A", tokens[1]))
         self.absences += 1
         self._emit(f"A {tokens[1]}")
 
     def _seating(self, standings: dict[str, int]) -> list[str]:
-        """Descending standing; ties by enrollment order."""
+        """Descending standing, then latest rehearsal, then enrollment."""
         return sorted(
-            standings, key=lambda n: (-standings[n], self.singers[n].index)
+            standings,
+            key=lambda n: (
+                -standings[n],
+                -self.singers[n].last_rehearsal,
+                self.singers[n].index,
+            ),
         )
 
     def _concert(self, tokens: list[str]) -> None:
         if len(tokens) != 1:
             self._reject(NO_SINGER, "FMT")
             return
-        if self.singers:
-            names = self._seating(
-                {name: sg.standing for name, sg in self.singers.items()}
-            )
-            for name in names:
-                self._emit(f"C {name}")
-            self._emit(f"CEND {len(names)}")
-            # The first three seats carried the concert.
-            for name in names[:3]:
-                self.singers[name].standing = 0
-        # A concert with no singers enrolled prints no seating.
+        names = self._seating(
+            {name: sg.standing for name, sg in self.singers.items()}
+        )
+        for name in names:
+            self._emit(f"C {name}")
+        self._emit(f"CEND {len(names)}")
+        # Carrying clears standing and weariness; rehearsal streaks,
+        # lifetime absences, and recency survive the concert.
+        for name in names[:3]:
+            self.singers[name].standing = 0
+            self.singers[name].weary = False
         self.ledger.append(("C", ""))
         self.concerts += 1
 
@@ -151,8 +177,12 @@ class Engine:
         if len(tokens) != 1:
             self._reject(NO_SINGER, "FMT")
             return
-        # Recompute every standing from the full ledger, replacing the
-        # live values (the reseat mirrors the bench, it never moves it).
+        # Audits replay the documented arithmetic with enrollment-order
+        # ties at every historical concert. Live bonuses and newcomer
+        # credits are omitted. Only standing and recency are replaced;
+        # streaks, lifetime absences, and weariness survive the audit.
+        for sg in self.singers.values():
+            sg.last_rehearsal = 0
         replay: dict[str, int] = {}
         for kind, name in self.ledger:
             if kind == "E":
@@ -177,9 +207,12 @@ class Engine:
 
 
 def main() -> None:
+    # Read physical LF-delimited lines so embedded CRs remain visible to
+    # the parser. Surrogate escapes preserve malformed bytes in rejects.
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    for line in sys.stdin.buffer:
+        engine.handle(line.decode("utf-8", errors="surrogateescape"))
     engine.finish()
 
 
