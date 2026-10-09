@@ -8,16 +8,20 @@ the engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 MAX_QTY = 999_999
-MAX_COST = 9_999_999
+MAX_COST = 9_000_000
 
 
 class Engine:
     def __init__(self, out=None):
         # Per-SKU FIFO cost layers: sku -> list of [qty, unit_cost].
         self.layers: dict[str, list[list[int]]] = {}
+        # First valid, nonzero movement establishes the spelling, even if
+        # an issue subsequently fails its stock check.
+        self.skus: dict[str, str] = {}
         self.count_rcpt = 0
         self.count_iss = 0
         self.count_rej = 0
@@ -35,42 +39,56 @@ class Engine:
         return sum(qty for qty, _cost in self.layers.get(sku, []))
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
+        # Records end at the first NUL, CR, or LF, with ASCII token spacing.
+        record = re.split(r"[\0\r\n]", line, maxsplit=1)[0]
+        parts = re.findall(r"[^ \t\v\f]+", record)
         if not parts:
             return
         kind = parts[0]
         sku = parts[1] if len(parts) > 1 else ""
-        sku_ok = 1 <= len(sku) <= 8 and sku.isalnum()
+        sku_ok = 1 <= len(sku) <= 8 and sku.isascii() and sku.isalnum()
         need = 4 if kind == "R" else 3 if kind == "I" else 0
-        if need == 0 or not sku_ok or len(parts) != need:
+        if need == 0 or not sku_ok or len(parts) < need:
             self._emit(f"E {sku if sku_ok else '????????'} FMT")
             self.count_rej += 1
             return
         qty_tok = parts[2]
-        if not (qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
+        if not (qty_tok.isascii() and qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
             self._reject(sku, "QTY")
             return
         qty = int(qty_tok)
-        if not 1 <= qty <= MAX_QTY:
+        if not 0 <= qty <= MAX_QTY:
             self._reject(sku, "QTY")
+            return
+        # Zero movements disappear before cost validation and SKU lookup.
+        if qty == 0:
             return
         if kind == "R":
             cost_tok = parts[3]
-            if not (cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
+            if not (cost_tok.isascii() and cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
                 self._reject(sku, "COST")
                 return
-            cost = int(cost_tok)
-            # Every receipt opens its own cost layer, newest last.
-            self.layers.setdefault(sku, []).append([qty, cost])
+            cost = min(int(cost_tok), MAX_COST)
+            sku = self.skus.setdefault(sku.upper(), sku)
+            stack = self.layers.setdefault(sku, [])
+            # Adjacent equal-priced receipts share a layer after capping.
+            if stack and stack[-1][1] == cost:
+                stack[-1][0] += qty
+            else:
+                stack.append([qty, cost])
             self._emit(f"A {sku} {self._onhand(sku)}")
             self.count_rcpt += 1
             return
-        # Issue: FIFO, oldest layers consumed first.
-        if qty > self._onhand(sku):
+        sku = self.skus.setdefault(sku.upper(), sku)
+        stack = self.layers.get(sku, [])
+        onhand = self._onhand(sku)
+        # The newest of multiple layers is reserved as display stock.
+        available = onhand - stack[-1][0] if len(stack) > 1 else onhand
+        if qty > 2 * available:
             self._reject(sku, "STOCK")
             return
-        stack = self.layers[sku]
-        remaining = qty
+        # Accept a partial shipment through twice the available quantity.
+        remaining = min(qty, available)
         cogs = 0
         while remaining > 0:
             layer = stack[0]
@@ -80,7 +98,11 @@ class Engine:
             remaining -= got
             if layer[0] == 0:
                 stack.pop(0)
-        self._emit(f"C {sku} {cogs} {self._onhand(sku)}")
+        after = self._onhand(sku)
+        # Emptying a bin of at least 100 units adds 2%, rounded half up.
+        if after == 0 and onhand >= 100:
+            cogs += (cogs * 2 + 50) // 100
+        self._emit(f"C {sku} {cogs} {after}")
         self.count_iss += 1
         self.sum_cogs += cogs
 
@@ -92,8 +114,9 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    # Match the legacy 512-byte fgets buffer and preserve embedded CRs.
+    while line := sys.stdin.buffer.readline(511):
+        engine.handle(line.decode("utf-8", errors="surrogateescape"))
     engine.finish()
 
 
