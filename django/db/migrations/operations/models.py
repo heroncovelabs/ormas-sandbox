@@ -528,6 +528,11 @@ class AlterTogetherOptionOperation(ModelOptionOperation):
     def migration_name_fragment(self):
         return 'alter_%s_%s' % (self.name_lower, self.option_name)
 
+    def reduce(self, operation, app_label):
+        if isinstance(operation, AlterTogetherOptionOperation) and type(self) != type(operation):
+            return True
+        return super().reduce(operation, app_label)
+
 
 class AlterUniqueTogether(AlterTogetherOptionOperation):
     """
