@@ -1,0 +1,3 @@
+bugfixes:
+  - winrm - use a consistent subprocess-based kinit flow to obtain Kerberos tickets, with password input through stdin in a new session, fixing macOS authentication and high-file-descriptor failures.
+  - winrm - redact passwords from kinit error output and report consistent Kerberos authentication failures.
