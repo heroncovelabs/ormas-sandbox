@@ -34,6 +34,10 @@ class Vehicle:
         self.span = span
         self.reg = reg  # registration order, 0-based
         self.lean = 0  # standing lean (internal; never printed)
+        self.wear = 0  # season-long misses since the last squaring
+        self.misses = 0  # consecutive misses
+        self.crossings = 0
+        self.join = 0
         self.queued = False
         self.aboard = False  # boarded the most recent sailing
 
@@ -48,6 +52,9 @@ class Engine:
         self.c_sail = 0
         self.c_sq = 0
         self.c_rej = 0
+        self.ledger: list[tuple[str, int]] = []
+        self.join_clock = 0
+        self.queue_ties = False
         self.out = out if out is not None else sys.stdout
 
     def _emit(self, line: str) -> None:
@@ -90,6 +97,8 @@ class Engine:
             self._reject(parts[1], "DUP")
             return
         v = Vehicle(parts[1], span, len(self.order))
+        v.lean = 2 * self.c_sq
+        self.ledger.append(("V", v.reg))
         self.vehicles[parts[1]] = v
         self.order.append(v)
         self._emit(f"OK {len(self.order)}")
@@ -106,6 +115,10 @@ class Engine:
             self._reject(parts[1], "QUEUED")
             return
         v.queued = True
+        self.join_clock += 1
+        v.join = self.join_clock
+        self.queue_ties = True
+        self.ledger.append(("Q", v.reg))
         self._emit(f"Q {v.id}")
 
     def _sail(self, parts: list[str]) -> None:
@@ -113,43 +126,74 @@ class Engine:
             self._reject(self._echo(parts), "FMT")
             return
         self.c_sail += 1
+        self.ledger.append(("G", 0))
         for v in self.order:
-            v.aboard = False  # last crossing's passengers disembark
+            v.aboard = False
         waiting = [v for v in self.order if v.queued]
-        if not waiting:
-            return  # the sailing departs empty; nothing to print
-        # descending standing lean, ties by registration order; skip
-        # what does not fit and keep going down the list
-        waiting.sort(key=lambda v: (-v.lean, v.reg))
+        # Long-wait vehicles get registration-order priority for this sailing.
+        waiting.sort(key=lambda v: (
+            0 if v.misses >= 3 else 1,
+            v.reg if v.misses >= 3 else -v.lean,
+            v.join if self.queue_ties else v.reg,
+        ))
         used = 0
-        boarded = []
+        boarded = 0
         for v in waiting:
-            if used + v.span <= DECK_CAP:
-                used += v.span
-                boarded.append(v)
+            span = max(1, v.span - (v.crossings >= 3 and v.wear == 0))
+            if used + span <= DECK_CAP:
+                used += span
+                boarded += 1
+                v.lean = 0
+                v.misses = 0
+                v.crossings += 1
+                v.queued = False
+                v.aboard = True
                 self._emit(f"G {v.id}")
-        for v in boarded:
-            v.lean = 0
-            v.queued = False
-            v.aboard = True
-        left = 0
-        for v in waiting:
-            if v.queued:  # left behind at this sailing
-                left += 1
-                v.lean += v.span
-        self._emit(f"GEND {len(boarded)} {left}")
+            else:
+                v.lean += v.span + v.wear
+                v.wear += 1
+                v.misses += 1
+        self._emit(f"GEND {boarded} {len(waiting) - boarded}")
 
     def _square(self, parts: list[str]) -> None:
         if len(parts) != 1:
             self._reject(self._echo(parts), "FMT")
             return
         self.c_sq += 1
-        # the live accrual already follows the ledger rules (span per
-        # missed sailing, reset on boarding), so recomputing the book
-        # reproduces the running values exactly; the squaring squares
-        # the book, it never tilts it
-        positive = sum(1 for v in self.order if v.lean > 0)
-        self._emit(f"KOK {positive}")
+        # Reconcile standing against the original ledger boarding rules.
+        lean = [0] * len(self.order)
+        crossings = [0] * len(self.order)
+        misses = [0] * len(self.order)
+        wear = [0] * len(self.order)
+        queued: set[int] = set()
+        aboard: set[int] = set()
+        for kind, reg in self.ledger:
+            if kind == "Q":
+                if reg not in aboard:
+                    queued.add(reg)
+            elif kind == "G":
+                aboard.clear()
+                used = 0
+                for i in sorted(queued, key=lambda i: (-lean[i], i)):
+                    span = self.order[i].span
+                    if used + span <= DECK_CAP:
+                        used += span
+                        lean[i] = 0
+                        crossings[i] += 1
+                        misses[i] = 0
+                        queued.remove(i)
+                        aboard.add(i)
+                    else:
+                        lean[i] += span
+                        misses[i] += 1
+                        wear[i] += 1
+        for v in self.order:
+            v.lean = lean[v.reg]
+            v.wear = wear[v.reg]
+            v.misses = misses[v.reg]
+            v.crossings = crossings[v.reg]
+        self.queue_ties = False
+        self._emit(f"KOK {sum(value > 0 for value in lean)}")
 
     def finish(self) -> None:
         queued = sum(1 for v in self.order if v.queued)
