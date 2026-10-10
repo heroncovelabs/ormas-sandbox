@@ -891,10 +891,25 @@ def iter_index(iterable, value, start=0, stop=None):
     seq_index = getattr(iterable, 'index', None)
     if seq_index is None:
         # Slow path for general iterables
-        iterator = islice(iterable, start, stop)
-        for i, element in enumerate(iterator, start):
-            if element is value or element == value:
-                yield i
+        iterator = iter(iterable)
+        n = _index(start)
+        if start < 0 or (stop is not None and stop < 0):
+            # Negative bounds count back from the end of the iterable, so
+            # materialize it once to resolve them like sequence.index does.
+            iterator = list(iterator)
+            length = len(iterator)
+            n = max(0, start + length) if start < 0 else start
+            m = stop if stop is None else max(0, stop + length)
+        elif stop is None:
+            m = None
+        else:
+            m = _index(stop)
+            if m < n:
+                return
+        for i, element in enumerate(iterator):
+            if i >= n and (m is None or i < m):
+                if element is value or element == value:
+                    yield i
     else:
         # Fast path for sequences
         stop = len(iterable) if stop is None else stop
