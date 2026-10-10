@@ -1,0 +1,2 @@
+bugfixes:
+  - human_to_bytes - reject malformed size strings, leading whitespace, non-ASCII digits, and unrecognized unit names instead of returning a partial conversion.
