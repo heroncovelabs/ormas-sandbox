@@ -1,0 +1,25 @@
+{
+  "task_id": "nx-digraph-node-connectivity",
+  "vulcanbench_revision": "36e2764128f1010b9590714e851ac9dfda95ff68",
+  "upstream_base": "1dda6d2fa692ce82521fa2536f9149d1433b4093",
+  "instruction_sha256": "a2b984f64c9edcff44dbab96a19e1c632e42fd920822f2acaa607a2f0f8fcd93",
+  "acceptance_sha256": "a9d0223759bacc4e80b8682702d31308dde286f8856ee936d4ba3aefdce2590b",
+  "dependency_lock_sha256": "76331234e58f37d760b7d8391f2ff560dea4cace5721d9ed6538d29eb4644b61",
+  "raw_public_verifier_command": "python3 -m pytest -q -p no:cacheprovider ormas_acceptance/test_instruction_nx_digraph_node_connectivity.py networkx/algorithms/connectivity/tests/test_connectivity.py networkx/algorithms/connectivity/tests/test_cuts.py",
+  "outcomes_verifier_command": "python3 -m pytest -q -p no:cacheprovider ormas_acceptance_driver.py",
+  "acceptance_paths": [
+    "ormas_acceptance_driver.py",
+    "ormas_acceptance/test_instruction_nx_digraph_node_connectivity.py",
+    "networkx/algorithms/connectivity/tests/test_connectivity.py",
+    "networkx/algorithms/connectivity/tests/test_cuts.py"
+  ],
+  "authored_by": "Ormas, AI-assisted; human review pending",
+  "authored_from": "public instruction and pristine public upstream code/regression tests only",
+  "private_hidden_or_gold_opened_during_authoring": false,
+  "official_hidden_scoring_included": false,
+  "library_source_modified": false,
+  "local_python_version": "3.12.12",
+  "local_only_qualification": true,
+  "public_base_acceptance_failed": 4,
+  "pristine_public_regressions_passed": 55
+}
