@@ -75,6 +75,12 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     test_now_utc_template = "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'"
 
     django_test_skips = {
+        "Oracle doesn't support collations on ForeignKeys.": {
+            "migrations.test_operations.OperationTests."
+            "test_alter_field_pk_fk_db_collation",
+            "migrations.test_operations.OperationTests."
+            "test_create_fk_models_to_pk_field_db_collation",
+        },
         "Oracle doesn't support SHA224.": {
             "db_functions.text.test_sha224.SHA224Tests.test_basic",
             "db_functions.text.test_sha224.SHA224Tests.test_transform",
