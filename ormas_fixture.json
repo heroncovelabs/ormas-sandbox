@@ -1,0 +1,24 @@
+{
+  "task_id": "sympy-monotonic-sign-signed-groups",
+  "vulcanbench_revision": "36e2764128f1010b9590714e851ac9dfda95ff68",
+  "upstream_base": "33231a3fb5895da109da8541434fd2f5d526d8fc",
+  "instruction_sha256": "197c36adbe8b6cfdcc4ede28a6e0454b01ec6c74fcaeab58b319e79720cd4826",
+  "acceptance_sha256": "1ade7ae38b6fde3d647bb7094d950b5d5b9af775a9598ec7b32e93e277a39a05",
+  "dependency_lock_sha256": "c7b714bd198f1444c1e2ab0da72befd97308d1f250c4ff32ad9fc5803edfa10a",
+  "raw_public_verifier_command": "python3 -m pytest -q -p no:cacheprovider ormas_acceptance/test_instruction_sympy_monotonic_sign_signed_groups.py sympy/core/tests/test_exprtools.py",
+  "outcomes_verifier_command": "python3 -m pytest -q -p no:cacheprovider ormas_acceptance_driver.py",
+  "acceptance_paths": [
+    "ormas_acceptance_driver.py",
+    "ormas_acceptance/test_instruction_sympy_monotonic_sign_signed_groups.py",
+    "sympy/core/tests/test_exprtools.py"
+  ],
+  "authored_by": "Ormas, AI-assisted; human review pending",
+  "authored_from": "public instruction and pristine public upstream code/regression tests only",
+  "private_hidden_or_gold_opened_during_authoring": false,
+  "official_hidden_scoring_included": false,
+  "library_source_modified": false,
+  "local_python_version": "3.12.12",
+  "local_only_qualification": true,
+  "public_base_acceptance_failed": 4,
+  "pristine_public_regressions_passed": 14
+}
