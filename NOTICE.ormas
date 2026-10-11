@@ -1,0 +1,18 @@
+Ormas Frontier v5 pilot fixture: nx-group-betweenness-epic
+
+Public VulcanBench instruction, Apache-2.0, revision 36e2764128f1010b9590714e851ac9dfda95ff68.
+Retain LICENSE.vulcanbench and NOTICE.vulcanbench. Upstream library source
+and licences are copied byte-exact at a7d049b4992a1f7e9bd376ce7378d3825d0cfa0e, with flattened history.
+Added by Ormas: instruction-derived public acceptance, a public-only Outcomes
+bridge adapter, hashed dependency lock, this notice and fixture provenance.
+No library implementation or pristine public regression test was changed.
+
+The acceptance tests are independently AI-authored by Ormas under owner Option A,
+for local human review, not VulcanBench's official scoring tests or a leaderboard.
+During this authoring run no private hidden directory, gold scoring test or
+solution file was opened, read, paraphrased or mirrored. Their contents are not
+included. Authoring inputs were only the public instruction and pristine public
+upstream source/regressions. Dependency pins follow the approved public pilot plan.
+Hidden scoring is a separate later operator-local step; public acceptance is not
+an official VulcanBench hidden score. Evaluation assets must not enter training
+or employee-memory/RSI ingestion. No upstream issue or pull request is being made.

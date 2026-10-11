@@ -1,0 +1,24 @@
+{
+  "task_id": "nx-group-betweenness-epic",
+  "vulcanbench_revision": "36e2764128f1010b9590714e851ac9dfda95ff68",
+  "upstream_base": "a7d049b4992a1f7e9bd376ce7378d3825d0cfa0e",
+  "instruction_sha256": "e06fa496370396cbda8f5d5d8d5209e2566b6de9de4dbc69bbc698ae6db7d538",
+  "acceptance_sha256": "d4ddd6e7e11bf7d8e97f50f86b1aaa69868116f5bfa604ee9a979f25102fb5a1",
+  "dependency_lock_sha256": "f46a39a441373e963a8610f4cfb6ed0979116e34b720ec3fe10270eb7690ead3",
+  "raw_public_verifier_command": "python3 -m pytest -q -p no:cacheprovider ormas_acceptance/test_instruction_nx_group_betweenness_epic.py networkx/algorithms/centrality/tests/test_group.py",
+  "outcomes_verifier_command": "python3 -m pytest -q -p no:cacheprovider ormas_acceptance_driver.py",
+  "acceptance_paths": [
+    "ormas_acceptance_driver.py",
+    "ormas_acceptance/test_instruction_nx_group_betweenness_epic.py",
+    "networkx/algorithms/centrality/tests/test_group.py"
+  ],
+  "authored_by": "Ormas, AI-assisted; human review pending",
+  "authored_from": "public instruction and pristine public upstream code/regression tests only",
+  "private_hidden_or_gold_opened_during_authoring": false,
+  "official_hidden_scoring_included": false,
+  "library_source_modified": false,
+  "local_python_version": "3.12.12",
+  "local_only_qualification": true,
+  "public_base_acceptance_failed": 3,
+  "pristine_public_regressions_passed": 24
+}
