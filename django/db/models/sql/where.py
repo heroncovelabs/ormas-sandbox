@@ -187,6 +187,12 @@ class WhereNode(tree.Node):
             cols.extend(child.get_group_by_cols())
         return cols
 
+    def get_refs(self):
+        refs = set()
+        for child in self.children:
+            refs.update(child.get_refs())
+        return refs
+
     def get_source_expressions(self):
         return self.children[:]
 

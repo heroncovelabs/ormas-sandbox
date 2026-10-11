@@ -420,6 +420,13 @@ class BaseExpression:
         )
         return clone
 
+    def get_refs(self):
+        refs = set()
+        for expr in self.get_source_expressions():
+            if expr is not None:
+                refs.update(expr.get_refs())
+        return refs
+
     def get_group_by_cols(self):
         if not self.contains_aggregate:
             return [self]
@@ -1166,6 +1173,9 @@ class Ref(Expression):
         # The sub-expression `source` has already been resolved, as this is
         # just a reference to the name of `source`.
         return self
+
+    def get_refs(self):
+        return {self.refs}
 
     def relabeled_clone(self, relabels):
         return self
