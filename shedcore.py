@@ -32,10 +32,12 @@ def _digits(token: str) -> bool:
 class Tool:
     def __init__(self, grade: int, index: int) -> None:
         self.grade = grade
-        self.index = index  # registration order, for rota tie-breaks
+        self.index = index  # registration order, for final rota tie-breaks
+        self.stamp = 0  # most recent accepted return
+        self.serviced = 0  # lifetime service count
         self.duty = 0  # service duty owed
-        self.accrued = 0  # ledger: duty accrued since the last reckoning
-        self.cleared = 0  # ledger: duty cleared by rotas since the last one
+        self.accrued = 0  # lifetime return ledger
+        self.cleared = 0  # lifetime duty cleared by rotas
         self.loaned_by: str | None = None
         self.loan_days = 0
 
@@ -46,6 +48,8 @@ class Engine:
     def __init__(self) -> None:
         self.tools: dict[str, Tool] = {}
         self.members: set[str] = set()
+        self.member_load: dict[str, int] = {}
+        self.heavy_members: set[str] = set()
         self.registered = 0
         self.enrolled = 0
         self.loans = 0
@@ -55,7 +59,10 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        # The controller ends a record at LF, CR, or NUL and separates
+        # fields with ASCII spaces only.
+        line = line.split("\n", 1)[0].split("\r", 1)[0].split("\0", 1)[0]
+        tokens = [token for token in line.split(" ") if token]
         if not tokens:
             return ""
         if tokens[0] == "T":
@@ -111,6 +118,7 @@ class Engine:
         if tokens[1] in self.members:
             return f"N {ident} DUP"
         self.members.add(tokens[1])
+        self.member_load[tokens[1]] = 0
         self.enrolled += 1
         return f"OK {len(self.members)}"
 
@@ -136,6 +144,13 @@ class Engine:
             return f"N {ident} OUT"
         t.loaned_by = tokens[1]
         t.loan_days = int(days)
+        earned = t.loan_days * t.grade
+        if t.serviced >= 3:
+            earned //= 2
+        t.duty += earned
+        self.member_load[tokens[1]] += 1
+        if self.member_load[tokens[1]] >= 3:
+            self.heavy_members.add(tokens[1])
         self.loans += 1
         return f"L {tokens[1]} {tokens[2]}"
 
@@ -152,10 +167,17 @@ class Engine:
             return f"N {ident} UNKNOWN"
         if t.loaned_by != tokens[1]:
             return f"N {ident} NOLOAN"
-        # Duty accrues when the tool comes back: days x grade.
-        earned = t.loan_days * t.grade
+        # Returns add a grade bonus to live duty; the ledger records
+        # the full stated loan independently of live accrual.
+        earned = 2 * t.grade
+        if tokens[1] in self.heavy_members:
+            earned += 5
+        if t.serviced >= 3:
+            earned //= 2
         t.duty += earned
-        t.accrued += earned
+        t.accrued += t.loan_days * t.grade
+        self.member_load[tokens[1]] -= 1
+        t.stamp = self.returns + 1
         t.loaned_by = None
         t.loan_days = 0
         self.returns += 1
@@ -166,17 +188,15 @@ class Engine:
             return f"N {NO_ID} FMT"
         rota = sorted(
             ((name, t) for name, t in self.tools.items() if t.duty > 0),
-            key=lambda item: (-item[1].duty, item[1].index),
+            key=lambda item: (-item[1].duty, -item[1].stamp, item[1].index),
         )
         self.services += 1
-        if not rota:
-            # No tool owes service: there is no rota to emit or close.
-            return ""
         lines = []
         for name, t in rota:
             lines.append(f"S {name}")
             t.cleared += t.duty
             t.duty = 0
+            t.serviced += 1
         lines.append(f"SEND {len(rota)}")
         return "\n".join(lines)
 
@@ -185,13 +205,9 @@ class Engine:
             return f"N {NO_ID} FMT"
         positive = 0
         for t in self.tools.values():
-            # Recompute duty from the ledger since the last reckoning:
-            # what accrued, minus what the rotas cleared. The reckoning
-            # is an audit, not a revision: it always agrees with the
-            # live figure.
+            # Reckon from the cumulative ledger and clear return recency.
             t.duty = t.accrued - t.cleared
-            t.accrued = 0
-            t.cleared = 0
+            t.stamp = 0
             if t.duty > 0:
                 positive += 1
         self.reckonings += 1
@@ -216,7 +232,9 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Read LF-delimited bytes so embedded CR is handled by the protocol parser.
+    lines = [raw.decode("utf-8", "surrogateescape") for raw in sys.stdin.buffer]
+    process(lines, out=sys.stdout)
 
 
 if __name__ == "__main__":
