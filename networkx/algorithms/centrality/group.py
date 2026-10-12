@@ -76,8 +76,8 @@ def group_betweenness_centrality(G, C, normalized=True, weight=None, endpoints=F
     Notes
     -----
     Group betweenness centrality is described in [1]_ and its importance discussed in [3]_.
-    The initial implementation of the algorithm is mentioned in [2]_. This function uses
-    an improved algorithm presented in [4]_.
+    This function uses the shortest-path algorithms described in [2]_ and counts
+    paths passing through the group on each source's shortest-path DAG.
 
     The number of nodes in the group must be a maximum of n - 2 where `n`
     is the total number of nodes in the graph.
@@ -114,85 +114,57 @@ def group_betweenness_centrality(G, C, normalized=True, weight=None, endpoints=F
        https://journals.aps.org/pre/pdf/10.1103/PhysRevE.76.056709
 
     """
-    GBC = []  # initialize betweenness
     list_of_groups = True
-    #  check weather C contains one or many groups
+    # Check whether C contains one group or several groups.
+    C = list(C)
     if any(el in G for el in C):
         C = [C]
         list_of_groups = False
-    set_v = {node for group in C for node in group}
-    if set_v - G.nodes:  # element(s) of C not in G
+    groups = [set(group) for group in C]
+    set_v = {node for group in groups for node in group}
+    if set_v - G.nodes:
         raise nx.NodeNotFound(f"The node(s) {set_v - G.nodes} are in C but not in G.")
 
-    # pre-processing
-    PB, sigma, D = _group_preprocessing(G, set_v, weight)
+    GBC = [0.0 for group in groups]
+    for s in G:
+        if weight is None:
+            S, P, _, _ = _single_source_shortest_path_basic(G, s)
+        else:
+            S, P, _, _ = _single_source_dijkstra_path_basic(G, s, weight)
 
-    # the algorithm for each group
-    for group in C:
-        group = set(group)  # set of nodes in group
-        # initialize the matrices of the sigma and the PB
-        GBC_group = 0
-        sigma_m = deepcopy(sigma)
-        PB_m = deepcopy(PB)
-        sigma_m_v = deepcopy(sigma_m)
-        PB_m_v = deepcopy(PB_m)
-        for v in group:
-            GBC_group += PB_m[v][v]
-            for x in group:
-                for y in group:
-                    dxvy = 0
-                    dxyv = 0
-                    dvxy = 0
-                    if not (
-                        sigma_m[x][y] == 0 or sigma_m[x][v] == 0 or sigma_m[v][y] == 0
-                    ):
-                        if D[x][v] == D[x][y] + D[y][v]:
-                            dxyv = sigma_m[x][y] * sigma_m[y][v] / sigma_m[x][v]
-                        if D[x][y] == D[x][v] + D[v][y]:
-                            dxvy = sigma_m[x][v] * sigma_m[v][y] / sigma_m[x][y]
-                        if D[v][y] == D[v][x] + D[x][y]:
-                            dvxy = sigma_m[v][x] * sigma[x][y] / sigma[v][y]
-                    sigma_m_v[x][y] = sigma_m[x][y] * (1 - dxvy)
-                    PB_m_v[x][y] = PB_m[x][y] - PB_m[x][y] * dxvy
-                    if y != v:
-                        PB_m_v[x][y] -= PB_m[x][v] * dxyv
-                    if x != v:
-                        PB_m_v[x][y] -= PB_m[v][y] * dvxy
-            sigma_m, sigma_m_v = sigma_m_v, sigma_m
-            PB_m, PB_m_v = PB_m_v, PB_m
+        # S orders reachable nodes after their shortest-path predecessors.
+        # Count paths with integers, using the same DAG for every group.
+        sigma = {s: 1}
+        for node in S[1:]:
+            sigma[node] = sum(sigma[pred] for pred in P[node])
 
-        # endpoints
-        v, c = len(G), len(group)
-        if not endpoints:
-            scale = 0
-            # if the graph is connected then subtract the endpoints from
-            # the count for all the nodes in the graph. else count how many
-            # nodes are connected to the group's nodes and subtract that.
-            if nx.is_directed(G):
-                if nx.is_strongly_connected(G):
-                    scale = c * (2 * v - c - 1)
-            elif nx.is_connected(G):
-                scale = c * (2 * v - c - 1)
-            if scale == 0:
-                for group_node1 in group:
-                    for node in D[group_node1]:
-                        if node != group_node1:
-                            if node in group:
-                                scale += 1
-                            else:
-                                scale += 2
-            GBC_group -= scale
+        for i, group in enumerate(groups):
+            if s in group:
+                if endpoints:
+                    GBC[i] += len(S) - 1
+                continue
 
-        # normalized
+            # Once a path reaches the group it stays counted, including paths
+            # that visit several group members. Membership alone determines
+            # the count, so the order of the group's nodes has no effect.
+            sigma_through = {s: 0}
+            for node in S[1:]:
+                if node in group:
+                    sigma_through[node] = sigma[node]
+                else:
+                    sigma_through[node] = sum(
+                        sigma_through[pred] for pred in P[node]
+                    )
+                if endpoints or node not in group:
+                    GBC[i] += sigma_through[node] / sigma[node]
+
+    for i, group in enumerate(groups):
         if normalized:
-            scale = 1 / ((v - c) * (v - c - 1))
-            GBC_group *= scale
-
-        # If undirected than count only the undirected edges
+            outside = len(G) - len(group)
+            GBC[i] /= outside * (outside - 1)
         elif not G.is_directed():
-            GBC_group /= 2
+            GBC[i] /= 2
 
-        GBC.append(GBC_group)
     if list_of_groups:
         return GBC
     return GBC[0]
