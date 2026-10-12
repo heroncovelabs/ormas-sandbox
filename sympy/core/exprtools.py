@@ -48,6 +48,8 @@ def _monotonic_sign(self):
     - M(x, y, ...) + A: a monomial M whose factors are all signed and a constant, A.
     - A/M(x, y, ...) + B: the inverse of a monomial and constants A and B.
     - P(x): a univariate polynomial
+    - T1 + T2 + ...: a sum of terms with the same sign, whose bounds can
+      be added.
 
     Examples
     ========
@@ -174,6 +176,27 @@ def _monotonic_sign(self):
 
     # multivariate
     c, a = self.as_coeff_Add()
+    if not c and self.is_Add and (
+            all(t.is_extended_nonnegative for t in self.args) or
+            all(t.is_extended_nonpositive for t in self.args)):
+        bounds = []
+        for term in self.args:
+            coeff, factor = term.as_coeff_Mul()
+            if factor.as_numer_denom()[1].is_number:
+                bound = _monotonic_sign(factor)
+                if bound is None:
+                    return
+            else:
+                # A reciprocal's sign gives a zero bound; its value at
+                # the numerator and denominator bounds need not be a bound.
+                if factor.is_positive:
+                    bound = _eps
+                elif factor.is_negative:
+                    bound = -_eps
+                else:
+                    bound = S.Zero
+            bounds.append(coeff*bound)
+        return Add(*bounds)
     v = None
     if not a.is_polynomial():
         # F/A or A/F where A is a number and F is a signed, rational monomial
