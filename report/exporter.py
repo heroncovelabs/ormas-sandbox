@@ -27,4 +27,17 @@ def to_csv(rows: List[Row]) -> str:
     The first line is the header (column names); one line follows per row.
     Not implemented yet — see issue.md.
     """
-    raise NotImplementedError("CSV export is not implemented yet")
+    columns = _columns(rows)
+    if not columns:
+        return ""
+
+    def esc(value) -> str:
+        text = "" if value is None else str(value)
+        if any(c in text for c in ',"\r\n'):
+            text = '"' + text.replace('"', '""') + '"'
+        return text
+
+    lines = [",".join(esc(c) for c in columns)]
+    for row in rows:
+        lines.append(",".join(esc(row.get(c)) for c in columns))
+    return "".join(line + "\r\n" for line in lines)
