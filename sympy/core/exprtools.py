@@ -47,6 +47,8 @@ def _monotonic_sign(self):
       of values for the variables.
     - M(x, y, ...) + A: a monomial M whose factors are all signed and a constant, A.
     - A/M(x, y, ...) + B: the inverse of a monomial and constants A and B.
+    - A sum of terms with the same sign and an additive constant, using
+      the sum of the individual closest-to-zero bounds.
     - P(x): a univariate polynomial
 
     Examples
@@ -175,6 +177,45 @@ def _monotonic_sign(self):
     # multivariate
     c, a = self.as_coeff_Add()
     v = None
+    if a.is_Add:
+        # Bounds can be added only when they all point in the same
+        # direction. In particular, a negative term's closest-to-zero
+        # value is not a lower bound for a mixed-sign sum.
+        terms = a.args
+        nonnegative = all(t.is_nonnegative for t in terms)
+        nonpositive = all(t.is_nonpositive for t in terms)
+        if nonnegative or nonpositive:
+            bounds = []
+            for term in terms:
+                coeff, factor = term.as_coeff_Mul()
+                if factor.as_numer_denom()[1].is_number:
+                    bound = _monotonic_sign(factor)
+                else:
+                    # A reciprocal can approach zero as its denominator
+                    # grows. Its value at the denominator's closest-to-zero
+                    # point must not be used as a bound for this sum.
+                    if factor.is_positive:
+                        bound = _eps
+                    elif factor.is_negative:
+                        bound = -_eps
+                    else:
+                        bound = S.Zero
+                if bound is None:
+                    return
+                bounds.append(coeff*bound)
+            v = Add(*bounds)
+            if not c:
+                return v
+            rv = v + c
+            if nonnegative and rv.is_nonnegative:
+                if rv.is_zero:
+                    return Dummy('nneg', nonnegative=True)
+                return rv
+            if nonpositive and rv.is_nonpositive:
+                if rv.is_zero:
+                    return Dummy('npos', nonpositive=True)
+                return rv
+            return
     if not a.is_polynomial():
         # F/A or A/F where A is a number and F is a signed, rational monomial
         n, d = a.as_numer_denom()
