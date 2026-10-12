@@ -204,6 +204,47 @@ def local_node_connectivity(
     return nx.maximum_flow_value(H, f"{mapping[s]}B", f"{mapping[t]}A", **kwargs)
 
 
+def _node_connectivity_candidates(G):
+    """Return a neighborhood cut and the terminal pairs of algorithm 11."""
+    if G.is_directed():
+
+        def neighborhood(v):
+            predecessors = set(G.predecessors(v)) - {v}
+            successors = set(G.successors(v)) - {v}
+            return min((predecessors, successors), key=len)
+
+    else:
+
+        def neighborhood(v):
+            return set(G[v]) - {v}
+
+    # Distinct neighbors, not edge degrees, bound node connectivity. In a
+    # digraph either the predecessors or the successors isolate their node.
+    v = min(G, key=lambda u: len(neighborhood(u)))
+    cut = neighborhood(v)
+    if G.is_directed():
+        adjacent = (set(G.predecessors(v)) | set(G.successors(v))) - {v}
+        pairs = itertools.chain(
+            ((v, w) for w in G if w != v and not G.has_edge(v, w)),
+            ((w, v) for w in G if w != v and not G.has_edge(w, v)),
+            (
+                (x, y)
+                for x, y in itertools.permutations(adjacent, 2)
+                if not G.has_edge(x, y)
+            ),
+        )
+    else:
+        pairs = itertools.chain(
+            ((v, w) for w in G if w != v and w not in cut),
+            (
+                (x, y)
+                for x, y in itertools.combinations(cut, 2)
+                if not G.has_edge(x, y)
+            ),
+        )
+    return cut, pairs
+
+
 @nx._dispatchable
 def node_connectivity(G, s=None, t=None, flow_func=None):
     r"""Returns node connectivity for a graph or digraph G.
@@ -308,39 +349,26 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
 
     # Global node connectivity
     if G.is_directed():
-        if not nx.is_weakly_connected(G):
+        if not nx.is_strongly_connected(G):
             return 0
-        iter_func = itertools.permutations
-        # It is necessary to consider both predecessors
-        # and successors for directed graphs
+    elif not nx.is_connected(G):
+        return 0
 
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
-
-    else:
-        if not nx.is_connected(G):
-            return 0
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+    cut, pairs = _node_connectivity_candidates(G)
+    K = len(cut)
+    if K == 0:
+        return K
 
     # Reuse the auxiliary digraph and the residual network
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Pick a node with minimum degree
-    # Node connectivity is bounded by degree.
-    v, K = min(G.degree(), key=itemgetter(1))
-    # compute local node connectivity with all its non-neighbors nodes
-    for w in set(G) - set(neighbors(v)) - {v}:
-        kwargs["cutoff"] = K
-        K = min(K, local_node_connectivity(G, v, w, **kwargs))
-    # Also for non adjacent pairs of neighbors of v
-    for x, y in iter_func(neighbors(v), 2):
-        if y in G[x]:
-            continue
+    for x, y in pairs:
         kwargs["cutoff"] = K
         K = min(K, local_node_connectivity(G, x, y, **kwargs))
+        if K == 0:
+            break
 
     return K
 
