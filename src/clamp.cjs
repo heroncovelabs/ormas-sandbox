@@ -3,7 +3,7 @@ const isNumber = require('is-number');
 
 // Clamp value into the inclusive range [min, max].
 function clamp(value, min, max) {
-  return value;
+  return Math.min(max, Math.max(min, value));
 }
 
 const [value, min, max] = process.argv.slice(2);
