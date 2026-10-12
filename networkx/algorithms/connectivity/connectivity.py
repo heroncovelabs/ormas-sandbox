@@ -3,7 +3,6 @@ Flow based connectivity algorithms
 """
 
 import itertools
-from operator import itemgetter
 
 import networkx as nx
 
@@ -204,12 +203,46 @@ def local_node_connectivity(
     return nx.maximum_flow_value(H, f"{mapping[s]}B", f"{mapping[t]}A", **kwargs)
 
 
+def _node_connectivity_candidates(G):
+    """Return a neighbor cut and the pairs to check for a smaller cut."""
+    if G.is_directed():
+        # Either the predecessors or the successors form a valid node cut.
+        # Distinct neighbors give a bound independent of loops and multiedges.
+        v, cut = min(
+            (
+                (v, set(neighbors(v)) - {v})
+                for v in G
+                for neighbors in (G.predecessors, G.successors)
+            ),
+            key=lambda item: len(item[1]),
+        )
+        neighbors = (set(G.predecessors(v)) | set(G.successors(v))) - {v}
+        # A separating set that excludes v is detected by one of the two
+        # orderings involving v. If it contains v, a smaller cut must separate
+        # surviving neighbors of v: adding v can only join their components.
+        pairs = itertools.chain(
+            ((v, w) for w in G if w != v),
+            ((w, v) for w in G if w != v),
+            itertools.permutations(neighbors, 2),
+        )
+    else:
+        v = min(G, key=lambda v: len(G[v]) - (v in G[v]))
+        cut = set(G[v]) - {v}
+        pairs = itertools.chain(
+            ((v, w) for w in G if w != v and w not in cut),
+            itertools.combinations(cut, 2),
+        )
+    # A direct edge cannot be separated by removing intermediate nodes.
+    return cut, ((s, t) for s, t in pairs if not G.has_edge(s, t))
+
+
 @nx._dispatchable
 def node_connectivity(G, s=None, t=None, flow_func=None):
     r"""Returns node connectivity for a graph or digraph G.
 
     Node connectivity is equal to the minimum number of nodes that
-    must be removed to disconnect G or render it trivial. If source
+    must be removed to disconnect G or render it trivial. For directed
+    graphs, disconnection means loss of strong connectivity. If source
     and target nodes are provided, this function returns the local node
     connectivity: the minimum number of nodes that must be removed to break
     all paths from source to target in G.
@@ -272,11 +305,14 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
 
     Notes
     -----
-    This is a flow based implementation of node connectivity. The
-    algorithm works by solving $O((n-\delta-1+\delta(\delta-1)/2))$
-    maximum flow problems on an auxiliary digraph. Where $\delta$
-    is the minimum degree of G. For details about the auxiliary
-    digraph and the computation of local node connectivity see
+    This is a flow based implementation of node connectivity. For
+    undirected graphs, the algorithm solves
+    $O((n-\delta-1+\delta(\delta-1)/2))$ maximum flow problems on an
+    auxiliary digraph, where $\delta$ is the minimum number of distinct
+    neighbors in G. For directed graphs, both orderings of pairs involving
+    a minimum-degree node and pairs among its distinct predecessors and
+    successors are considered. For details about the auxiliary digraph
+    and the computation of local node connectivity see
     :meth:`local_node_connectivity`. This implementation is based
     on algorithm 11 in [1]_.
 
@@ -307,40 +343,25 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
         return local_node_connectivity(G, s, t, flow_func=flow_func)
 
     # Global node connectivity
-    if G.is_directed():
-        if not nx.is_weakly_connected(G):
-            return 0
-        iter_func = itertools.permutations
-        # It is necessary to consider both predecessors
-        # and successors for directed graphs
+    is_connected = nx.is_strongly_connected if G.is_directed() else nx.is_connected
+    if not is_connected(G):
+        return 0
 
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
-
-    else:
-        if not nx.is_connected(G):
-            return 0
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+    cut, pairs = _node_connectivity_candidates(G)
+    K = len(cut)
+    if K <= 1:
+        return K
 
     # Reuse the auxiliary digraph and the residual network
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Pick a node with minimum degree
-    # Node connectivity is bounded by degree.
-    v, K = min(G.degree(), key=itemgetter(1))
-    # compute local node connectivity with all its non-neighbors nodes
-    for w in set(G) - set(neighbors(v)) - {v}:
-        kwargs["cutoff"] = K
-        K = min(K, local_node_connectivity(G, v, w, **kwargs))
-    # Also for non adjacent pairs of neighbors of v
-    for x, y in iter_func(neighbors(v), 2):
-        if y in G[x]:
-            continue
+    for x, y in pairs:
         kwargs["cutoff"] = K
         K = min(K, local_node_connectivity(G, x, y, **kwargs))
+        if K == 1:
+            break
 
     return K
 
