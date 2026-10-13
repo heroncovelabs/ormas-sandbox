@@ -1,0 +1,2 @@
+bugfixes:
+  - human_to_bytes - validate the complete input as an ASCII decimal number with an optional recognized unit, rejecting malformed numbers, leading whitespace, and arbitrary unit names (https://github.com/ansible/ansible/issues/82075).

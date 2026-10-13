@@ -7,8 +7,13 @@ DOCUMENTATION:
   positional: _input, default_unit, isbits
   options:
     _input:
-      description: human-readable description of a number of bytes.
-      type: int
+      description:
+        - An ASCII decimal number, optionally followed by a recognized unit and trailing ASCII spaces.
+        - ASCII spaces may separate the number and unit. The number must begin at the start of the input.
+        - Units may be a single size letter, such as V(K), an abbreviation, such as V(KB), or a full name, such as V(kilobyte) or V(kilobytes).
+        - Full unit names are case-insensitive. Abbreviations use V(B) for bytes and V(b) for bits.
+        - Malformed numbers and unrecognized units raise an error.
+      type: str
       required: true
     default_unit:
       description: Unit to assume when input does not specify it.
