@@ -8,17 +8,37 @@ the engine's behavior is the contract).
 
 from __future__ import annotations
 
-import math
 import sys
 
 QUOTAS = {"F": 10_000, "S": 100_000, "P": 1_000_000}
 RATES = {"F": 12, "S": 9, "P": 6}
+TIERS = "FSP"
+MAX_KEYS = 4096
+WHITESPACE = " \t\r\n\v\f"
+
+
+def _fields(line: str) -> list[str]:
+    """Reproduce the reference's bounded, ASCII-whitespace token scans."""
+    parts = []
+    pos = 0
+    for width in (7, 63, 63, 63, 63):
+        while pos < len(line) and line[pos] in WHITESPACE:
+            pos += 1
+        start = pos
+        while (pos < len(line) and pos - start < width
+               and line[pos] not in WHITESPACE):
+            pos += 1
+        if start == pos:
+            break
+        parts.append(line[start:pos])
+    return parts
 
 
 class Engine:
     def __init__(self, out=None):
         self.tier: dict[str, str] = {}
         self.used: dict[str, int] = {}
+        self.names: dict[str, str] = {}
         self.count_ok = 0
         self.count_rej = 0
         self.sum_charges = 0
@@ -32,42 +52,65 @@ class Engine:
         self.count_rej += 1
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
-        if not parts:
+        line = line.partition("\0")[0].partition("\r")[0].partition("\n")[0]
+        if not line:
             return
+        parts = _fields(line)
         key = parts[1] if len(parts) > 1 else ""
-        key_ok = 1 <= len(key) <= 8 and key.isalnum()
-        if parts[0] != "Q" or len(parts) != 5 or not key_ok:
-            self._emit(f"R {key if key_ok else '????????'} FMT")
-            self.count_rej += 1
+        key_ok = 1 <= len(key) <= 8 and key.isascii() and key.isalnum()
+        if len(parts) < 5 or parts[0] != "Q" or not key_ok:
+            self._reject(key if key_ok else "????????", "FMT")
             return
         _, key, calls_tok, tier, region = parts
-        if not (calls_tok.isdigit() and 1 <= len(calls_tok) <= 7):
+        if not (calls_tok.isascii() and calls_tok.isdigit()
+                and 1 <= len(calls_tok) <= 7):
             self._reject(key, "CALLS")
             return
         calls = int(calls_tok)
-        if tier not in ("F", "S", "P"):
+        if tier not in QUOTAS:
             self._reject(key, "TIER")
             return
-        if not (len(region) == 2 and region.isalpha() and region.isupper()):
+        if not (len(region) == 2 and region.isascii() and region.isalpha()):
             self._reject(key, "REGION")
             return
-
-        if key not in self.tier:
-            self.tier[key] = tier
-            self.used[key] = 0
-        elif tier != self.tier[key]:
-            self._reject(key, "TIER")
+        # Heartbeats validate their fields, then leave all key state untouched.
+        if calls == 0:
             return
 
-        limit = QUOTAS[self.tier[key]]
-        used = self.used[key]
+        identity = key.upper()
+        first = identity not in self.tier
+        if first:
+            if len(self.tier) >= MAX_KEYS:
+                self._reject(key, "FMT")
+                return
+            self.names[identity] = key
+            self.tier[identity] = tier
+            self.used[identity] = 0
+        else:
+            key = self.names[identity]
+            step = TIERS.index(tier) - TIERS.index(self.tier[identity])
+            if step not in (0, 1):
+                self._reject(key, "TIER")
+                return
+            self.tier[identity] = tier
+
+        limit = QUOTAS[tier]
+        used = self.used[identity]
+        if first and calls <= limit:
+            # Carry the first event's burst bank across subsequent upgrades.
+            used -= calls // 10
         within = max(0, min(calls, limit - used))
         over = calls - within
-        charge = math.ceil(over / 100) * RATES[self.tier[key]]
-        self.used[key] = used + calls
+        if 0 < used < limit and used + calls > limit:
+            over = calls
+        blocks = (over + 99) // 100
+        if over % 100 == 50:
+            blocks -= 1
+        rate = 5 if tier == "P" and region.upper() in ("BR", "IN") else RATES[tier]
+        charge = blocks * rate
+        self.used[identity] = used + calls
 
-        left = max(0, limit - self.used[key])
+        left = max(0, limit - self.used[identity])
         self._emit(f"B {key} {charge} {left}")
         self.count_ok += 1
         self.sum_charges += charge
@@ -78,8 +121,10 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    # The reference uses fgets with a 512-byte buffer. Decode one byte per
+    # character so scan widths and ASCII validation also match on UTF-8 input.
+    for line in iter(lambda: sys.stdin.buffer.readline(511), b""):
+        engine.handle(line.decode("latin1"))
     engine.finish()
 
 
