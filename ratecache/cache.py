@@ -22,7 +22,10 @@ class TTLCache:
         entry = self._store.get(key)
         if entry is None:
             return None
-        value, _expires_at = entry
+        value, expires_at = entry
+        if clock.now_seconds() >= expires_at:
+            del self._store[key]
+            return None
         return value
 
     def __len__(self) -> int:
