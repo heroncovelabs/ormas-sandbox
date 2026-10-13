@@ -770,11 +770,14 @@ def nthroot_mod(a, n, p, all_roots=False):
     a, n, p = as_int(a), as_int(n), as_int(p)
     if n == 2:
         return sqrt_mod(a, p, all_roots)
+    if not isprime(p):
+        from sympy.polys.galoistools import gf_csolve
+        return gf_csolve([1] + [0]*(n - 1) + [-a], p)
+    if a % p == 0:
+        return [0] if all_roots else 0
     # see Hackman "Elementary Number Theory" (2009), page 76
     if not is_nthpow_residue(a, n, p):
         return None
-    if not isprime(p):
-        raise NotImplementedError("Not implemented for composite p")
 
     if (p - 1) % n == 0:
         return _nthroot_mod1(a, n, p, all_roots)
