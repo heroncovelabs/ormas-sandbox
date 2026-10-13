@@ -931,6 +931,9 @@ class Parser:
         TokenType.PIPE: exp.BitwiseOr,
     }
 
+    # Dialects can move JSON accessors to the binary operator tier alongside ||.
+    JSON_OPERATORS: t.ClassVar = {}
+
     TERM: t.ClassVar = {
         TokenType.DASH: exp.Sub,
         TokenType.PLUS: exp.Add,
@@ -6241,6 +6244,9 @@ class Parser:
                 this = self.expression(
                     self.BITWISE[self._prev.token_type](this=this, expression=self._parse_term())
                 )
+            elif self._match_set(self.JSON_OPERATORS):
+                op = self.JSON_OPERATORS[self._prev.token_type]
+                this = op(self, this, self._parse_term())
             elif self.dialect.DPIPE_IS_STRING_CONCAT and self._match(TokenType.DPIPE):
                 this = self.expression(
                     exp.DPipe(
