@@ -1,0 +1,3 @@
+bugfixes:
+  - winrm - obtain Kerberos tickets using subprocess in a new session so kinit reads the password from stdin consistently across platforms and optional dependencies.
+  - winrm - report kinit failures with password-redacted stderr and use only PATH and the temporary KRB5CCNAME in the process environment.
