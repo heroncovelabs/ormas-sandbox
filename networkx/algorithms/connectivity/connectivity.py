@@ -209,15 +209,17 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
     r"""Returns node connectivity for a graph or digraph G.
 
     Node connectivity is equal to the minimum number of nodes that
-    must be removed to disconnect G or render it trivial. If source
-    and target nodes are provided, this function returns the local node
+    must be removed to disconnect G or render it trivial. Directed graphs
+    use strong connectivity. Self-loops and parallel edges do not affect
+    node connectivity. If source and target nodes are provided, this
+    function returns the local node
     connectivity: the minimum number of nodes that must be removed to break
     all paths from source to target in G.
 
     Parameters
     ----------
     G : NetworkX graph
-        Undirected graph
+        Undirected or directed graph.
 
     s : node
         Source node. Optional. Default value: None.
@@ -272,13 +274,14 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
 
     Notes
     -----
-    This is a flow based implementation of node connectivity. The
-    algorithm works by solving $O((n-\delta-1+\delta(\delta-1)/2))$
-    maximum flow problems on an auxiliary digraph. Where $\delta$
-    is the minimum degree of G. For details about the auxiliary
-    digraph and the computation of local node connectivity see
-    :meth:`local_node_connectivity`. This implementation is based
-    on algorithm 11 in [1]_.
+    This is a flow based implementation of node connectivity. For
+    undirected graphs, algorithm 11 in [1]_ solves
+    $O((n-\delta-1+\delta(\delta-1)/2))$ maximum flow problems on an
+    auxiliary digraph, where $\delta$ is the minimum number of distinct
+    neighbors, excluding self-loops. Directed graphs use at most $O(n^2)$
+    maximum flow computations over ordered pairs without a direct edge.
+    For details about the auxiliary digraph and the computation of local
+    node connectivity see :meth:`local_node_connectivity`.
 
     See also
     --------
@@ -308,35 +311,46 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
 
     # Global node connectivity
     if G.is_directed():
-        if not nx.is_weakly_connected(G):
+        if not nx.is_strongly_connected(G):
             return 0
-        iter_func = itertools.permutations
-        # It is necessary to consider both predecessors
-        # and successors for directed graphs
+    elif not nx.is_connected(G):
+        return 0
 
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
-
-    else:
-        if not nx.is_connected(G):
-            return 0
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+    def neighbors(v):
+        return set(G.neighbors(v)) - {v}
 
     # Reuse the auxiliary digraph and the residual network
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Pick a node with minimum degree
-    # Node connectivity is bounded by degree.
-    v, K = min(G.degree(), key=itemgetter(1))
+    if G.is_directed():
+        # Distinct predecessors and successors give upper bounds on a cut.
+        K = min(
+            len(set(adjacency(v)) - {v})
+            for v in G
+            for adjacency in (G.predecessors, G.successors)
+        )
+        # Every separator leaving at least two nodes separates an ordered
+        # pair without a direct edge. Consider both directions of each pair.
+        for x, y in itertools.permutations(G, 2):
+            if y in G[x]:
+                continue
+            kwargs["cutoff"] = K
+            K = min(K, local_node_connectivity(G, x, y, **kwargs))
+            if K == 1:
+                break  # Strong connectivity gives a matching lower bound.
+        return K
+
+    # Pick a node with the fewest distinct neighbors, excluding self-loops.
+    v = min(G, key=lambda v: len(neighbors(v)))
+    K = len(neighbors(v))
     # compute local node connectivity with all its non-neighbors nodes
-    for w in set(G) - set(neighbors(v)) - {v}:
+    for w in set(G) - neighbors(v) - {v}:
         kwargs["cutoff"] = K
         K = min(K, local_node_connectivity(G, v, w, **kwargs))
     # Also for non adjacent pairs of neighbors of v
-    for x, y in iter_func(neighbors(v), 2):
+    for x, y in itertools.combinations(neighbors(v), 2):
         if y in G[x]:
             continue
         kwargs["cutoff"] = K
