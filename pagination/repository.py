@@ -1,7 +1,8 @@
 """An in-memory repository with cursor-based pagination.
 
-NOTE: ``page`` reports a ``next_cursor`` even when the page it just returned was
-the last one, so callers never see the end of the data. See issue.md.
+``page`` returns a ``next_cursor`` only when records remain after the returned
+items. On the terminal page, ``next_cursor`` is ``None``, so callers can loop
+while ``page.next_cursor is not None``.
 """
 
 from pagination.cursor import encode_cursor, is_after
@@ -27,5 +28,6 @@ class Repository:
         if after is not None:
             rows = [r for r in rows if is_after(r, after)]
         page_items = rows[:limit]
-        next_cursor = encode_cursor(page_items[-1]) if page_items else None
+        has_more = len(rows) > len(page_items)
+        next_cursor = encode_cursor(page_items[-1]) if page_items and has_more else None
         return Page(page_items, next_cursor)
