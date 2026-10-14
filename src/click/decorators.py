@@ -548,6 +548,55 @@ def version_option(
     return option(*param_decls, **kwargs)
 
 
+def custom_version_option(
+    callback: t.Callable[[Context], str],
+    *param_decls: str,
+    **kwargs: t.Any,
+) -> t.Callable[[FC], FC]:
+    """Add a ``--version`` option which immediately calls ``callback``
+    with the current context, prints the returned string, and exits the
+    program with status 0.
+
+    Unlike :func:`version_option`, the message is produced by a callback,
+    so it can include any information available from the context or the
+    environment.
+
+    .. code-block:: python
+
+        @click.command()
+        @click.custom_version_option(
+            lambda ctx: f"{ctx.info_name} 1.0 (py{sys.version_info[0]})"
+        )
+        def cli():
+            ...
+
+    :param callback: A function that receives the current
+        :class:`Context` and returns the version string to show.
+    :param param_decls: One or more option names. Defaults to the single
+        value ``"--version"``.
+    :param kwargs: Extra arguments are passed to :func:`option`.
+
+    .. versionadded:: 8.4
+    """
+
+    def option_callback(ctx: Context, param: Parameter, value: bool) -> None:
+        if not value or ctx.resilient_parsing:
+            return
+
+        echo(callback(ctx), color=ctx.color)
+        ctx.exit()
+
+    if not param_decls:
+        param_decls = ("--version",)
+
+    kwargs.setdefault("is_flag", True)
+    kwargs.setdefault("expose_value", False)
+    kwargs.setdefault("is_eager", True)
+    kwargs.setdefault("help", _("Show the version and exit."))
+    kwargs["callback"] = option_callback
+    return option(*param_decls, **kwargs)
+
+
 def help_option(*param_decls: str, **kwargs: t.Any) -> t.Callable[[FC], FC]:
     """Pre-configured ``--help`` option which immediately prints the help page
     and exits the program.
