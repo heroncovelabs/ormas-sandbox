@@ -232,6 +232,18 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
     return [word.strip() for word in string.split(sep) if word.strip()]
 
 
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> list[str]:
+    """Split a comma-separated list of regexps, taking care to avoid splitting
+    a regex employing a comma as quantifier, as in `\\d{1,2}`.
+    """
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    # A comma is not a separator if it is followed by a '}' before any '{',
+    # i.e. if it is inside a quantifier such as `{1,3}`.
+    patterns = re.split(r",(?![^{]*\})", value)
+    return [pattern.strip() for pattern in patterns if pattern.strip()]
+
+
 def _unquote(string: str) -> str:
     """Remove optional quotes (simple or double) from the string.
 
