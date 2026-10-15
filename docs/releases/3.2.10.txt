@@ -1,0 +1,15 @@
+===========================
+Django 3.2.10 release notes
+===========================
+
+*December 7, 2021*
+
+Django 3.2.10 fixes a security issue with severity "low" and several bugs in
+3.2.9.
+
+Bugfixes
+========
+
+* Fixed a regression in Django 3.2 that caused a crash of ``setUpTestData()``
+  with ``BinaryField`` on PostgreSQL, which is ``memoryview``-backed
+  (:ticket:`33333`).
