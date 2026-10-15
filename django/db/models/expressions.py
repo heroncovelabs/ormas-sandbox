@@ -428,6 +428,14 @@ class BaseExpression:
             cols.extend(source.get_group_by_cols())
         return cols
 
+    def get_refs(self):
+        """Return the set of query aliases referenced by this expression."""
+        refs = set()
+        for source in self.get_source_expressions():
+            if isinstance(source, BaseExpression):
+                refs |= source.get_refs()
+        return refs
+
     def get_source_fields(self):
         """Return the underlying field types used by this aggregate."""
         return [e._output_field_or_none for e in self.get_source_expressions()]
@@ -1175,6 +1183,9 @@ class Ref(Expression):
 
     def get_group_by_cols(self):
         return [self]
+
+    def get_refs(self):
+        return {self.refs}
 
 
 class ExpressionList(Func):

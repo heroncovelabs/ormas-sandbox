@@ -441,17 +441,27 @@ class Query(BaseExpression):
         """
         if not self.annotation_select:
             return {}
+        # Only the selected annotations are relevant; unselected ones (e.g.
+        # alias()) are never part of the SQL and need not be considered.
         existing_annotations = [
             annotation
-            for alias, annotation in self.annotations.items()
+            for alias, annotation in self.annotation_select.items()
             if alias not in added_aggregate_names
         ]
+        # Aliases of the aggregates being computed and of the selected
+        # annotations they reference.
+        summary_aliases = set()
+        summary_refs = set()
+        for alias, annotation in self.annotation_select.items():
+            if annotation.is_summary:
+                summary_aliases.add(alias)
+                summary_refs |= annotation.get_refs()
         # Decide if we need to use a subquery.
         #
-        # Existing annotations would cause incorrect results as get_aggregation()
-        # must produce just one result and thus must not use GROUP BY. But we
-        # aren't smart enough to remove the existing annotations from the
-        # query, so those would force us to use GROUP BY.
+        # Existing aggregate annotations would cause incorrect results as
+        # get_aggregation() must produce just one result and thus must not use
+        # GROUP BY. Non-aggregate annotations don't affect the result and are
+        # masked out below, unless referenced by the aggregates.
         #
         # If the query has limit or distinct, or uses set operations, then
         # those operations must be done in a subquery so that the query
@@ -460,7 +470,11 @@ class Query(BaseExpression):
         if (
             isinstance(self.group_by, tuple)
             or self.is_sliced
-            or existing_annotations
+            or any(
+                getattr(annotation, "contains_aggregate", True)
+                for annotation in existing_annotations
+            )
+            or summary_refs
             or self.distinct
             or self.combinator
         ):
@@ -471,7 +485,18 @@ class Query(BaseExpression):
             outer_query = AggregateQuery(self.model, inner_query)
             inner_query.select_for_update = False
             inner_query.select_related = False
-            inner_query.set_annotation_mask(self.annotation_select)
+            if inner_query.distinct:
+                # Distinct must be applied to all selected annotations.
+                annotation_mask = set(self.annotation_select)
+            else:
+                # Only keep the annotations that are referenced by the
+                # aggregates or by the GROUP BY clause.
+                annotation_mask = summary_aliases | summary_refs
+                if isinstance(self.group_by, tuple):
+                    for expr in self.group_by:
+                        if isinstance(expr, BaseExpression):
+                            annotation_mask |= expr.get_refs()
+            inner_query.set_annotation_mask(annotation_mask)
             # Queries with distinct_fields need ordering and when a limit is
             # applied we must take the slice from the ordered query. Otherwise
             # no need for ordering.
@@ -525,6 +550,9 @@ class Query(BaseExpression):
             self.select = ()
             self.default_cols = False
             self.extra = {}
+            # Only the aggregates are selected; the other annotations are
+            # unused and, as they're not aggregates, don't affect the result.
+            self.set_annotation_mask(summary_aliases)
 
         empty_set_result = [
             expression.empty_result_set_value
