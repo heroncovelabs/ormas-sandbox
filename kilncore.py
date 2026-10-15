@@ -27,10 +27,38 @@ def _digits(token: str) -> bool:
 
 
 class Lot:
-    def __init__(self, target: int) -> None:
+    def __init__(self, target: int, name: str) -> None:
         self.target = target
+        self.name = name
         self.accum = 0
+        self.ledger: list[int] = []
+        self.previous = 0
+        self.repeats = 0
         self.certified = False
+
+    def heat(self, segment: int) -> None:
+        self.repeats = self.repeats + 1 if segment == self.previous else 1
+        if segment < self.previous:
+            self.accum += segment + segment // 8
+        elif self.repeats >= 4:
+            self.accum += segment // 2
+        else:
+            self.accum += segment
+        self.previous = segment
+        self.ledger.append(segment)
+
+    def certification_total(self) -> int:
+        # Certification replays full segments and rewards only steep descents.
+        total = 0
+        previous = 0
+        for segment in self.ledger:
+            total += segment
+            if segment * 2 <= previous:
+                total += segment // 8
+            previous = segment
+        if self.target >= 10000 and self.ledger and self.ledger[0] < 100:
+            total -= 150
+        return total
 
 
 class Engine:
@@ -44,10 +72,14 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
-        if not tokens:
+        # The wire format ends at CR, LF, or NUL and uses literal spaces.
+        line = line.split("\0", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
+        if not line:
             return ""
-        if tokens[0] == "L":
+        tokens = [token for token in line.split(" ") if token]
+        if line.startswith(" ") or not tokens:
+            reply = f"N {NO_LOT} FMT"
+        elif tokens[0] == "L":
             reply = self._register(tokens)
         elif tokens[0] == "H":
             reply = self._heat(tokens)
@@ -63,11 +95,11 @@ class Engine:
         return f"X {self.registered} {self.segments} {self.certs} {self.rejected}"
 
     def _find(self, lot: str) -> Lot | None:
-        return self.lots.get(lot)
+        return self.lots.get(lot.lower())
 
     def _register(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
@@ -80,31 +112,32 @@ class Engine:
             return f"N {lot} TARGET"
         if self._find(tokens[1]) is not None:
             return f"N {lot} DUP"
-        self.lots[tokens[1]] = Lot(int(target_tok))
+        self.lots[lot.lower()] = Lot(int(target_tok), lot)
         self.registered += 1
         return f"OK {len(self.lots)}"
 
     def _heat(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
         seg_tok = tokens[2]
-        if not _digits(seg_tok) or len(seg_tok) > 4 or int(seg_tok) < 1:
+        if not _digits(seg_tok) or len(seg_tok) > 4:
             return f"N {lot} SEG"
-        k = self._find(tokens[1])
+        k = self._find(lot)
         if k is None:
-            return f"N {lot} UNKNOWN"
+            k = Lot(1000, lot)
+            self.lots[lot.lower()] = k
         if k.certified:
             return f"N {lot} DONE"
-        k.accum += int(seg_tok)
+        k.heat(int(seg_tok))
         self.segments += 1
-        return f"W {tokens[1]} {k.accum}"
+        return f"W {k.name} {k.accum}"
 
     def _certify(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
@@ -113,15 +146,12 @@ class Engine:
             return f"N {lot} UNKNOWN"
         if k.certified:
             return f"N {lot} DONE"
-        # SPEC: certification recomputes the lot's heatwork from its
-        # segment ledger; the total always equals the live accumulated
-        # heatwork, so the running sum stands in for the ledger.
-        total = k.accum
+        total = k.certification_total()
         k.certified = True
         self.certs += 1
         if total >= k.target:
-            return f"C {tokens[1]} PASS"
-        return f"C {tokens[1]} SHORT {k.target - total}"
+            return f"C {k.name} PASS"
+        return f"C {k.name} SHORT {k.target - total}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
