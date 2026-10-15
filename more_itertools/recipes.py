@@ -891,8 +891,17 @@ def iter_index(iterable, value, start=0, stop=None):
     seq_index = getattr(iterable, 'index', None)
     if seq_index is None:
         # Slow path for general iterables
+        if (start is not None and start < 0) or (
+            stop is not None and stop < 0
+        ):
+            iterable = tuple(iterable)
+            n = len(iterable)
+            if start is not None and start < 0:
+                start = max(0, start + n)
+            if stop is not None and stop < 0:
+                stop = max(0, stop + n)
         iterator = islice(iterable, start, stop)
-        for i, element in enumerate(iterator, start):
+        for i, element in enumerate(iterator, start or 0):
             if element is value or element == value:
                 yield i
     else:
