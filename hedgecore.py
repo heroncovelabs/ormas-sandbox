@@ -3,7 +3,7 @@
 Replaces the retired legacy binary (see ``legacy/README.md``). One
 trading session per process: commands on stdin (``T`` books a trade,
 ``V`` revalues every book against a fixing list), one reply line per
-trade, one reply line per book per revaluation, and an ``X`` trailer at
+applied trade, one reply line per book per revaluation, and an ``X`` trailer at
 end of input. Format reference: ``docs/SPEC.md`` (note the drift warning
 at the top of that file; the legacy engine's behavior is the contract).
 """
@@ -43,19 +43,34 @@ def _valid_pair(token: str) -> bool:
 
 
 def _valid_int(token: str, max_digits: int) -> bool:
-    return 1 <= len(token) <= max_digits and token.isdigit()
+    return 1 <= len(token) <= max_digits and token.isascii() and token.isdigit()
 
 
 class Book:
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self.name = name
         self.pos: dict[str, int] = {}
         self.rate: dict[str, int] = {}
 
-    def netvalue(self) -> int:
-        return sum(
-            _round_half_even(self.pos[pair] * self.rate[pair], DIVISOR)
+    def netvalue(self, fixes: dict[str, int] | None = None) -> int:
+        if fixes is None:
+            # Trade replies round each pair independently; JPY quotes use 100.
+            return sum(
+                _round_half_even(
+                    self.pos[pair] * self.rate[pair],
+                    100 if pair.endswith("JPY") else DIVISOR,
+                )
+                for pair in self.pos
+            )
+        # Revaluations floor each contribution to tenths of a cent, then round
+        # the total to cents with ties towards positive infinity. JPY scaling
+        # applies only to pairs included in this particular fixing list.
+        total = sum(
+            (self.pos[pair] * self.rate[pair]
+             * (100 if pair.endswith("JPY") and pair in fixes else 1)) // 1000
             for pair in self.pos
         )
+        return (total + 5) // 10
 
 
 class Engine:
@@ -74,23 +89,24 @@ class Engine:
         self.rejected += 1
 
     def handle(self, line: str) -> None:
-        line = line.rstrip("\r\n")
+        # The legacy line parser stops at the first CR or C-string terminator.
+        line = line.split("\0", 1)[0].split("\r", 1)[0].rstrip("\n")
         if not line:
             return
         if line.startswith("V "):
             self._reval(line[2:])
         elif line == "T" or line.startswith("T "):
-            self._trade(line.split())
+            self._trade([token for token in line.split(" ") if token])
         else:
             self._reject("????????", "FMT")
 
     def _trade(self, tokens: list[str]) -> None:
         book = tokens[1] if len(tokens) > 1 else ""
         book_ok = _valid_book(book)
-        if len(tokens) != 6 or not book_ok:
+        if len(tokens) < 6 or not book_ok:
             self._reject(book if book_ok else "????????", "FMT")
             return
-        _, book, pair, side, amt_tok, rate_tok = tokens
+        _, book, pair, side, amt_tok, rate_tok = tokens[:6]
         if not _valid_pair(pair):
             self._reject(book, "PAIR")
             return
@@ -101,19 +117,31 @@ class Engine:
             self._reject(book, "AMT")
             return
         amount = int(amt_tok)
-        if amount == 0:
-            self._reject(book, "AMT")
-            return
         if not _valid_int(rate_tok, RATE_DIGITS) or int(rate_tok) == 0:
             self._reject(book, "RATE")
             return
         rate = int(rate_tok)
+        # Valid zero trades are silent and create no book or pair state.
+        if amount == 0:
+            return
 
-        entry = self.books.setdefault(book, Book())
+        key = book.lower()
+        if key not in self.books:
+            self.books[key] = Book(book)
+        entry = self.books[key]
         delta = amount if side == "B" else -amount
-        entry.pos[pair] = entry.pos.get(pair, 0) + delta
-        entry.rate[pair] = rate
-        self._emit(f"P {book} {entry.netvalue()}")
+        previous = entry.pos.get(pair, 0)
+        position = previous + delta
+        if position == 0:
+            entry.pos.pop(pair, None)
+            entry.rate.pop(pair, None)
+        else:
+            # A crossing installs an adjusted last rate until the next update.
+            if previous * position < 0:
+                rate -= 5
+            entry.pos[pair] = position
+            entry.rate[pair] = rate
+        self._emit(f"P {entry.name} {entry.netvalue()}")
         self.trades += 1
 
     def _reval(self, arg: str) -> None:
@@ -134,11 +162,11 @@ class Engine:
                 self._reject("????????", "FMT")
                 return
             fixes[pair] = int(rate_tok)
-        for book, entry in self.books.items():
+        for entry in self.books.values():
             for pair in entry.pos:
                 if pair in fixes:
                     entry.rate[pair] = fixes[pair]
-            self._emit(f"P {book} {entry.netvalue()}")
+            self._emit(f"P {entry.name} {entry.netvalue(fixes)}")
         self.revals += 1
 
     def finish(self) -> None:
@@ -147,8 +175,9 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    # Read LF-delimited records so an embedded CR stays within its input record.
+    for line in sys.stdin.buffer:
+        engine.handle(line.decode("utf-8", errors="surrogateescape"))
     engine.finish()
 
 
