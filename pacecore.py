@@ -16,6 +16,8 @@ ID_MAX = 8
 HOURS = 24
 CARRY_CAP_DIV = 5  # carry is capped at 20 percent of the daily budget
 NO_CAMP = "????????"
+DAMPER_BUDGET = 1000000  # high-budget campaigns get the early-hour damper
+DAMPER_HOURS = 6
 
 
 def _valid_id(token: str) -> bool:
@@ -31,8 +33,8 @@ class Campaign:
         self.daily = daily
         self.carry = 0
         self.avail = 0
-        self.spent = 0
-        self.grants = [0] * HOURS
+        self.spent = 0  # sum of per-request grants clamped to daily // HOURS
+        self.cum = 0  # cumulative accrued allowance for the day
         self.accrued = -1
 
 
@@ -66,7 +68,7 @@ class Engine:
         return f"X {self.created} {self.requests} {self.trueups} {self.rejected}"
 
     def _find(self, camp: str) -> Campaign | None:
-        return self.camps.get(camp)
+        return self.camps.get(camp.lower())
 
     def _create(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
@@ -79,24 +81,37 @@ class Engine:
             return f"N {camp} BUDGET"
         if self._find(tokens[1]) is not None:
             return f"N {camp} DUP"
-        self.camps[tokens[1]] = Campaign(int(budget))
+        self.camps[tokens[1].lower()] = Campaign(int(budget))
         self.created += 1
         return f"OK {len(self.camps)}"
 
+    def _cum_at(self, c: Campaign, hour: int) -> int:
+        eff = c.daily + c.carry
+        slice_ = eff // HOURS
+        if c.carry > 0:
+            # carried-in days lose the first slice (hour 00 accrues nothing)
+            n = hour
+        else:
+            n = hour + 1
+        total = n * slice_
+        if c.daily >= DAMPER_BUDGET and hour < DAMPER_HOURS:
+            total = n * slice_ // 2
+        return total
+
     def _accrue(self, c: Campaign, hour: int) -> None:
-        slice_ = (c.daily + c.carry) // HOURS
-        for _h in range(c.accrued + 1, hour + 1):
-            c.avail += slice_
+        target = self._cum_at(c, hour)
+        c.avail += target - c.cum
+        c.cum = target
         c.accrued = hour
 
     def _spend(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
         hour_tok, req_tok = tokens[2], tokens[3]
-        if not _digits(hour_tok) or len(hour_tok) != 2 or int(hour_tok) > 23:
+        if not _digits(hour_tok) or len(hour_tok) > 2 or int(hour_tok) > 23:
             return f"N {camp} HOUR"
         hour = int(hour_tok)
         if not _digits(req_tok) or len(req_tok) > 7 or int(req_tok) < 1:
@@ -110,8 +125,7 @@ class Engine:
         self._accrue(c, hour)
         granted = min(req, c.avail)
         c.avail -= granted
-        c.spent += granted
-        c.grants[hour] += granted
+        c.spent += min(granted, c.daily // HOURS)
         self.requests += 1
         return f"P {granted}"
 
@@ -129,7 +143,7 @@ class Engine:
         carry = min(raw, c.daily // CARRY_CAP_DIV)
         c.carry = carry
         c.spent = 0
-        c.grants = [0] * HOURS
+        c.cum = 0
         c.avail = 0
         c.accrued = -1
         self.trueups += 1
