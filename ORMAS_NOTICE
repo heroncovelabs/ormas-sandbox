@@ -1,0 +1,5 @@
+Adapted SWE-bench Verified public demand fixture, not an official benchmark score.
+https://github.com/sympy/sympy at 25fbcce5b1a4c7e3956e6062930f4a44ce95a632.
+Instance sympy__sympy-19495; upstream license retained.
+Changes: official test patch; internal file symlinks materialized; Ormas external driver and hashed lock.
+All 1 official F2P tests; 8 of 8 official P2P tests (first/last 20 if >40).
