@@ -45,21 +45,45 @@ class _Parser:
             raise CalcError(f"unexpected trailing token {self.cur.value!r}")
         return node
 
+    # Grammar, lowest to highest precedence:
+    #   expression := term (('+' | '-') term)*          left-assoc
+    #   term       := unary (('*' | '/' | '//' | '%') unary)*   left-assoc
+    #   unary      := ('+' | '-') unary | power
+    #   power      := atom ('**' unary)?                 right-assoc
+    #   atom       := NUMBER | '(' expression ')'
+
     def expression(self) -> Node:
-        # BUG: all binary operators share one precedence level and fold left to
-        # right, so e.g. 2 + 3 * 4 parses as (2 + 3) * 4 and 2 ** 3 ** 2 as
-        # (2 ** 3) ** 2.
-        node = self.atom()
-        while self.cur.kind in _BINOP:
+        node = self.term()
+        while self.cur.kind in ("PLUS", "MINUS"):
             op = _BINOP[self.advance().kind]
-            node = BinOp(op, node, self.atom())
+            node = BinOp(op, node, self.term())
+        return node
+
+    def term(self) -> Node:
+        node = self.unary()
+        while self.cur.kind in ("STAR", "SLASH", "DSLASH", "PERCENT"):
+            op = _BINOP[self.advance().kind]
+            node = BinOp(op, node, self.unary())
+        return node
+
+    def unary(self) -> Node:
+        tok = self.cur
+        if tok.kind in _UNARY:
+            self.advance()
+            return UnaryOp(_UNARY[tok.kind], self.unary())
+        return self.power()
+
+    def power(self) -> Node:
+        node = self.atom()
+        if self.cur.kind == "DSTAR":
+            self.advance()
+            # Right operand is a unary factor, so 2 ** -2 is valid and
+            # 2 ** 3 ** 2 == 2 ** (3 ** 2).
+            return BinOp("**", node, self.unary())
         return node
 
     def atom(self) -> Node:
         tok = self.cur
-        if tok.kind in _UNARY:
-            self.advance()
-            return UnaryOp(_UNARY[tok.kind], self.atom())
         if tok.kind == "NUMBER":
             self.advance()
             return Num(tok.value)
