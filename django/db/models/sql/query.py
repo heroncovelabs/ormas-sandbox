@@ -576,6 +576,12 @@ class Query(BaseExpression):
         change_map = {}
         conjunction = (connector == AND)
 
+        # Bump the alias prefix of a copy of rhs so that its aliases can't
+        # collide with the aliases newly created in self while joining (which
+        # would make change_map both rename and be the target of renames).
+        rhs = rhs.clone()
+        rhs.bump_prefix(self)
+
         # Determine which existing joins can be reused. When combining the
         # query with AND we must recreate all joins for m2m filters. When
         # combining with OR we can reuse joins. The reason is that in AND
@@ -591,7 +597,11 @@ class Query(BaseExpression):
         reuse = set() if conjunction else set(self.alias_map)
         # Base table must be present in the query - this is the same
         # table on both sides.
-        self.get_initial_alias()
+        base_alias = self.get_initial_alias()
+        if rhs.alias_map:
+            # The base table of rhs is the same table as the base of self, so
+            # references to rhs' (bumped) base alias point at self's base.
+            change_map[next(iter(rhs.alias_map))] = base_alias
         joinpromoter = JoinPromoter(connector, 2, False)
         joinpromoter.add_votes(
             j for j in self.alias_map if self.alias_map[j].join_type == INNER)
