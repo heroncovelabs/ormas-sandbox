@@ -1,0 +1,2 @@
+bugfixes:
+  - winrm - obtain the Kerberos TGT with ``kinit`` using the standard library only, reading the password from stdin, instead of depending on the optional ``pexpect`` library. This fixes inconsistent behaviour across platforms, notably macOS and environments with a high number of file descriptors.
