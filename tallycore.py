@@ -16,6 +16,7 @@ import sys
 ID_MAX = 8
 CAND_MAX = 64
 BALLOT_MAX = 4096
+RANK_MAX = 256
 
 
 def _valid_id(token: str) -> bool:
@@ -28,6 +29,7 @@ class Engine:
     def __init__(self) -> None:
         self.cands: list[str] = []  # registration order
         self.ballots: list[list[int]] = []  # current round, candidate indices
+        self.momentum: list[int] = []  # decayed recount support, across rounds
         self.total_ballots = 0
         self.rounds = 0
         self.rejected = 0
@@ -35,10 +37,13 @@ class Engine:
     def handle(self, line: str) -> list[str]:
         if line == "W":
             return self._recount()
+        # The legacy tokenizer separates on literal spaces and consumes only
+        # the first argument. Tabs remain part of a token.
+        tokens = [token for token in line.split(" ") if token]
         if line == "C" or line.startswith("C "):
-            return [self._register(line.split())]
+            return [self._register(tokens)]
         if line == "V" or line.startswith("V "):
-            return [self._vote(line.split())]
+            return [self._vote(tokens)]
         return [self._reject("????????", "FMT")]
 
     def trailer(self) -> str:
@@ -52,33 +57,37 @@ class Engine:
         return f"N {echo} {code}"
 
     def _register(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return self._reject("????????", "FMT")
         cand = tokens[1]
         if not _valid_id(cand):
             return self._reject("????????", "FMT")
         if self.ballots:
             return self._reject(cand, "LATE")
-        if cand not in self.cands:
+        if cand.lower() not in [c.lower() for c in self.cands]:
             if len(self.cands) >= CAND_MAX:
                 return self._reject("????????", "FMT")
             self.cands.append(cand)
+            self.momentum.append(0)
         return f"OK {len(self.cands)}"
 
     def _vote(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return self._reject("????????", "FMT")
         entries = tokens[1].split(",")
-        if any(not _valid_id(e) for e in entries):
+        if len(entries) > RANK_MAX or any(not _valid_id(e) for e in entries):
             return self._reject("????????", "FMT")
         kept: list[int] = []
+        lookup = {cand.lower(): c for c, cand in enumerate(self.cands)}
         for entry in entries:
-            if entry not in self.cands:
-                return self._reject(entry, "CAND")  # SPEC: unknown rejects
-            c = self.cands.index(entry)
+            c = lookup.get(entry.lower())
+            if c is None:
+                continue
             if c in kept:
                 return self._reject(entry, "DUP")
             kept.append(c)
+        if not kept:
+            return self._reject(entries[0], "CAND")
         if len(self.ballots) >= BALLOT_MAX:
             return self._reject("????????", "FMT")
         self.ballots.append(kept)
@@ -92,13 +101,17 @@ class Engine:
         return f"LEAD {self.cands[lead]}"
 
     def _tallies(self, alive: list[bool], dead: list[bool]) -> list[int]:
-        tally = [0] * len(self.cands)
+        tally = self.momentum.copy()
         for b, ballot in enumerate(self.ballots):
             if dead[b]:
                 continue
             for c in ballot:
                 if alive[c]:
                     tally[c] += 1
+                    # Complete rankings give their original first choice a
+                    # bonus; transferred support always has unit weight.
+                    if c == ballot[0] and len(ballot) == len(self.cands):
+                        tally[c] += 1
                     break
         return tally
 
@@ -109,22 +122,28 @@ class Engine:
         alive = [True] * n
         dead = [False] * len(self.ballots)  # exhausted ballots drop out
         out: list[str] = []
+        next_momentum = [0] * n
         remaining = n
         while remaining > 1:
             tally = self._tallies(alive, dead)
-            victim = -1
-            for c in range(n):
-                if not alive[c]:
-                    continue
-                # SPEC: fewest first-choices; ties eliminate the LAST
-                # registered candidate first.
-                if victim < 0 or tally[c] < tally[victim] or tally[c] == tally[victim]:
-                    victim = c
+            victim = min(
+                (c for c in range(n) if alive[c]),
+                key=lambda c: (tally[c], -len(self.cands[c]), -c),
+            )
             out.append(f"ELIM {self.cands[victim]}")
+            # Retain each candidate's support just before elimination.
+            next_momentum[victim] = tally[victim] // 4
             alive[victim] = False
+            for b, ballot in enumerate(self.ballots):
+                if len(ballot) == 2 and ballot[0] == victim:
+                    dead[b] = True
             remaining -= 1
         winner = next(c for c in range(n) if alive[c])
         out.append(f"WIN {self.cands[winner]}")
+        # The winner also receives the final elimination's transfers before
+        # its support is decayed for the following round.
+        next_momentum[winner] = self._tallies(alive, dead)[winner] // 4
+        self.momentum = next_momentum
         self.ballots = []
         self.rounds += 1
         return out
@@ -134,7 +153,8 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # C-string input ends at the first NUL, CR, or newline.
+        line = raw.split("\0", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
         if not line:
             continue
         replies.extend(engine.handle(line))
