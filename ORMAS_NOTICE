@@ -1,0 +1,5 @@
+Adapted SWE-bench Verified public demand fixture, not an official benchmark score.
+https://github.com/django/django at e972620ada4f9ed7bc57f28e133e85c85b0a7b20.
+Instance django__django-15368; upstream license retained.
+Changes: official test patch; internal file symlinks materialized; Ormas external driver and hashed lock.
+All 1 official F2P tests; 29 of 29 official P2P tests (first/last 20 if >40).
