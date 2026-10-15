@@ -1,0 +1,5 @@
+Adapted SWE-bench Verified public demand fixture, not an official benchmark score.
+https://github.com/pydata/xarray at 7cc6cc991e586a6158bb656b8001234ccda25407.
+Instance pydata__xarray-6744; upstream license retained.
+Changes: official test patch; internal file symlinks materialized; Ormas external driver and hashed lock.
+All 3 official F2P tests; 40 of 1815 official P2P tests (first/last 20 if >40).
