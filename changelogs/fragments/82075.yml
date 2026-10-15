@@ -1,0 +1,2 @@
+bugfixes:
+  - human_to_bytes filter - reject malformed size strings (trailing text after the unit, non-ASCII or non-numeric characters, leading whitespace, and unrecognized units) with a ``ValueError`` instead of returning a number.
