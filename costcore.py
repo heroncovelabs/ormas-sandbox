@@ -12,12 +12,18 @@ import sys
 
 MAX_QTY = 999_999
 MAX_COST = 9_999_999
+MAX_UNIT_COST = 9_000_000
+SHRINK_MIN_QTY = 100
 
 
 class Engine:
     def __init__(self, out=None):
-        # Per-SKU FIFO cost layers: sku -> list of [qty, unit_cost].
+        # Per-SKU FIFO cost layers, keyed case-insensitively:
+        # key -> list of [qty, unit_cost].
         self.layers: dict[str, list[list[int]]] = {}
+        # Display spelling of each SKU: the first spelling that reached the
+        # stock stage (accepted receipt or STOCK reject).
+        self.names: dict[str, str] = {}
         self.count_rcpt = 0
         self.count_iss = 0
         self.count_rej = 0
@@ -31,8 +37,8 @@ class Engine:
         self._emit(f"E {sku} {code}")
         self.count_rej += 1
 
-    def _onhand(self, sku: str) -> int:
-        return sum(qty for qty, _cost in self.layers.get(sku, []))
+    def _onhand(self, key: str) -> int:
+        return sum(qty for qty, _cost in self.layers.get(key, []))
 
     def handle(self, line: str) -> None:
         parts = line.rstrip("\r\n").split()
@@ -40,36 +46,48 @@ class Engine:
             return
         kind = parts[0]
         sku = parts[1] if len(parts) > 1 else ""
-        sku_ok = 1 <= len(sku) <= 8 and sku.isalnum()
+        sku_ok = 1 <= len(sku) <= 8 and sku.isascii() and sku.isalnum()
         need = 4 if kind == "R" else 3 if kind == "I" else 0
-        if need == 0 or not sku_ok or len(parts) != need:
+        # Extra trailing tokens are ignored; too few is a format error.
+        if need == 0 or not sku_ok or len(parts) < need:
             self._emit(f"E {sku if sku_ok else '????????'} FMT")
             self.count_rej += 1
             return
         qty_tok = parts[2]
-        if not (qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
+        if not (qty_tok.isascii() and qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
             self._reject(sku, "QTY")
             return
         qty = int(qty_tok)
-        if not 1 <= qty <= MAX_QTY:
-            self._reject(sku, "QTY")
+        if qty == 0:
+            # Zero-quantity movements are silently dropped.
             return
+        key = sku.upper()
         if kind == "R":
             cost_tok = parts[3]
-            if not (cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
+            if not (cost_tok.isascii() and cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
                 self._reject(sku, "COST")
                 return
-            cost = int(cost_tok)
-            # Every receipt opens its own cost layer, newest last.
-            self.layers.setdefault(sku, []).append([qty, cost])
-            self._emit(f"A {sku} {self._onhand(sku)}")
+            cost = min(int(cost_tok), MAX_UNIT_COST)
+            name = self.names.setdefault(key, sku)
+            stack = self.layers.setdefault(key, [])
+            if stack and stack[-1][1] == cost:
+                stack[-1][0] += qty
+            else:
+                stack.append([qty, cost])
+            self._emit(f"A {name} {self._onhand(key)}")
             self.count_rcpt += 1
             return
-        # Issue: FIFO, oldest layers consumed first.
-        if qty > self._onhand(sku):
-            self._reject(sku, "STOCK")
-            return
-        stack = self.layers[sku]
+        name = self.names.setdefault(key, sku)
+        stack = self.layers.get(key, [])
+        onhand = self._onhand(key)
+        # The newest layer is display stock unless it is the only layer.
+        avail = onhand - stack[-1][0] if len(stack) > 1 else onhand
+        if qty > avail:
+            if qty > 2 * avail:
+                self._reject(name, "STOCK")
+                return
+            qty = avail
+        consumed = qty
         remaining = qty
         cogs = 0
         while remaining > 0:
@@ -80,7 +98,10 @@ class Engine:
             remaining -= got
             if layer[0] == 0:
                 stack.pop(0)
-        self._emit(f"C {sku} {cogs} {self._onhand(sku)}")
+        after = self._onhand(key)
+        if after == 0 and consumed >= SHRINK_MIN_QTY:
+            cogs = (cogs * 102 + 50) // 100
+        self._emit(f"C {name} {cogs} {after}")
         self.count_iss += 1
         self.sum_cogs += cogs
 
