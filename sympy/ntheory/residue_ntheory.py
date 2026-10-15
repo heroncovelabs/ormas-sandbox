@@ -743,6 +743,32 @@ def _nthroot_mod1(s, q, p, all_roots):
     return min(res)
 
 
+def _nthroot_mod_composite(a, n, p, all_roots):
+    """
+    Roots of ``x**n = a mod p`` for composite ``p``, by combining the roots
+    modulo each prime power dividing ``p`` with the Chinese remainder theorem.
+    """
+    from itertools import product
+    from sympy.ntheory.modular import crt
+    moduli, residues = [], []
+    for prime, power in factorint(p).items():
+        q = prime**power
+        if q > 10**6:
+            raise NotImplementedError("Not implemented for composite p")
+        roots = [x for x in range(q) if pow(x, n, q) == a % q]
+        if not roots:
+            return None
+        moduli.append(q)
+        residues.append(roots)
+    res = []
+    for combo in product(*residues):
+        res.append(crt(moduli, list(combo))[0])
+    res = sorted(res)
+    if all_roots:
+        return res
+    return res[0]
+
+
 def nthroot_mod(a, n, p, all_roots=False):
     """
     Find the solutions to ``x**n = a mod p``
@@ -774,7 +800,11 @@ def nthroot_mod(a, n, p, all_roots=False):
     if not is_nthpow_residue(a, n, p):
         return None
     if not isprime(p):
-        raise NotImplementedError("Not implemented for composite p")
+        return _nthroot_mod_composite(a, n, p, all_roots)
+
+    if a % p == 0:
+        # x = 0 (mod p) is always a root when a = 0 (mod p)
+        return [0] if all_roots else 0
 
     if (p - 1) % n == 0:
         return _nthroot_mod1(a, n, p, all_roots)
