@@ -13,6 +13,7 @@ import random
 from bisect import bisect_left, insort
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import lru_cache, reduce
 from heapq import heappush, heappushpop
 from itertools import (
@@ -33,7 +34,7 @@ from itertools import (
     zip_longest,
 )
 from math import prod, comb, isqrt, gcd
-from operator import mul, getitem, index, is_, itemgetter, truediv
+from operator import ge, le, mul, getitem, index, is_, itemgetter, truediv
 from random import randrange, sample, choice, shuffle
 from sys import hexversion
 
@@ -74,10 +75,14 @@ __all__ = [
     'random_product',
     'repeatfunc',
     'roundrobin',
+    'running_max',
     'running_mean',
     'running_median',
+    'running_min',
+    'running_statistics',
     'sieve',
     'sliding_window',
+    'Stats',
     'subslices',
     'sum_of_squares',
     'tabulate',
@@ -1408,8 +1413,39 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _check_maxlen(maxlen):
+    "Validate an optional window size; None means an unbounded window."
+    if maxlen is None:
+        return None
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return maxlen
+
+
+def _reject_complex(x):
+    "Raise TypeError for complex values, which have no ordering."
+    if isinstance(x, complex):
+        raise TypeError("complex values are unorderable: %r" % (x,))
+
+
+def _running_mean_windowed(iterator, maxlen):
+    "Yield the mean of values in a sliding window."
+
+    window = deque()
+    total = 0
+
+    for x in iterator:
+        window.append(x)
+        total += x
+        if len(window) > maxlen:
+            total -= window.popleft()
+        yield total / len(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of all values seen so far, or of the values in a
+    sliding window when *maxlen* is a positive integer.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1455,132 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+
+    Supports complex numbers as well:
+
+    >>> list(running_mean([3 + 4j, 5 - 1j], maxlen=2))
+    [(3+4j), (4+1.5j)]
     """
-    return map(truediv, accumulate(iterable), count(1))
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    if maxlen is not None:
+        return _running_mean_windowed(iterator, maxlen)
+    return map(truediv, accumulate(iterator), count(1))
+
+
+def _running_extreme(iterator, maxlen, discard):
+    """Yield the extreme value of values in an unbounded or sliding window.
+
+    *discard(old, new)* is true when an earlier value *old* can never be
+    the extreme again once the later value *new* has been seen.
+    """
+
+    # Monotonic deque of (position, value); the front holds the extreme.
+    candidates = deque()
+
+    for pos, x in enumerate(iterator):
+        _reject_complex(x)
+        while candidates and discard(candidates[-1][1], x):
+            candidates.pop()
+        candidates.append((pos, x))
+        if maxlen is not None and candidates[0][0] <= pos - maxlen:
+            candidates.popleft()
+        yield candidates[0][1]
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the minimum of all values seen so far, or of the values in a
+    sliding window when *maxlen* is a positive integer.
+
+        >>> list(running_min([4, 3, 7, 0, 8, 1, 6, 2, 9, 5]))
+        [4, 3, 3, 0, 0, 0, 0, 0, 0, 0]
+        >>> list(running_min([4, 3, 7, 0, 8, 1, 6, 2, 9, 5], maxlen=3))
+        [4, 3, 3, 0, 0, 0, 1, 1, 2, 2]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    return _running_extreme(iterator, maxlen, ge)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the maximum of all values seen so far, or of the values in a
+    sliding window when *maxlen* is a positive integer.
+
+        >>> list(running_max([4, 3, 7, 0, 8, 1, 6, 2, 9, 5]))
+        [4, 4, 7, 7, 8, 8, 8, 8, 9, 9]
+        >>> list(running_max([4, 3, 7, 0, 8, 1, 6, 2, 9, 5], maxlen=3))
+        [4, 4, 7, 7, 8, 8, 8, 6, 9, 9]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    return _running_extreme(iterator, maxlen, le)
+
+
+@dataclass(frozen=True, slots=True)
+class Stats:
+    """Immutable summary of a window of values, as yielded by
+    :func:`running_statistics`.
+
+    Fields are ``size``, ``minimum``, ``median``, ``maximum`` and ``mean``.
+    """
+
+    size: int
+    minimum: object
+    median: object
+    maximum: object
+    mean: object
+
+
+def _running_statistics(iterator, maxlen):
+    "Yield a Stats record for each value and the window that ends there."
+
+    window = deque()
+    ordered = []  # sorted copy of the window
+    total = 0
+
+    for x in iterator:
+        _reject_complex(x)
+        window.append(x)
+        insort(ordered, x)
+        total += x
+
+        if maxlen is not None and len(window) > maxlen:
+            old = window.popleft()
+            del ordered[bisect_left(ordered, old)]
+            total -= old
+
+        n = len(ordered)
+        m = n // 2
+        median = ordered[m] if n & 1 else (ordered[m - 1] + ordered[m]) / 2
+        yield Stats(n, ordered[0], median, ordered[-1], total / n)
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record for the values seen so far, or for the
+    values in a sliding window when *maxlen* is a positive integer.
+
+    Each record holds the size, minimum, median, maximum and mean of the
+    window, computed the same way as :func:`running_min`,
+    :func:`running_median`, :func:`running_max` and :func:`running_mean`.
+
+        >>> data = [4, 3, 7, 0, 8]
+        >>> [s.median for s in running_statistics(data)]
+        [4, 3.5, 4, 3.5, 4]
+        >>> next(running_statistics(data, maxlen=2))
+        Stats(size=1, minimum=4, median=4, maximum=4, mean=4.0)
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    return _running_statistics(iterator, maxlen)
 
 
 def random_derangement(iterable):
