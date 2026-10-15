@@ -512,6 +512,17 @@ class AlterTogetherOptionOperation(ModelOptionOperation):
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
         return self.database_forwards(app_label, schema_editor, from_state, to_state)
 
+    def reduce(self, operation, app_label):
+        if (
+            isinstance(operation, AlterTogetherOptionOperation) and
+            not isinstance(operation, self.__class__) and
+            self.name_lower == operation.name_lower
+        ):
+            # unique_together and index_together are independent options, so
+            # an operation altering the other one can be optimized across.
+            return True
+        return super().reduce(operation, app_label)
+
     def references_field(self, model_name, name, app_label):
         return (
             self.references_model(model_name, app_label) and
