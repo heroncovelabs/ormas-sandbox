@@ -88,6 +88,20 @@ def pushdown_projections(
         if _is_self_referencing_cte(scope):
             parent_selections = {SELECT_ALL}
 
+        # GROUP BY ALL derives its grouping keys from the non-aggregate projections,
+        # so removing any of them would change the grouping and thus the results.
+        if isinstance(scope.expression, exp.Select):
+            group = scope.expression.args.get("group")
+            if group and group.args.get("all"):
+                parent_selections = {SELECT_ALL}
+
+        # INTERSECT ALL / EXCEPT ALL compare whole rows (multiset semantics), so every
+        # column of the operands takes part in the result and none may be pruned.
+        if isinstance(scope.expression, (exp.Intersect, exp.Except)) and not scope.expression.args.get(
+            "distinct"
+        ):
+            parent_selections = {SELECT_ALL}
+
         if isinstance(scope.expression, exp.SetOperation):
             set_op = scope.expression
             if set_op.kind or set_op.side:
