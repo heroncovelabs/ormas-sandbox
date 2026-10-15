@@ -4149,10 +4149,18 @@ class Dataset(
             index = self._indexes[name]
             drop_indexes += list(self.xindexes.get_all_coords(name))
 
-            if isinstance(index, PandasMultiIndex) and name not in self.dims:
-                # special case for pd.MultiIndex (name is an index level):
-                # replace by a new index with dropped level(s) instead of just drop the index
-                if index not in replaced_indexes:
+            if isinstance(index, PandasMultiIndex):
+                # the multi-index dimension coordinate is always removed (it is
+                # replaced below by a new index if some levels are kept)
+                drop_variables.append(index.dim)
+
+                if (
+                    name not in self.dims
+                    and index.dim not in dims_or_levels
+                    and index not in replaced_indexes
+                ):
+                    # special case for pd.MultiIndex (name is an index level):
+                    # replace by a new index with dropped level(s) instead of just drop the index
                     level_names = index.index.names
                     level_vars = {
                         k: self._variables[k]
@@ -4164,10 +4172,13 @@ class Dataset(
                         idx_vars = idx.create_variables(level_vars)
                         new_indexes.update({k: idx for k in idx_vars})
                         new_variables.update(idx_vars)
+                        if not isinstance(idx, PandasMultiIndex):
+                            # single remaining level: replaced by the dimension coordinate
+                            drop_variables.extend(level_vars)
                 replaced_indexes.append(index)
 
             if drop:
-                drop_variables.append(name)
+                drop_variables.extend(self.xindexes.get_all_coords(name))
 
         indexes = {k: v for k, v in self._indexes.items() if k not in drop_indexes}
         indexes.update(new_indexes)
@@ -4177,9 +4188,16 @@ class Dataset(
         }
         variables.update(new_variables)
 
-        coord_names = set(new_variables) | self._coord_names
+        # coordinates that are kept but no longer indexed are converted to base variables
+        for k in drop_indexes:
+            if k in variables and k not in new_variables:
+                variables[k] = variables[k].to_base_variable()
 
-        return self._replace(variables, coord_names=coord_names, indexes=indexes)
+        coord_names = self._coord_names - set(drop_variables) | set(new_variables)
+
+        return self._replace_with_new_dims(
+            variables, coord_names=coord_names, indexes=indexes
+        )
 
     def reorder_levels(
         self: T_Dataset,

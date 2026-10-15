@@ -717,8 +717,11 @@ class PandasMultiIndex(PandasIndex):
             level_coords_dtype = {k: self.level_coords_dtype[k] for k in index.names}
             return self._replace(index, level_coords_dtype=level_coords_dtype)
         else:
+            # the single remaining level becomes the (new) dimension coordinate
+            level_name = index.name
+            index = index.rename(self.dim)
             return PandasIndex(
-                index, self.dim, coord_dtype=self.level_coords_dtype[index.name]
+                index, self.dim, coord_dtype=self.level_coords_dtype[level_name]
             )
 
     def reorder_levels(
