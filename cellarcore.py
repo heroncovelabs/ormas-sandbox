@@ -27,7 +27,7 @@ def _is_num(tok: str, maxlen: int) -> bool:
 class Wheel:
     __slots__ = (
         "wid", "cls", "state", "lay_seq", "settle", "rack",
-        "taps_since_grade",
+        "taps_since_grade", "rtaps", "shifts", "rounds", "tapint", "taps",
     )
 
     def __init__(self, wid: str, cls: int, lay_seq: int):
@@ -38,6 +38,11 @@ class Wheel:
         self.settle = cls
         self.rack = None
         self.taps_since_grade = 0
+        self.rtaps = 0
+        self.shifts = 0
+        self.rounds = 0
+        self.tapint = 0
+        self.taps = 0
 
 
 class Rack:
@@ -81,6 +86,8 @@ class Engine:
         """Standing comparator: settle descending, ties by lay order."""
         if ka != kb:
             return ka > kb
+        if a.taps != b.taps:
+            return a.taps < b.taps
         return a.lay_seq < b.lay_seq
 
     def _insert(self, rack: Rack, w: Wheel) -> None:
@@ -113,11 +120,14 @@ class Engine:
         if not 1 <= cls <= 999:
             self._reject(parts, "RNG")
             return
-        if wid in self.wheels:
+        old = self.wheels.get(wid)
+        if old is not None and old.state != RETIRED:
             self._reject(parts, "DUP")
             return
         self.lay_seq += 1
         w = Wheel(wid, cls, self.lay_seq)
+        if old is not None:
+            w.taps_since_grade = old.taps_since_grade
         self.wheels[wid] = w
         self.sill.append(w)
         self.cLAY += 1
@@ -176,8 +186,12 @@ class Engine:
         if w.state == RETIRED:
             self._reject(parts, "STATE")
             return
-        w.settle -= 3
-        w.taps_since_grade += 1
+        w.settle -= 3 + (4 if w.tapint >= 1 else 0) + (2 if w.rounds % 2 else 0)
+        w.tapint += 1
+        w.taps += 1
+        if w.state == RACKED:
+            w.rtaps += 1
+            w.taps_since_grade += 1
         self.cTAP += 1
         self._emit(f"OK {w.wid}")
 
@@ -197,7 +211,8 @@ class Engine:
         if len(r.order) >= r.span:
             self._reject(parts, "FULL")
             return
-        w.settle -= 5
+        w.settle -= 5 + (4 if w.shifts >= 1 else 0) + (2 if w.rounds % 2 else 0)
+        w.shifts += 1
         w.rack.order.remove(w)
         self._insert(r, w)
         w.rack = r
@@ -210,9 +225,13 @@ class Engine:
         self._emit(f"TR {self.turn_no}")
         for r in self.rack_list:
             pre = list(r.order)
-            slumped = [w for w in pre if w.settle <= 0]
+            for w in pre:
+                w.settle = w.cls - 3 * w.rtaps - 5 * w.shifts - w.rounds
+                w.rounds += 1
+                w.tapint = 0
+            slumped = [w for w in pre if w.settle <= 7]
             if slumped:
-                r.order = [w for w in r.order if w.settle > 0]
+                r.order = [w for w in r.order if w.settle > 7]
             self._relist(r)
             self._emit(f"RK {r.rid}")
             for w in r.order:
@@ -248,6 +267,8 @@ class Engine:
                 self.cRET += 1
                 self._emit(f"RET {w.wid}")
         for w in self.wheels.values():
+            w.taps_since_grade = 0
+        for w in graded:
             w.taps_since_grade = 0
 
     def _cmd_VIEW(self, parts: list[str]) -> None:
