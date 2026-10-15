@@ -3,8 +3,8 @@
 Replaces the retired legacy binary (see ``legacy/README.md``). Reads
 store commands on stdin (``B`` sets the working value, ``S`` stores a
 snapshot of it, ``T`` restores a snapshot into the working value and
-reports its digest), writes one reply per command and an ``X`` trailer
-at EOF. Format reference: ``docs/SPEC.md`` (note the drift warning at
+reports its digest), writes replies for commands that change or query
+state and an ``X`` trailer at EOF. Format reference: ``docs/SPEC.md`` (note the drift warning at
 the top of that file; the legacy engine's behavior is the contract).
 """
 
@@ -44,12 +44,14 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str | None:
+        # The command boundary and token separator are literal ASCII spaces.
+        tokens = [token for token in line.split(" ") if token]
         if line == "B" or line.startswith("B "):
-            reply = self._set(line.split())
+            reply = self._set(tokens)
         elif line == "S" or line.startswith("S "):
             reply = self._store()
         elif line == "T" or line.startswith("T "):
-            reply = self._restore(line.split())
+            reply = self._restore(tokens)
         else:
             reply = "E FMT"
         if reply is not None and reply.startswith("E "):
@@ -59,22 +61,22 @@ class Engine:
     def trailer(self) -> str:
         return f"X {self.sets} {self.stores} {self.restores} {self.rejected}"
 
-    def _set(self, tokens: list[str]) -> str:
+    def _set(self, tokens: list[str]) -> str | None:
         # Extra trailing tokens are tolerated and ignored.
         if len(tokens) < 2:
             return "E FMT"
         val = tokens[1]
         if not _valid_val(val):
             return "E VAL"
+        if val == self.value:
+            return None
         self.value = val
         self.sets += 1
         return "OK"
 
     def _is_full(self) -> bool:
-        # SPEC: the first snapshot is FULL, and every fourth snapshot is
-        # stored FULL so a delta chain stays short (snapshots 4, 8, ...).
-        count = len(self.snaps)
-        return count == 0 or (count + 1) % FULL_EVERY == 0
+        # FULL anchors occupy zero-based indices 0, 4, 8, ... .
+        return len(self.snaps) % FULL_EVERY == 0
 
     def _store(self) -> str:
         if self._is_full():
@@ -94,14 +96,19 @@ class Engine:
         snap = self.snaps[idx]
         if snap[0] == "F":
             return snap[1]
-        # SPEC: a delta applies against the previous snapshot's
-        # reconstructed value, honoring the recorded length; positions
-        # beyond the base fill with the pad character.
+        # Legacy reconstruction uses the FULL anchor and the requested
+        # delta only. Intervening deltas are skipped. The first delta
+        # honors its length; later deltas retain the anchor's length and
+        # grow only as far as their changed positions require.
         _, newlen, changes = snap
-        base = self._reconstruct(idx - 1)
+        anchor = idx - idx % FULL_EVERY
+        base = self.snaps[anchor][1]
+        size = newlen if idx == anchor + 1 else len(base)
+        if changes:
+            size = max(size, max(changes) + 1)
         return "".join(
             changes.get(p, base[p] if p < len(base) else PAD)
-            for p in range(newlen)
+            for p in range(size)
         )
 
     def _restore(self, tokens: list[str]) -> str:
@@ -115,9 +122,7 @@ class Engine:
         if idx >= len(self.snaps):
             return "E IDX"
         self.value = self._reconstruct(idx)
-        # SPEC: the restored value becomes the working value the next
-        # snapshot builds on.
-        self.base = self.value
+        # Delta comparisons keep using the last stored working value.
         self.restores += 1
         return f"V {digest(self.value)}"
 
@@ -126,7 +131,9 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # Each physical input line is terminated at its first CR, LF or
+        # NUL, matching the legacy engine's C-string input handling.
+        line = raw.split("\0", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
         if not line:
             continue
         reply = engine.handle(line)
@@ -140,7 +147,10 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Read physical LF-delimited lines and preserve every input byte for
+    # validation, including CRs and bytes outside ASCII.
+    lines = [raw.decode("latin1") for raw in sys.stdin.buffer]
+    process(lines, out=sys.stdout)
 
 
 if __name__ == "__main__":
