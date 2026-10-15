@@ -7,6 +7,25 @@ runs the weekly settlement), writes one or more reply lines per command
 and an ``X`` trailer at EOF.
 Format reference: ``docs/SPEC.md`` (note the drift warning at the top of
 that file; the legacy engine's behavior is the contract).
+
+Behaviors the engine exhibits that the written spec does not describe
+are reproduced here:
+
+* Start score: a new carrier starts at ``rating * 100`` minus 50 for
+  every settlement run so far (empty-board runs included), floored at 0.
+* Portfolio dilution: a booking credits ``value / 1000`` minus one for
+  every three loads the carrier already holds open, floored at 0.
+* Second-drop penalty: while a carrier has dropped exactly twice, its
+  booking credits are halved.
+* Preferred lane: carriers rated 80 or more earn an extra credit on loads
+  whose value is a multiple of 2500 (credit is ``value / 800``).
+* Drops forfeit twice the credit the booking actually earned.
+* A carrier may not rebook a load it has ever held (it stays ``TAKEN``
+  for that carrier), though other carriers may book it.
+* Settlement recomputes from the base ledger (``value / 1000`` per
+  booking and drop, ignoring dilution and lane bonuses), subtracts 2 per
+  drop event, and writes the result back as the carrier's score. An
+  empty board still prints ``WEND 0`` and counts as a settlement.
 """
 
 from __future__ import annotations
@@ -18,6 +37,15 @@ NO_ID = "????????"
 # SPEC: a booking adds value/1000 (integer division) to the carrier's
 # commitment score; a drop subtracts twice what the booking added.
 BOOK_STEP = 1000
+# Engine: each settlement run docks every new carrier's start score.
+JOIN_HAIRCUT = 50
+# Engine: each open load beyond every third dilutes the next credit by one.
+DILUTION_SPAN = 3
+# Engine: carriers at or above this rating get the preferred-lane credit.
+PREFERRED_RATING = 80
+PREFERRED_MULT = 2500
+# Engine: settlement docks two points per drop event.
+SETTLE_DROP_ADJUST = 2
 
 
 def _valid_id(token: str) -> bool:
@@ -29,19 +57,23 @@ def _digits(token: str) -> bool:
 
 
 class Carrier:
-    def __init__(self, cid: str, rating: int) -> None:
+    def __init__(self, cid: str, rating: int, start: int) -> None:
         self.cid = cid
         self.rating = rating
-        # SPEC: every carrier starts at rating x 100.
-        self.score = rating * 100
+        self.score = start
+        self.base = start  # settlement starting point
         self.sum_book = 0  # ledger: sum of value/1000 over bookings
         self.sum_drop = 0  # ledger: sum of value/1000 over drops
+        self.drops = 0  # drop events so far
+        self.held: set[str] = set()  # loads currently booked by carrier
+        self.history: set[str] = set()  # loads ever booked by carrier
 
 
 class Load:
     def __init__(self, value: int) -> None:
         self.value = value
         self.booked_by: str | None = None
+        self.credit = 0  # credit earned by the current booking
 
 
 class Engine:
@@ -96,7 +128,8 @@ class Engine:
             return f"N {echo} RATING"
         if tokens[1] in self.carriers:
             return f"N {echo} DUP"
-        self.carriers[tokens[1]] = Carrier(tokens[1], rating)
+        start = max(0, rating * 100 - JOIN_HAIRCUT * self.n_set)
+        self.carriers[tokens[1]] = Carrier(tokens[1], rating, start)
         self.n_car += 1
         return f"OK {len(self.carriers)}"
 
@@ -129,10 +162,21 @@ class Engine:
         l = self.loads.get(tokens[2])
         if l is None:
             return f"N {echo} UNKNOWN"
-        if l.booked_by is not None:
+        if l.booked_by is not None or tokens[2] in c.history:
             return f"N {echo} TAKEN"
-        c.score += l.value // BOOK_STEP
-        c.sum_book += l.value // BOOK_STEP
+        base = l.value // BOOK_STEP
+        credit = base
+        if c.rating >= PREFERRED_RATING and l.value % PREFERRED_MULT == 0:
+            credit = l.value // 800
+        credit -= len(c.held) // DILUTION_SPAN
+        credit = max(0, credit)
+        if c.drops == 2:
+            credit //= 2
+        c.score += credit
+        c.sum_book += base
+        c.held.add(tokens[2])
+        c.history.add(tokens[2])
+        l.credit = credit
         l.booked_by = tokens[1]
         self.n_book += 1
         return f"A {c.cid} {c.score}"
@@ -153,28 +197,35 @@ class Engine:
             return f"N {echo} NOBOOK"
         # SPEC: a drop subtracts twice what the booking added; the load
         # returns to the board and may be booked again by any carrier.
-        c.score -= 2 * (l.value // BOOK_STEP)
+        c.score -= 2 * l.credit
         c.sum_drop += l.value // BOOK_STEP
+        c.drops += 1
+        c.held.discard(tokens[2])
         l.booked_by = None
+        l.credit = 0
         self.n_drop += 1
         return f"A {c.cid} {c.score}"
 
     def _settle(self) -> list[str]:
+        self.n_set += 1
         # SPEC: a settlement on an empty board settles nothing and
-        # writes nothing.
+        # writes nothing (the engine still prints the terminator).
         if not self.carriers:
-            return []
+            return ["WEND 0"]
         replies = []
         for c in self.carriers.values():
-            # SPEC: the settlement recomputes the score from the event
-            # ledger with the same arithmetic as the live path; it is a
-            # checksum, not a correction, and always equals the running
-            # score for a healthy board.
-            settled = c.rating * 100 + c.sum_book - 2 * c.sum_drop
+            # Engine: the settlement recomputes the score from the base
+            # ledger, docking two points per drop event; it is written
+            # back as the carrier's score.
+            settled = (
+                c.base
+                + c.sum_book
+                - 2 * c.sum_drop
+                - SETTLE_DROP_ADJUST * c.drops
+            )
             replies.append(f"S {c.cid} {settled}")
             c.score = settled
         replies.append(f"WEND {len(self.carriers)}")
-        self.n_set += 1
         return replies
 
 
