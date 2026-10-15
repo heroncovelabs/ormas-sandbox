@@ -9,15 +9,20 @@ contract).
 
 from __future__ import annotations
 
+import re
 import sys
+from collections.abc import Iterable
 
 # Standard freight classes, published table.
 CLASSES = frozenset(
     (50, 55, 60, 65, 70, 77, 85, 92, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500)
 )
-DIM_DIVISOR = 5000
+DIM_DIVISOR = 5500
 SERVICES = ("G", "X", "P")
 SURCHARGE_PCT = {"G": 0, "X": 50, "P": 25}
+REMOTE_ZONE_FEE = 12500
+# The reference reads at most 1023 bytes per record, splitting longer lines.
+INPUT_RECORD_SIZE = 1023
 
 
 def _round_half_up(numerator: int, denominator: int) -> int:
@@ -27,8 +32,17 @@ def _round_half_up(numerator: int, denominator: int) -> int:
     return quotient
 
 
-def _ceil_div(numerator: int, denominator: int) -> int:
-    return -(-numerator // denominator)
+def _round_half_even(numerator: int, denominator: int) -> int:
+    quotient, remainder = divmod(numerator, denominator)
+    if 2 * remainder > denominator or (
+        2 * remainder == denominator and quotient % 2
+    ):
+        return quotient + 1
+    return quotient
+
+
+def _digits(token: str, minimum: int, maximum: int) -> bool:
+    return minimum <= len(token) <= maximum and token.isascii() and token.isdigit()
 
 
 def zone_rate(zone: int) -> int:
@@ -38,11 +52,13 @@ def zone_rate(zone: int) -> int:
 
 class Shipment:
     def __init__(self, line: str):
-        self.tokens = line.split()
+        # Legacy tokenization uses these four separators and C-string endings.
+        self.tokens = re.findall(r"[^ \t\r\n]+", line.partition("\0")[0])
         self.shipid = "?"
         if (
             len(self.tokens) >= 2
             and 1 <= len(self.tokens[1]) <= 10
+            and self.tokens[1].isascii()
             and self.tokens[1].isalnum()
         ):
             self.shipid = self.tokens[1]
@@ -56,10 +72,10 @@ class Shipment:
 
     def parse(self) -> None:
         tok = self.tokens
-        if tok[0] != "S":
+        if not tok or tok[0] != "S":
             self.error = "FMT"
             return
-        if len(tok) != 9:
+        if len(tok) < 9:
             self.error = "FMT"
             return
         if self.shipid == "?":
@@ -69,10 +85,10 @@ class Shipment:
         dims = tok[5:8]
         svc = tok[8]
         if (
-            not (len(zone) == 2 and zone.isdigit())
-            or not (len(cls) == 3 and cls.isdigit())
-            or not (1 <= len(weight) <= 6 and weight.isdigit())
-            or not all(1 <= len(d) <= 4 and d.isdigit() for d in dims)
+            not _digits(zone, 2, 2)
+            or not _digits(cls, 3, 3)
+            or not _digits(weight, 1, 6)
+            or not all(_digits(d, 1, 4) for d in dims)
             or len(svc) != 1
         ):
             self.error = "FMT"
@@ -88,7 +104,9 @@ class Shipment:
         if self.cls not in CLASSES:
             self.error = "CLASS"
             return
-        if self.weight == 0:
+        if self.weight == 0 and (
+            self.length == 0 or self.width == 0 or self.height == 0
+        ):
             self.error = "WEIGHT"
             return
         if self.length == 0 or self.width == 0 or self.height == 0:
@@ -100,14 +118,23 @@ class Shipment:
 
     def compute(self) -> None:
         volume = self.length * self.width * self.height
-        dim_weight = _ceil_div(volume, DIM_DIVISOR)
+        dim_weight = _round_half_up(volume, DIM_DIVISOR)
         billable = max(self.weight, dim_weight)
+        effective_class = self.cls
+        if dim_weight > self.weight and self.cls in (50, 55):
+            effective_class = 70
         base = billable * zone_rate(self.zone)
-        class_multiplied = _round_half_up(base * self.cls, 100)
-        pct = SURCHARGE_PCT[self.svc]
-        charge = class_multiplied
-        if pct:
-            charge += _round_half_up(class_multiplied * pct, 100)
+
+        # Express is applied before class; its fuel band uses billable weight.
+        if self.svc == "X":
+            pct = 165 if 40 <= self.zone <= 49 and billable > 750 else 150
+            base = _round_half_up(base * pct, 100)
+        charge = _round_half_up(base * effective_class, 100)
+        # Priority is applied after class, with ties rounded to even cents.
+        if self.svc == "P":
+            charge = _round_half_even(charge * (100 + SURCHARGE_PCT["P"]), 100)
+        if self.zone == 99:
+            charge += REMOTE_ZONE_FEE
         self.charge = charge
 
     def emit(self) -> str:
@@ -116,14 +143,13 @@ class Shipment:
         return f"C {self.shipid} {self.charge}"
 
 
-def process(lines: list[str]) -> list[str]:
+def process(lines: Iterable[str]) -> list[str]:
     out = []
     accepted = rejected = total = 0
     for raw in lines:
-        line = raw.rstrip("\r\n")
-        if not line.split():
+        shipment = Shipment(raw)
+        if not shipment.tokens:
             continue
-        shipment = Shipment(line)
         shipment.parse()
         if shipment.error is None:
             shipment.compute()
@@ -137,7 +163,9 @@ def process(lines: list[str]) -> list[str]:
 
 
 def main() -> None:
-    for line in process(sys.stdin.readlines()):
+    # Read bytes to preserve carriage returns and the reference buffer boundary.
+    records = iter(lambda: sys.stdin.buffer.readline(INPUT_RECORD_SIZE), b"")
+    for line in process(raw.decode("latin1") for raw in records):
         print(line)
 
 
