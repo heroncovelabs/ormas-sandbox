@@ -117,7 +117,8 @@ class Engine:
             v.aboard = False  # last crossing's passengers disembark
         waiting = [v for v in self.order if v.queued]
         if not waiting:
-            return  # the sailing departs empty; nothing to print
+            self._emit("GEND 0 0")  # the sailing departs empty
+            return
         # descending standing lean, ties by registration order; skip
         # what does not fit and keep going down the list
         waiting.sort(key=lambda v: (-v.lean, v.reg))
