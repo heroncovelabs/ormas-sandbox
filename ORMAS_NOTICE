@@ -1,0 +1,5 @@
+Adapted SWE-bench Verified public demand fixture, not an official benchmark score.
+https://github.com/sphinx-doc/sphinx at 31eba1a76dd485dc633cae48227b46879eda5df4.
+Instance sphinx-doc__sphinx-10323; upstream license retained.
+Changes: official test patch; internal file symlinks materialized; Ormas external driver and hashed lock.
+All 1 official F2P tests; 40 of 40 official P2P tests (first/last 20 if >40).
