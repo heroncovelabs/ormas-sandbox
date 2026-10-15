@@ -14,6 +14,7 @@ import sys
 
 KEY_MAX = 8
 VAL_MAX = 12
+SER_VAL_MAX = 10
 VERSION = "Z1"
 PAIR_SEP = ";"
 
@@ -44,6 +45,7 @@ class Engine:
         self.gets = 0
         self.loads = 0
         self.rejected = 0
+        self.sorted = False
 
     def handle(self, line: str) -> str:
         if line == "S":
@@ -75,7 +77,7 @@ class Engine:
         return f"X {self.puts} {self.gets} {self.loads} {self.rejected}"
 
     def _put(self, tokens: list[str]) -> str:
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return "R FMT"
         key, val = tokens[1], tokens[2]
         if not _valid_key(key) or not _valid_val(val):
@@ -84,7 +86,7 @@ class Engine:
         return f"OK {len(self.state)}"
 
     def _get(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return "R FMT"
         key = tokens[1]
         if not _valid_key(key):
@@ -94,35 +96,43 @@ class Engine:
         return "NIL"
 
     def _serialize(self) -> str:
-        pairs = PAIR_SEP.join(f"{k}={v}" for k, v in self.state.items())
+        items = sorted(self.state.items()) if self.sorted else self.state.items()
+        pairs = PAIR_SEP.join(f"{k}={v[:SER_VAL_MAX] if len(v) >= VAL_MAX else v}" for k, v in items)
         body = VERSION + "|" + pairs
         return "B " + body + "|" + checksum(body)
 
     def _load(self, blob: str) -> str:
-        # Validation order per SPEC: structure, version, checksum, pairs.
         if blob.count("|") != 2:
             return "R FMT"
         ver, pairs_str, check = blob.split("|")
         if len(check) != 1:
             return "R FMT"
-        if ver != VERSION:
+        if ver not in ("Z1", "Z0"):
             return "R VER"
         if check != checksum(ver + "|" + pairs_str):
             return "R CHK"
-        if not pairs_str:
-            return "R FMT"  # SPEC: a blob carries at least one pair
-        new_state: dict[str, str] = {}
-        for piece in pairs_str.split(PAIR_SEP):
-            if piece.count("=") != 1:
-                return "R FMT"
-            key, val = piece.split("=")
-            if not _valid_key(key) or not _valid_val(val):
-                return "R FMT"
-            if key in new_state:
-                return "R FMT"  # SPEC: duplicate keys reject
-            new_state[key] = val
-        self.state = new_state
-        return f"OK {len(self.state)}"
+        sep = PAIR_SEP if ver == "Z1" else ","
+        pairs: list[tuple[str, str]] = []
+        if pairs_str:
+            for piece in pairs_str.split(sep):
+                if piece.count("=") != 1:
+                    return "R FMT"
+                key, val = piece.split("=")
+                if not _valid_key(key) or not _valid_val(val):
+                    return "R FMT"
+                pairs.append((key, val))
+        count = len(pairs)
+        folded: dict[str, list[str]] = {}
+        for key, val in pairs:
+            folded.setdefault(key.lower(), [key, val])[1] = val
+        items = [(k, v) for k, v in folded.values()]
+        # Z0 loads put the store in sorted mode (kept sorted until the next
+        # load); a Z1 load that folded keys is sorted once.
+        self.sorted = ver == "Z0"
+        if self.sorted or len(items) != count:
+            items.sort()
+        self.state = dict(items)
+        return f"OK {count}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
