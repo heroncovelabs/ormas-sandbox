@@ -13,6 +13,11 @@ import sys
 PRICE_MAX = 10_000_000
 QTY_MAX = 999_999
 HASH_MOD = 1_000_000_007
+BIG_QTY = 1000
+BAND = 500
+TICK_FROM = 100_000
+TICK = 5
+HASH_MIN_QTY = 100
 
 
 class Order:
@@ -59,7 +64,11 @@ class Engine:
             elif order.price != best.price:
                 better = order.price < best.price if side == "B" else order.price > best.price
             else:
-                better = order.seq < best.seq
+                big, best_big = order.orig >= BIG_QTY, best.orig >= BIG_QTY
+                if big != best_big:
+                    better = big
+                else:
+                    better = order.seq < best.seq
             if better:
                 best = order
         return best
@@ -74,18 +83,31 @@ class Engine:
         if not is_market and not 0 < price < PRICE_MAX:
             self._emit(f"R {clordid} PRICE")
             return
-        if self._find_live(acct, clordid) is not None:
-            self._emit(f"R {clordid} DUP")
+        if not is_market and price >= TICK_FROM and price % TICK:
+            self._emit(f"R {clordid} TICK")
             return
+        old = self._find_live(acct, clordid)
+        if old is not None:
+            old.live = False
+            self._emit(f"X {old.clordid} {old.orig}")
 
         remaining = qty
+        ref: int | None = None
         while remaining:
             counter = self._best_counter(side, price, is_market)
             if counter is None:
                 break
             if counter.acct == acct:
-                self._emit(f"R {clordid} STP")
-                return
+                counter.live = False
+                self._emit(f"X {counter.clordid} {counter.orig}")
+                continue
+            if ref is None:
+                ref = counter.price
+            if side == "B":
+                if counter.price > ref + BAND:
+                    break
+            elif counter.price < ref - BAND:
+                break
             take = min(remaining, counter.qty)
             self._emit(f"F {counter.clordid} {clordid} {counter.price} {take}")
             counter.qty -= take
@@ -107,7 +129,7 @@ class Engine:
             self._emit(f"R {clordid} UNKNOWN")
             return
         order.live = False
-        self._emit(f"X {order.clordid} {order.qty}")
+        self._emit(f"X {order.clordid} {order.orig}")
 
     def end_session(self) -> None:
         bid = ask = 0
@@ -119,7 +141,8 @@ class Engine:
                 bid = max(bid, order.price)
             elif ask == 0 or order.price < ask:
                 ask = order.price
-            book_hash = (book_hash + order.price * order.qty) % HASH_MOD
+            if order.qty >= HASH_MIN_QTY:
+                book_hash = (book_hash + order.price * order.qty) % HASH_MOD
         self._emit(f"S {bid} {ask} {book_hash}")
 
     # -- line protocol ------------------------------------------------------
@@ -128,43 +151,47 @@ class Engine:
         line = line.rstrip("\r\n")
         if not line:
             return
-        parts = line.split(" ")
-        if parts == ["E"]:
+        if line == "E":
             self.end_session()
             return
-        if parts[0] == "N" and len(parts) == 7:
-            _, acct, clordid, side, type_, price, qty = parts
-            if (
-                _token(acct, 4, 4)
-                and _token(clordid, 1, 8)
-                and side in ("B", "S")
-                and type_ in ("L", "M", "I")
-                and price.isdigit()
-                and 1 <= len(price) <= 7
-                and qty.isdigit()
-                and 1 <= len(qty) <= 6
-            ):
-                self.new_order(acct, clordid, side, type_, int(price), int(qty))
-                return
-            self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
-            return
-        if parts[0] == "C" and len(parts) == 3:
-            _, acct, clordid = parts
-            if _token(acct, 4, 4) and _token(clordid, 1, 8):
-                self.cancel(acct, clordid)
-                return
-            self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
+        cmd = line[0]
+        fields = line[1:].split()
+        if cmd in ("N", "C"):
+            shown = fields[1] if len(fields) > 1 and _token(fields[1], 1, 8) else "????????"
+            if cmd == "N" and len(fields) >= 6:
+                acct, clordid, side, type_, price, qty = fields[:6]
+                if (
+                    _token(acct, 4, 4)
+                    and _token(clordid, 1, 8)
+                    and side in ("B", "S")
+                    and type_ in ("L", "M", "I")
+                    and _digits(price, 1, 7)
+                    and _digits(qty, 1, 6)
+                ):
+                    self.new_order(acct, clordid, side, type_, int(price), int(qty))
+                    return
+            elif cmd == "C" and len(fields) >= 2:
+                acct, clordid = fields[:2]
+                if _token(acct, 4, 4) and _token(clordid, 1, 8):
+                    self.cancel(acct, clordid)
+                    return
+            self._emit(f"R {shown} FMT")
             return
         self._emit("R ???????? FMT")
 
 
 def _token(value: str, lo: int, hi: int) -> bool:
-    return lo <= len(value) <= hi and value.isalnum()
+    return lo <= len(value) <= hi and value.isascii() and value.isalnum()
+
+
+def _digits(value: str, lo: int, hi: int) -> bool:
+    return lo <= len(value) <= hi and value.isascii() and value.isdigit()
 
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
+    data = sys.stdin.buffer.read().decode("utf-8", "replace")
+    for line in data.split("\n"):
         engine.handle(line)
 
 
