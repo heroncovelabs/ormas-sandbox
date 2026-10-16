@@ -392,7 +392,13 @@ class Relational(Boolean, EvalfMixin):
         syms = self.free_symbols
         assert len(syms) == 1
         x = syms.pop()
-        return solve_univariate_inequality(self, x, relational=False)
+        try:
+            return solve_univariate_inequality(self, x, relational=False)
+        except NotImplementedError:
+            # solve_univariate_inequality raises NotImplementedError for
+            # unsolvable equations/inequalities.
+            from sympy.sets.conditionset import ConditionSet
+            return ConditionSet(x, self, S.Reals)
 
     @property
     def binary_symbols(self):
