@@ -49,6 +49,26 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
     return tfn[fuzzy_and(map(fuzzy_bool, eqs))]
 
 
+@dispatch(ProductSet, Interval) # type:ignore
+def _eval_is_eq(lhs, rhs): # noqa: F811
+    return False
+
+
+@dispatch(Interval, ProductSet) # type:ignore
+def _eval_is_eq(lhs, rhs): # noqa: F811
+    return False
+
+
+@dispatch(FiniteSet, ProductSet) # type:ignore
+def _eval_is_eq(lhs, rhs): # noqa: F811
+    return fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])
+
+
+@dispatch(ProductSet, FiniteSet) # type:ignore
+def _eval_is_eq(lhs, rhs): # noqa: F811
+    return fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])
+
+
 @dispatch(Set, Basic) # type:ignore
 def _eval_is_eq(lhs, rhs): # noqa: F811
     return False
