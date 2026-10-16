@@ -85,5 +85,11 @@ class Dagger(adjoint):
             return obj
         return Expr.__new__(cls, arg)
 
+    def __mul__(self, other):
+        from sympy.physics.quantum.operator import IdentityOperator
+        if isinstance(other, IdentityOperator):
+            return self
+        return Expr.__mul__(self, other)
+
 adjoint.__name__ = "Dagger"
 adjoint._sympyrepr = lambda a, b: "Dagger(%s)" % b._print(a.args[0])
