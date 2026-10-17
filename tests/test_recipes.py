@@ -1604,3 +1604,32 @@ class RunningMedianTests(TestCase):
             list(
                 running_median(['abc', 'def', 'ghi'])
             )  # Input type that doesn't support division
+
+
+class RunningStatisticsTests(TestCase):
+    def test_min_max_mean_windowed(self):
+        data = [4, 3, 7, 0, 8, 1, 6, 2, 9, 5]
+        self.assertEqual(
+            list(mi.running_min(data, maxlen=3)), [4, 3, 3, 0, 0, 0, 1, 1, 2, 2]
+        )
+        self.assertEqual(
+            list(mi.running_max(data, maxlen=3)), [4, 4, 7, 7, 8, 8, 8, 6, 9, 9]
+        )
+        self.assertEqual(
+            list(mi.running_mean([40, 30, 50, 46], maxlen=2)),
+            [40.0, 35.0, 40.0, 48.0],
+        )
+
+    def test_statistics(self):
+        actual = list(mi.running_statistics([4, 3, 7], maxlen=2))
+        self.assertEqual(actual[1], mi.Stats(2, 3, 3.5, 4, 3.5))
+        self.assertEqual(actual[2], mi.Stats(2, 3, 5.0, 7, 5.0))
+        with self.assertRaises(TypeError):
+            len(actual[0])
+
+    def test_errors(self):
+        for func in (mi.running_min, mi.running_max, mi.running_mean):
+            with self.assertRaises(ValueError):
+                func([1], maxlen=0)
+            with self.assertRaises(TypeError):
+                func(None)

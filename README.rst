@@ -129,6 +129,10 @@ Python iterables.
 |                        | `polynomial_eval <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.polynomial_eval>`_,                                                               |
 |                        | `sum_of_squares <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.sum_of_squares>`_,                                                                 |
 |                        | `running_median <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.running_median>`_,                                                                 |
+|                        | `running_mean <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.running_mean>`_,                                                                     |
+|                        | `running_min <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.running_min>`_,                                                                       |
+|                        | `running_max <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.running_max>`_,                                                                       |
+|                        | `running_statistics <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.running_statistics>`_,                                                         |
 +------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | Integer math           | `factor <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.factor>`_,                                                                                 |
 |                        | `is_prime <https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.is_prime>`_,                                                                             |

@@ -13,6 +13,8 @@ import random
 from bisect import bisect_left, insort
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
+from fractions import Fraction
 from functools import lru_cache, reduce
 from heapq import heappush, heappushpop
 from itertools import (
@@ -33,9 +35,10 @@ from itertools import (
     zip_longest,
 )
 from math import prod, comb, isqrt, gcd
-from operator import mul, getitem, index, is_, itemgetter, truediv
+from operator import mul, getitem, gt, index, is_, itemgetter, lt, truediv
 from random import randrange, sample, choice, shuffle
 from sys import hexversion
+from typing import Any
 
 __all__ = [
     'all_equal',
@@ -74,8 +77,12 @@ __all__ = [
     'random_product',
     'repeatfunc',
     'roundrobin',
+    'running_max',
     'running_mean',
     'running_median',
+    'running_min',
+    'running_statistics',
+    'Stats',
     'sieve',
     'sliding_window',
     'subslices',
@@ -1408,8 +1415,50 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _validate_maxlen(maxlen):
+    "Return *maxlen* as an int (or None); raise if it isn't a positive int."
+    if maxlen is None:
+        return None
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return maxlen
+
+
+def _running_mean_windowed(iterator, maxlen):
+    "Yield the mean of values in a sliding window."
+    window = deque()
+    total = 0  # Sum of the exact values (int or Fraction) in the window
+    inexact = 0  # Number of other values in the window
+
+    for x in iterator:
+        window.append(x)
+        if type(x) in _EXACT_TYPES:
+            total += x
+        else:
+            inexact += 1
+
+        if len(window) > maxlen:
+            y = window.popleft()
+            if type(y) in _EXACT_TYPES:
+                total -= y
+            else:
+                inexact -= 1
+
+        # Exact sums can be updated incrementally without losing accuracy.
+        # Other types are re-summed to avoid accumulating rounding errors.
+        yield (sum(window) if inexact else total) / len(window)
+
+
+_EXACT_TYPES = (int, Fraction)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Cumulative mean of values seen so far or values in a sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1468,124 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+    >>> list(running_mean([40, 30, 50, 46, 39, 44], maxlen=3))
+    [40.0, 35.0, 40.0, 42.0, 45.0, 43.0]
+
+    Supports numeric types such as int, float, complex, Decimal, and Fraction.
     """
-    return map(truediv, accumulate(iterable), count(1))
+    iterator = iter(iterable)
+    maxlen = _validate_maxlen(maxlen)
+    if maxlen is None:
+        return map(truediv, accumulate(iterator), count(1))
+    return _running_mean_windowed(iterator, maxlen)
+
+
+def _running_extreme_windowed(iterator, maxlen, replaces):
+    "Sliding window minimum or maximum using a monotonic deque."
+    candidates = deque()  # (position, value), best value first
+
+    for i, x in enumerate(iterator):
+        while candidates and replaces(x, candidates[-1][1]):
+            candidates.pop()
+        candidates.append((i, x))
+        if candidates[0][0] <= i - maxlen:
+            candidates.popleft()
+        yield candidates[0][1]
+
+
+def running_min(iterable, *, maxlen=None):
+    """Cumulative minimum of values seen so far or values in a sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    >>> list(running_min([4, 3, 7, 0, 8, 1]))
+    [4, 3, 3, 0, 0, 0]
+    >>> list(running_min([4, 3, 7, 0, 8, 1], maxlen=3))
+    [4, 3, 3, 0, 0, 0]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    iterator = iter(iterable)
+    maxlen = _validate_maxlen(maxlen)
+    if maxlen is None:
+        return accumulate(iterator, min)
+    return _running_extreme_windowed(iterator, maxlen, lt)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Cumulative maximum of values seen so far or values in a sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    >>> list(running_max([4, 3, 7, 0, 8, 1]))
+    [4, 4, 7, 7, 8, 8]
+    >>> list(running_max([4, 3, 7, 0, 8, 1], maxlen=3))
+    [4, 4, 7, 7, 8, 8]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    iterator = iter(iterable)
+    maxlen = _validate_maxlen(maxlen)
+    if maxlen is None:
+        return accumulate(iterator, max)
+    return _running_extreme_windowed(iterator, maxlen, gt)
+
+
+@dataclass(frozen=True, slots=True)
+class Stats:
+    """Summary statistics yielded by :func:`running_statistics`.
+
+    The fields are *size*, *minimum*, *median*, *maximum*, and *mean*.
+    Instances are immutable and hashable, compare by value, and are not
+    sequences (no unpacking, indexing, or len).
+    """
+
+    size: int
+    minimum: Any
+    median: Any
+    maximum: Any
+    mean: Any
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Cumulative statistics of values seen so far or values in a sliding window.
+
+    Yields a :class:`Stats` record with the *size*, *minimum*, *median*,
+    *maximum*, and *mean* of the values.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    >>> for stats in running_statistics([4, 3, 7], maxlen=2):
+    ...     print(stats)
+    Stats(size=1, minimum=4, median=4, maximum=4, mean=4.0)
+    Stats(size=2, minimum=3, median=3.5, maximum=4, mean=3.5)
+    Stats(size=2, minimum=3, median=5.0, maximum=7, mean=5.0)
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    iterator = iter(iterable)
+    maxlen = _validate_maxlen(maxlen)
+    it1, it2, it3, it4 = tee(iterator, 4)
+    sizes = count(1) if maxlen is None else chain(range(1, maxlen), repeat(maxlen))
+    return starmap(
+        Stats,
+        zip(
+            sizes,
+            running_min(it1, maxlen=maxlen),
+            running_median(it2, maxlen=maxlen),
+            running_max(it3, maxlen=maxlen),
+            running_mean(it4, maxlen=maxlen),
+        ),
+    )
 
 
 def random_derangement(iterable):

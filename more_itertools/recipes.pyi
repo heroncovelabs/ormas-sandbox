@@ -8,6 +8,7 @@ from fractions import Fraction
 from typing import (
     Any,
     Callable,
+    Generic,
     TypeVar,
     overload,
 )
@@ -49,8 +50,12 @@ __all__ = [
     'random_product',
     'repeatfunc',
     'roundrobin',
+    'running_max',
     'running_mean',
     'running_median',
+    'running_min',
+    'running_statistics',
+    'Stats',
     'sieve',
     'sliding_window',
     'subslices',
@@ -200,7 +205,35 @@ def _strong_probable_prime(n: int, base: int) -> bool: ...
 def is_prime(n: int) -> bool: ...
 def loops(n: int) -> Iterator[None]: ...
 def multinomial(*counts: int) -> int: ...
-def running_mean(iterable: Iterable[_NumberT]) -> Iterator[_NumberT]: ...
+def running_mean(
+    iterable: Iterable[_NumberT], *, maxlen: int | None = ...
+) -> Iterator[_NumberT]: ...
+def running_min(
+    iterable: Iterable[_NumberT], *, maxlen: int | None = ...
+) -> Iterator[_NumberT]: ...
+def running_max(
+    iterable: Iterable[_NumberT], *, maxlen: int | None = ...
+) -> Iterator[_NumberT]: ...
+
+class Stats(Generic[_NumberT]):
+    size: int
+    minimum: _NumberT
+    median: _NumberT
+    maximum: _NumberT
+    mean: _NumberT
+    def __init__(
+        self,
+        size: int,
+        minimum: _NumberT,
+        median: _NumberT,
+        maximum: _NumberT,
+        mean: _NumberT,
+    ) -> None: ...
+    def __hash__(self) -> int: ...
+
+def running_statistics(
+    iterable: Iterable[_NumberT], *, maxlen: int | None = ...
+) -> Iterator[Stats[_NumberT]]: ...
 def running_median(
     iterable: Iterable[_NumberT], *, maxlen: int | None = ...
 ) -> Iterator[_NumberT]: ...
