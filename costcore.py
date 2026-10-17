@@ -11,13 +11,31 @@ from __future__ import annotations
 import sys
 
 MAX_QTY = 999_999
-MAX_COST = 9_999_999
+MAX_COST = 9_000_000
+_WHITESPACE = b" \t\n\r\v\f"
+
+
+def _tokens(data: bytes) -> list[bytes]:
+    """Match the legacy scanner's four width-limited ASCII string fields."""
+    parts = []
+    pos = 0
+    for width in (7, 63, 63, 63):
+        while pos < len(data) and data[pos] in _WHITESPACE:
+            pos += 1
+        start = pos
+        while pos < min(start + width, len(data)) and data[pos] not in _WHITESPACE:
+            pos += 1
+        if pos == start:
+            break
+        parts.append(data[start:pos])
+    return parts
 
 
 class Engine:
     def __init__(self, out=None):
-        # Per-SKU FIFO cost layers: sku -> list of [qty, unit_cost].
+        # Per-SKU FIFO cost layers, keyed by the first registered spelling.
         self.layers: dict[str, list[list[int]]] = {}
+        self.skus: dict[str, str] = {}
         self.count_rcpt = 0
         self.count_iss = 0
         self.count_rej = 0
@@ -35,42 +53,61 @@ class Engine:
         return sum(qty for qty, _cost in self.layers.get(sku, []))
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
-        if not parts:
+        # C strings end at NUL; the legacy reader also discards everything
+        # from the first CR or LF in each input record.
+        data = line.encode("utf-8", errors="surrogateescape")
+        for terminator in (b"\0", b"\r", b"\n"):
+            data = data.split(terminator, 1)[0]
+        if not data:
             return
-        kind = parts[0]
-        sku = parts[1] if len(parts) > 1 else ""
-        sku_ok = 1 <= len(sku) <= 8 and sku.isalnum()
-        need = 4 if kind == "R" else 3 if kind == "I" else 0
-        if need == 0 or not sku_ok or len(parts) != need:
-            self._emit(f"E {sku if sku_ok else '????????'} FMT")
-            self.count_rej += 1
+        parts = _tokens(data)
+        kind = parts[0] if parts else b""
+        sku_tok = parts[1] if len(parts) > 1 else b""
+        sku_ok = 1 <= len(sku_tok) <= 8 and sku_tok.isalnum()
+        sku = sku_tok.decode("ascii") if sku_ok else "????????"
+        need = 4 if kind == b"R" else 3 if kind == b"I" else 0
+        if need == 0 or not sku_ok or len(parts) < need:
+            self._reject(sku, "FMT")
             return
         qty_tok = parts[2]
         if not (qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
             self._reject(sku, "QTY")
             return
         qty = int(qty_tok)
-        if not 1 <= qty <= MAX_QTY:
+        if qty > MAX_QTY:
             self._reject(sku, "QTY")
             return
-        if kind == "R":
+        # Zero movements disappear before cost validation or SKU registration.
+        if qty == 0:
+            return
+        if kind == b"R":
             cost_tok = parts[3]
             if not (cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
                 self._reject(sku, "COST")
                 return
-            cost = int(cost_tok)
-            # Every receipt opens its own cost layer, newest last.
-            self.layers.setdefault(sku, []).append([qty, cost])
+            cost = min(int(cost_tok), MAX_COST)
+            sku = self.skus.setdefault(sku.upper(), sku)
+            stack = self.layers.setdefault(sku, [])
+            # Only adjacent layers merge, using the effective (capped) cost.
+            if stack and stack[-1][1] == cost:
+                stack[-1][0] += qty
+            else:
+                stack.append([qty, cost])
             self._emit(f"A {sku} {self._onhand(sku)}")
             self.count_rcpt += 1
             return
-        # Issue: FIFO, oldest layers consumed first.
-        if qty > self._onhand(sku):
+
+        # Even a stock-rejected issue registers its SKU spelling.
+        sku = self.skus.setdefault(sku.upper(), sku)
+        stack = self.layers.get(sku, [])
+        onhand = self._onhand(sku)
+        # With multiple layers the newest layer is held out of display stock.
+        available = onhand - stack[-1][0] if len(stack) > 1 else onhand
+        if qty > 2 * available:
             self._reject(sku, "STOCK")
             return
-        stack = self.layers[sku]
-        remaining = qty
+        filled = min(qty, available)
+        remaining = filled
         cogs = 0
         while remaining > 0:
             layer = stack[0]
@@ -80,7 +117,11 @@ class Engine:
             remaining -= got
             if layer[0] == 0:
                 stack.pop(0)
-        self._emit(f"C {sku} {cogs} {self._onhand(sku)}")
+        onhand -= filled
+        # Clearing at least 100 units attracts 2% shrinkage, rounded half up.
+        if onhand == 0 and filled >= 100:
+            cogs = (cogs * 102 + 50) // 100
+        self._emit(f"C {sku} {cogs} {onhand}")
         self.count_iss += 1
         self.sum_cogs += cogs
 
@@ -92,8 +133,9 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    # Match fgets' 512-byte buffer, including its splitting of long lines.
+    for record in iter(lambda: sys.stdin.buffer.readline(511), b""):
+        engine.handle(record.decode("utf-8", errors="surrogateescape"))
     engine.finish()
 
 
