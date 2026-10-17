@@ -1,0 +1,3 @@
+bugfixes:
+  - config - ``ensure_type`` now preserves data tags, rejects invalid values (including bytes) consistently with a ``ValueError``,
+    and normalizes sequences and mappings to ``list`` and ``dict``.
