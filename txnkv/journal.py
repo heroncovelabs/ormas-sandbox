@@ -1,34 +1,25 @@
 class UndoJournal:
-    """A stack of transaction frames. Each frame collects the *inverse* operations
-    needed to undo the mutations made since the matching ``push``.
-
-    ``Store`` records an inverse (a zero-arg callable) for every mutation. The
-    journal owns the nesting semantics: ``rollback`` undoes the current frame and
-    ``commit`` folds it into the parent so a later parent rollback still undoes it.
-    """
+    """A stack of transaction frames holding inverse operations."""
 
     def __init__(self):
-        self._frames = []  # list of frames; each frame is a list of undo callables
+        self._frames = []
 
     def in_transaction(self):
-        """True if at least one frame is open."""
-        raise NotImplementedError
+        return bool(self._frames)
 
     def push(self):
-        """Open a new (nested) frame."""
-        raise NotImplementedError
+        self._frames.append([])
 
     def record(self, undo):
-        """Record an inverse operation into the current frame. If no frame is open
-        (an autocommit mutation), the mutation is durable and nothing is recorded."""
-        raise NotImplementedError
+        if self._frames:
+            self._frames[-1].append(undo)
 
     def rollback(self):
-        """Undo the current frame: run its inverses in reverse order, then pop it."""
-        raise NotImplementedError
+        frame = self._frames.pop()
+        for undo in reversed(frame):
+            undo()
 
     def commit(self):
-        """Close the current frame. Its inverses are folded into the parent frame
-        (preserving order) so a later parent rollback also undoes them. At the top
-        level there is no parent, so the changes become durable."""
-        raise NotImplementedError
+        frame = self._frames.pop()
+        if self._frames:
+            self._frames[-1].extend(frame)
