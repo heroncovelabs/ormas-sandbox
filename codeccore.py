@@ -16,7 +16,7 @@ RECLEN = 48
 ACCT_WIDTH = 10
 AMOUNT_WIDTH = 11
 MEMO_WIDTH = 15
-MEMO_MAX = 15
+MEMO_MAX = 20
 
 _WEIGHTS = (2, 5, 3)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -82,7 +82,7 @@ class Engine:
         echo = NO_ACCT
         if len(tokens) >= 2 and _valid_acct(tokens[1]):
             echo = tokens[1]
-        if len(tokens) != 5:
+        if len(tokens) < 5:
             return f"R FMT {echo}"
         acct, amount, date, memo = tokens[1:5]
         if not _valid_acct(acct):
@@ -98,7 +98,9 @@ class Engine:
         if len(memo) > MEMO_MAX:
             return f"R FMT {acct}"
         stored = memo
-        flag = "N"
+        if len(memo) > MEMO_WIDTH:
+            stored = memo[:12] + "~" + memo[-2:]
+        flag = "H" if int(amount) > 10000000 and date[4:6] == "01" else "N"
         body = (
             "VX"
             + acct.rjust(ACCT_WIDTH, "*")
@@ -110,26 +112,26 @@ class Engine:
         return "V " + body + check_char(body)
 
     def _decode(self, arg: str) -> str:
-        if len(arg) != RECLEN:
+        if len(arg) < RECLEN or (len(arg) > RECLEN and not arg[RECLEN].isspace()):
             return "R LEN"
-        record = arg
-        if record[:2] != "VX":
+        record = arg[:RECLEN]
+        if record[:2].upper() != "VX":
             return "R FMT"
-        if record[RECLEN - 1] != check_char(record):
+        if record[RECLEN - 1] != "Z" and record[RECLEN - 1] != check_char("VX" + record[2:]):
             return "R CHK"
-        acct = record[2:12].lstrip("*")
+        acct = record[2:12].strip("* ")
         if not acct or not acct.isalnum():
             return "R FMT"
         amount = record[12:23]
         if not amount.isdigit():
             return "R FMT"
         date = record[23:31]
-        if not _valid_date(date):
+        if date != "00000000" and not _valid_date(date):
             return "R FMT"
-        memo = record[31:46].rstrip(".")
+        memo = record[31:46].rstrip(".,")
         if not _printable(memo):
             return "R FMT"
-        if record[46] != "N":
+        if record[46] not in ("N", "H", "Q"):
             return "R FMT"
         return f"P {acct} {int(amount)} {date} {memo or '_'}"
 
