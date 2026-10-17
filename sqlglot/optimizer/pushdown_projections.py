@@ -44,6 +44,11 @@ def default_selection(is_agg: bool) -> exp.Alias:
     return alias(exp.Max(this=exp.Literal.number(1)) if is_agg else "1", "_").assert_is(exp.Alias)
 
 
+def _has_group_by_all(select: exp.Select) -> bool:
+    group = select.args.get("group")
+    return bool(group and group.args.get("all"))
+
+
 def pushdown_projections(
     expression: E,
     schema: dict[str, object] | Schema | None = None,
@@ -88,12 +93,23 @@ def pushdown_projections(
         if _is_self_referencing_cte(scope):
             parent_selections = {SELECT_ALL}
 
+        # GROUP BY ALL implicitly groups by every nonaggregate projection, so each
+        # projection defines the grouping keys and must be retained even if unreferenced.
+        if isinstance(scope.expression, exp.Select) and _has_group_by_all(scope.expression):
+            parent_selections = {SELECT_ALL}
+
         if isinstance(scope.expression, exp.SetOperation):
             set_op = scope.expression
             if set_op.kind or set_op.side:
                 # Do not optimize this set operation if it's using the BigQuery specific
                 # kind / side syntax (e.g INNER UNION ALL BY NAME) which changes the semantics of the operation
                 continue
+
+            # INTERSECT / EXCEPT compare complete operand tuples (including the ALL variants,
+            # which use multiset semantics), so every operand column affects the result and
+            # none may be pruned.
+            if isinstance(set_op, (exp.Intersect, exp.Except)):
+                parent_selections = {SELECT_ALL}
 
             left, right = scope.union_scopes
             le = left.expression
