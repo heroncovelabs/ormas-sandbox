@@ -18,6 +18,8 @@ MIN_HI = 120  # longest registrable side, minutes
 ALLOT = 6  # groove allotment per title, sides of lacquer
 Q_BASE = 1000  # quality base
 Q_CUT = 3  # quality lost per minute of runtime (long sides cut shallower)
+Q_WEAR = 7  # quality lost per cut since remaster, including inherited wear
+Q_CONTENTION = 15  # extra fourth-side loss on a busy board
 NO_TITLE = "????????"
 
 
@@ -30,10 +32,14 @@ def _digits(token: str) -> bool:
 
 
 class Title:
-    def __init__(self, minutes: int) -> None:
-        self.minutes = minutes
-        self.remaining = ALLOT  # live allotment
-        self.sides = 0  # ledger: sides cut
+    def __init__(self, minutes: int, wear: int = 0) -> None:
+        self.minutes = minutes  # runtime of each side, minutes
+        self.remaining = ALLOT  # live cutting allowance
+        self.sides = 0  # successful-side ledger: sides cut
+        self.wear = wear  # inherited board wear plus this title's cuts
+        self.batch_sides = 0  # successful cuts since this title's last remaster
+        self.remaster_charges = 0  # cumulative allotment charged by remasters
+        self.courtesy_used = False  # one-time courtesy revive consumed
 
 
 class Engine:
@@ -87,7 +93,10 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        # Newly queued titles inherit the most worn title on the board,
+        # including titles whose live allotment is already exhausted.
+        wear = max((t.wear for t in self.titles.values()), default=0)
+        self.titles[tokens[1]] = Title(int(minutes), wear)
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -100,11 +109,21 @@ class Engine:
         t = self._find(tokens[1])
         if t is None:
             return f"N {title} UNKNOWN"
-        if t.remaining < 1:
+        cost = 2 if t.minutes > 90 else 1
+        if t.remaining < cost:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        quality = Q_BASE - t.minutes * Q_CUT - t.wear * Q_WEAR
+        if t.sides == 3:
+            active = sum(
+                other.sides > 0 and other.remaining > 0
+                for other in self.titles.values()
+            )
+            if active >= 3:
+                quality -= Q_CONTENTION
+        t.remaining -= cost
         t.sides += 1
+        t.wear += 1
+        t.batch_sides += 1
         self.cut_since_remaster += 1
         self.sides += 1
         return f"Q {tokens[1]} {quality}"
@@ -112,13 +131,22 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
+        # Idle remasters preserve live state while still reporting every
+        # title and counting in the trailer. An active batch reconciles all
+        # titles, even those that did not cut a side in this batch.
         lines = []
         for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
+            if self.cut_since_remaster:
+                t.remaster_charges += t.batch_sides // 4
+                remaining = ALLOT - t.sides - t.remaster_charges
+                # Courtesy is based on the pre-remaster live counter. It
+                # replaces the ledger result and is granted once per title.
+                if t.remaining == 0 and not t.courtesy_used:
+                    remaining = 1
+                    t.courtesy_used = True
+                t.remaining = remaining
+                t.wear = 0
+                t.batch_sides = 0
             lines.append(f"R {name} {t.remaining}")
         lines.append(f"MEND {len(self.titles)}")
         self.cut_since_remaster = 0
