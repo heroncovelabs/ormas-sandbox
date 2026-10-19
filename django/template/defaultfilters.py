@@ -499,6 +499,16 @@ def safeseq(value):
 
 
 @register.filter(is_safe=True)
+def escapeseq(value):
+    """
+    An "escape" filter for sequences. Escape each element in the sequence,
+    individually, after converting them to strings. Return a list with the
+    results.
+    """
+    return [conditional_escape(obj) for obj in value]
+
+
+@register.filter(is_safe=True)
 @stringfilter
 def striptags(value):
     """Strip all [X]HTML tags."""
