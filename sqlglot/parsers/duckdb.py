@@ -74,6 +74,7 @@ def _convert_text_type(dtype: exp.DataType) -> exp.DataType:
 class DuckDBParser(parser.Parser):
     MAP_KEYS_ARE_ARBITRARY_EXPRESSIONS = True
     PIVOT_COLUMN_NAMING = "agg_name_if_aliased_or_multiple"
+    JSON_OPERATORS_AT_BITWISE = True
 
     NO_PAREN_FUNCTIONS = {
         **parser.Parser.NO_PAREN_FUNCTIONS,

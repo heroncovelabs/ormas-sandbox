@@ -1071,6 +1071,20 @@ class Parser:
         TokenType.DCOLON,
     }
 
+    # JSON operators that dialects can parse at the ordinary binary operator tier.
+    JSON_OPERATORS: t.ClassVar[frozenset[TokenType]] = frozenset(
+        {
+            TokenType.ARROW,
+            TokenType.DARROW,
+            TokenType.HASH_ARROW,
+            TokenType.DHASH_ARROW,
+            TokenType.PLACEHOLDER,
+        }
+    )
+
+    # Parse JSON operators alongside ||, below arithmetic (Postgres and DuckDB).
+    JSON_OPERATORS_AT_BITWISE: t.ClassVar[bool] = False
+
     EXPRESSION_PARSERS: t.ClassVar = {
         exp.Cluster: lambda self: self._parse_sort(exp.Cluster, TokenType.CLUSTER_BY),
         exp.Column: lambda self: self._parse_column(),
@@ -6261,6 +6275,10 @@ class Parser:
                 this = self.expression(
                     exp.BitwiseRightShift(this=this, expression=self._parse_term())
                 )
+            elif self.JSON_OPERATORS_AT_BITWISE and self._curr.token_type in self.JSON_OPERATORS:
+                op = self.COLUMN_OPERATORS[self._curr.token_type]
+                self._advance()
+                this = op(self, this, self._parse_term())
             else:
                 break
 
@@ -6946,7 +6964,9 @@ class Parser:
         while self._curr:
             op_token = self._curr.token_type
 
-            if op_token not in column_operators:
+            if op_token not in column_operators or (
+                self.JSON_OPERATORS_AT_BITWISE and op_token in self.JSON_OPERATORS
+            ):
                 break
             op = column_operators[op_token]
             self._advance()

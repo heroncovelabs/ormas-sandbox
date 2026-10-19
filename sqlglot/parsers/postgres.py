@@ -189,6 +189,7 @@ class PostgresParser(parser.Parser):
     }
 
     JSON_ARROWS_REQUIRE_JSON_TYPE = True
+    JSON_OPERATORS_AT_BITWISE = True
 
     COLUMN_OPERATORS = {
         **parser.Parser.COLUMN_OPERATORS,
