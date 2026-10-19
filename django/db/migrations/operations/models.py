@@ -216,6 +216,28 @@ class CreateModel(ModelOperation):
                 ),
             ]
         elif (
+            isinstance(operation, IndexOperation)
+            and self.name_lower == operation.model_name_lower
+            and isinstance(operation, (AddIndex, RemoveIndex))
+        ):
+            if isinstance(operation, AddIndex):
+                indexes = [*self.options.get("indexes", []), operation.index]
+            else:
+                indexes = [
+                    index
+                    for index in self.options.get("indexes", [])
+                    if index.name != operation.name
+                ]
+            return [
+                CreateModel(
+                    self.name,
+                    fields=self.fields,
+                    options={**self.options, "indexes": indexes},
+                    bases=self.bases,
+                    managers=self.managers,
+                ),
+            ]
+        elif (
             isinstance(operation, FieldOperation)
             and self.name_lower == operation.model_name_lower
         ):
@@ -860,6 +882,15 @@ class AddIndex(IndexOperation):
     @property
     def migration_name_fragment(self):
         return "%s_%s" % (self.model_name_lower, self.index.name.lower())
+
+    def reduce(self, operation, app_label):
+        if (
+            isinstance(operation, RemoveIndex)
+            and self.model_name_lower == operation.model_name_lower
+            and self.index.name == operation.name
+        ):
+            return []
+        return super().reduce(operation, app_label)
 
 
 class RemoveIndex(IndexOperation):
