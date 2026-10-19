@@ -610,6 +610,8 @@ class FileResponse(StreamingHttpResponse):
                 # uncompressing files.
                 content_type = {
                     "bzip2": "application/x-bzip",
+                    "br": "application/x-brotli",
+                    "compress": "application/x-compress",
                     "gzip": "application/gzip",
                     "xz": "application/x-xz",
                 }.get(encoding, content_type)
