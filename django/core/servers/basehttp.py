@@ -129,11 +129,16 @@ class ServerHandler(simple_server.ServerHandler):
         )
 
     def cleanup_headers(self):
-        super().cleanup_headers()
+        is_head = self.environ["REQUEST_METHOD"] == "HEAD"
+        # HEAD responses have no body, so don't derive a Content-Length from
+        # the (unsent) body; only keep one supplied by the application.
+        if not is_head:
+            super().cleanup_headers()
         # HTTP/1.1 requires support for persistent connections. Send 'close' if
         # the content length is unknown to prevent clients from reusing the
-        # connection.
-        if "Content-Length" not in self.headers:
+        # connection. A HEAD response has no body to delimit, so it is only
+        # closed when the server isn't threaded.
+        if "Content-Length" not in self.headers and not is_head:
             self.headers["Connection"] = "close"
         # Persistent connections require threading server.
         elif not isinstance(self.request_handler.server, socketserver.ThreadingMixIn):
@@ -142,6 +147,28 @@ class ServerHandler(simple_server.ServerHandler):
         # application sent the header.
         if self.headers.get("Connection") == "close":
             self.request_handler.close_connection = True
+
+    def write(self, data):
+        if self.environ["REQUEST_METHOD"] != "HEAD":
+            return super().write(data)
+        # Validate the chunk like the parent does, but send only the headers.
+        # Writes can occur during the initial application call, before
+        # finish_response() runs, so the suppression must happen here too.
+        assert type(data) is bytes, "write() argument must be a bytes instance"
+        if not self.status:
+            raise AssertionError("write() before start_response()")
+        if not self.headers_sent:
+            self.send_headers()
+            self._flush()
+
+    def finish_content(self):
+        if self.environ["REQUEST_METHOD"] == "HEAD":
+            # Send headers for empty responses while preserving an explicitly
+            # supplied Content-Length and avoiding an automatic value of zero.
+            if not self.headers_sent:
+                self.send_headers()
+        else:
+            super().finish_content()
 
     def close(self):
         self.get_stdin().read()
