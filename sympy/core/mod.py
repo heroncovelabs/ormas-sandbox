@@ -166,7 +166,13 @@ class Mod(Function):
         # XXX other possibilities?
 
         # extract gcd; any further simplification should be done by the user
-        G = gcd(p, q)
+        # A Piecewise cannot be a polynomial generator, so polynomial gcd is
+        # not defined for it; leave the gcd extraction out in that case.
+        from sympy.functions.elementary.piecewise import Piecewise
+        if p.has(Piecewise) or q.has(Piecewise):
+            G = S.One
+        else:
+            G = gcd(p, q)
         if G != 1:
             p, q = [
                 gcd_terms(i/G, clear=False, fraction=False) for i in (p, q)]
