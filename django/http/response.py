@@ -612,6 +612,8 @@ class FileResponse(StreamingHttpResponse):
                     "bzip2": "application/x-bzip",
                     "gzip": "application/gzip",
                     "xz": "application/x-xz",
+                    "br": "application/x-brotli",
+                    "compress": "application/x-compress",
                 }.get(encoding, content_type)
                 self.headers["Content-Type"] = (
                     content_type or "application/octet-stream"
