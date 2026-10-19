@@ -253,6 +253,40 @@ def _check_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
     return _splitstrip(value)
 
 
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
+    """Split regexp CSV, preserving commas in braces, classes and escapes."""
+    if isinstance(value, (list, tuple)):
+        return value
+
+    patterns = []
+    start = 0
+    escaped = False
+    in_braces = False
+    class_start: int | None = None
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif class_start is not None:
+            if character == "]" and index > class_start:
+                class_start = None
+        elif character == "[":
+            # A leading ']' (also after '^') belongs to the character class.
+            class_start = index + 1
+            if value[class_start : class_start + 1] == "^":
+                class_start += 1
+        elif character == "{":
+            in_braces = True
+        elif character == "}":
+            in_braces = False
+        elif character == "," and not in_braces:
+            patterns.append(value[start:index])
+            start = index + 1
+    patterns.append(value[start:])
+    return [pattern.strip() for pattern in patterns if pattern.strip()]
+
+
 def _comment(string: str) -> str:
     """Return string as a comment."""
     lines = [line.strip() for line in string.splitlines()]
