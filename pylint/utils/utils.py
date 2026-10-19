@@ -253,6 +253,53 @@ def _check_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
     return _splitstrip(value)
 
 
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
+    """Split regex CSV, preserving escapes, character classes and quantifiers.
+
+    Commas outside character classes and repetition quantifiers separate
+    expressions, even inside parentheses. Escape literal commas with a
+    backslash. Strip whitespace and discard empty fields as for ordinary CSV;
+    leave regex validation to the caller.
+    """
+    if isinstance(value, (list, tuple)):
+        return value
+
+    quantifier = re.compile(r"\{[0-9]*,[0-9]*\}")
+    patterns = []
+    field_start = 0
+    class_start = None
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "\\":
+            index += 2
+            continue
+        if class_start is not None:
+            # A closing bracket at the start of a class is a literal.
+            if char == "]" and index > class_start:
+                class_start = None
+        elif char == "[":
+            class_start = index + 1
+            if value[class_start : class_start + 1] == "^":
+                class_start += 1
+        elif char == "{":
+            match = quantifier.match(value, index)
+            if match:
+                index = match.end()
+                continue
+        elif char == ",":
+            pattern = value[field_start:index].strip()
+            if pattern:
+                patterns.append(pattern)
+            field_start = index + 1
+        index += 1
+
+    pattern = value[field_start:].strip()
+    if pattern:
+        patterns.append(pattern)
+    return patterns
+
+
 def _comment(string: str) -> str:
     """Return string as a comment."""
     lines = [line.strip() for line in string.splitlines()]
