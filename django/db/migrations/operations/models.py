@@ -820,6 +820,15 @@ class AddIndex(IndexOperation):
             )
         self.index = index
 
+    def reduce(self, operation, app_label):
+        if (
+            isinstance(operation, RemoveIndex)
+            and self.model_name_lower == operation.model_name_lower
+            and self.index.name == operation.name
+        ):
+            return []
+        return super().reduce(operation, app_label)
+
     def state_forwards(self, app_label, state):
         state.add_index(app_label, self.model_name_lower, self.index)
 
