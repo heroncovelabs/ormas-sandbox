@@ -1066,6 +1066,10 @@ class Parser:
         ),
     }
 
+    # Operators that bind like ordinary binary operators (level with `||`) instead of
+    # tight-binding column accessors. Maps token type -> builder(self, this, right)
+    JSON_OPERATORS: t.ClassVar[dict] = {}
+
     CAST_COLUMN_OPERATORS: t.ClassVar = {
         TokenType.DOTCOLON,
         TokenType.DCOLON,
@@ -6235,9 +6239,14 @@ class Parser:
 
     def _parse_bitwise(self) -> exp.Expr | None:
         this = self._parse_term()
+        json_operators = self.JSON_OPERATORS
 
         while True:
-            if self._match_set(self.BITWISE):
+            if json_operators and self._curr and self._curr.token_type in json_operators:
+                op = json_operators[self._curr.token_type]
+                self._advance()
+                this = op(self, this, self._parse_term())
+            elif self._match_set(self.BITWISE):
                 this = self.expression(
                     self.BITWISE[self._prev.token_type](this=this, expression=self._parse_term())
                 )

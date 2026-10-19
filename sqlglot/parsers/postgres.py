@@ -83,6 +83,15 @@ def _build_levenshtein_less_equal(args: list) -> exp.Levenshtein:
     )
 
 
+_JSON_OPERATOR_TOKENS = (
+    TokenType.ARROW,
+    TokenType.DARROW,
+    TokenType.HASH_ARROW,
+    TokenType.DHASH_ARROW,
+    TokenType.PLACEHOLDER,
+)
+
+
 class PostgresParser(parser.Parser):
     SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT = True
 
@@ -191,7 +200,11 @@ class PostgresParser(parser.Parser):
     JSON_ARROWS_REQUIRE_JSON_TYPE = True
 
     COLUMN_OPERATORS = {
-        **parser.Parser.COLUMN_OPERATORS,
+        k: v for k, v in parser.Parser.COLUMN_OPERATORS.items() if k not in _JSON_OPERATOR_TOKENS
+    }
+
+    JSON_OPERATORS = {
+        **{k: parser.Parser.COLUMN_OPERATORS[k] for k in _JSON_OPERATOR_TOKENS},
         TokenType.ARROW: lambda self, this, path: self.validate_expression(
             build_json_extract_path(
                 exp.JSONExtract, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
