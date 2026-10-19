@@ -249,8 +249,8 @@ def parse_tag(
     :raises UnsortedTagsError: If **validate_order** is true and any compressed tag
         set component is not in sorted order.
     :raises InvalidTag: If the interpreter, ABI, or platform field (or any member
-        of a compressed tag set) is empty, or the tag does not have exactly three
-        components.
+        of a compressed tag set) is empty, if an interpreter is not a valid
+        Python identifier, or the tag does not have exactly three components.
     :raises TooManyTagsError: If **limit** is not ``None`` and the compressed tag
         set would generate more than **limit** tags.
     :raises ValueError: If **limit** is negative.
@@ -277,6 +277,12 @@ def parse_tag(
             component = ".".join(parts)
             raise UnsortedTagsError(
                 f"Tag component {component!r} is not in sorted order per PEP 425"
+            )
+
+    for interpreter in component_parts[0]:
+        if not interpreter.isidentifier():
+            raise InvalidTag(
+                f"Tag {tag!r} has an invalid interpreter component: {interpreter!r}"
             )
 
     tag_count = 1
