@@ -1626,6 +1626,9 @@ class Rational(Number):
             gcd = 1
 
         if not isinstance(p, SYMPY_INTS):
+            if not isinstance(q, SYMPY_INTS):
+                # Convert before scaling so string denominators are not repeated.
+                q = Rational(q)
             p = Rational(p)
             q *= p.q
             p = p.p
