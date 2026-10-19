@@ -1897,6 +1897,7 @@ class Analyze(Expression):
         "partition": False,
         "expression": False,
         "properties": False,
+        "expressions": False,
     }
 
 
