@@ -4,6 +4,8 @@ A MathML printer.
 
 from __future__ import print_function, division
 
+import re
+
 from sympy import sympify, S, Mul
 from sympy.core.function import _coeff_isneg
 from sympy.core.compatibility import range
@@ -772,7 +774,13 @@ class MathMLPresentationPrinter(MathMLPrinterBase):
             else:
                 return s
 
-        name, supers, subs = split_super_sub(sym.name)
+        # a plain name ending in digits (e.g. 'x2') is treated as having a
+        # subscript (x_2), so it is rendered with msub like other subscripts
+        sym_name = sym.name
+        m = re.match(r'^([^\W\d_]+)(\d+)$', sym_name, re.UNICODE)
+        if m:
+            sym_name = m.group(1) + '_' + m.group(2)
+        name, supers, subs = split_super_sub(sym_name)
         name = translate(name)
         supers = [translate(sup) for sup in supers]
         subs = [translate(sub) for sub in subs]
@@ -786,19 +794,19 @@ class MathMLPresentationPrinter(MathMLPrinterBase):
                 msub = self.dom.createElement('msub')
                 msub.appendChild(mname)
                 msub.appendChild(join(subs))
-                x.appendChild(msub)
+                return msub
         else:
             if len(subs) == 0:
                 msup = self.dom.createElement('msup')
                 msup.appendChild(mname)
                 msup.appendChild(join(supers))
-                x.appendChild(msup)
+                return msup
             else:
                 msubsup = self.dom.createElement('msubsup')
                 msubsup.appendChild(mname)
                 msubsup.appendChild(join(subs))
                 msubsup.appendChild(join(supers))
-                x.appendChild(msubsup)
+                return msubsup
         return x
 
     def _print_MatrixSymbol(self, sym):
