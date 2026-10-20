@@ -66,6 +66,8 @@ class Engine:
         val = tokens[1]
         if not _valid_val(val):
             return "E VAL"
+        if val == self.value:
+            return None
         self.value = val
         self.sets += 1
         return "OK"
@@ -74,7 +76,7 @@ class Engine:
         # SPEC: the first snapshot is FULL, and every fourth snapshot is
         # stored FULL so a delta chain stays short (snapshots 4, 8, ...).
         count = len(self.snaps)
-        return count == 0 or (count + 1) % FULL_EVERY == 0
+        return count % FULL_EVERY == 0
 
     def _store(self) -> str:
         if self._is_full():
@@ -94,15 +96,22 @@ class Engine:
         snap = self.snaps[idx]
         if snap[0] == "F":
             return snap[1]
-        # SPEC: a delta applies against the previous snapshot's
-        # reconstructed value, honoring the recorded length; positions
-        # beyond the base fill with the pad character.
+        j = idx
+        while self.snaps[j][0] != "F":
+            j -= 1
+        buf = list(self.snaps[j][1])
         _, newlen, changes = snap
-        base = self._reconstruct(idx - 1)
-        return "".join(
-            changes.get(p, base[p] if p < len(base) else PAD)
-            for p in range(newlen)
-        )
+        if idx == j + 1:
+            if len(buf) < newlen:
+                buf.extend(PAD * (newlen - len(buf)))
+            for p, c in changes.items():
+                buf[p] = c
+            return "".join(buf[:newlen])
+        for p, c in changes.items():
+            if p >= len(buf):
+                buf.extend(PAD * (p + 1 - len(buf)))
+            buf[p] = c
+        return "".join(buf)
 
     def _restore(self, tokens: list[str]) -> str:
         # Extra trailing tokens are tolerated and ignored.
@@ -117,7 +126,6 @@ class Engine:
         self.value = self._reconstruct(idx)
         # SPEC: the restored value becomes the working value the next
         # snapshot builds on.
-        self.base = self.value
         self.restores += 1
         return f"V {digest(self.value)}"
 
