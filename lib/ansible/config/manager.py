@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from jinja2.nativetypes import NativeEnvironment
 
 from ansible.errors import AnsibleOptionsError, AnsibleError, AnsibleUndefinedConfigEntry, AnsibleRequiredOptionError
+from ansible.module_utils._internal._datatag import AnsibleTagHelper
 from ansible.module_utils.common.sentinel import Sentinel
 from ansible.module_utils.common.text.converters import to_text, to_bytes, to_native
 from ansible.module_utils.common.yaml import yaml_load
@@ -27,6 +28,11 @@ from ansible.utils.path import cleanup_tmp_file, makedirs_safe, unfrackpath
 
 
 INTERNAL_DEFS = {'lookup': ('_terms',)}
+
+_KNOWN_VALUE_TYPES = frozenset((
+    'bool', 'boolean', 'int', 'integer', 'float', 'list', 'none', 'path', 'tmp', 'temppath', 'tmppath',
+    'pathspec', 'pathlist', 'dict', 'dictionary', 'str', 'string',
+))
 
 GALAXY_SERVER_DEF = [
     ('url', True, 'str'),
@@ -65,6 +71,14 @@ def _get_config_label(plugin_type: str, plugin_name: str, config: str) -> str:
     return entry
 
 
+def _retag(src, result):
+    """Return ``result`` carrying the data tags of ``src`` (identity is preserved when nothing changed)."""
+    if result is src or (AnsibleTagHelper.base_type(src) is AnsibleTagHelper.base_type(result) and src == result):
+        return src
+
+    return AnsibleTagHelper.tag_copy(src, result)
+
+
 # FIXME: see if we can unify in module_utils with similar function used by argspec
 def ensure_type(value, value_type, origin=None, origin_ftype=None):
     """ return a configuration variable with casting
@@ -72,9 +86,9 @@ def ensure_type(value, value_type, origin=None, origin_ftype=None):
     :kwarg value_type: The type of the value.  This can be any of the following strings:
         :boolean: sets the value to a True or False value
         :bool: Same as 'boolean'
-        :integer: Sets the value to an integer or raises a ValueType error
+        :integer: Sets the value to an integer or raises a ValueError
         :int: Same as 'integer'
-        :float: Sets the value to a float or raises a ValueType error
+        :float: Sets the value to a float or raises a ValueError
         :list: Treats the value as a comma separated list.  Split the value
             and return it as a python list.
         :none: Sets the value to None
@@ -88,106 +102,133 @@ def ensure_type(value, value_type, origin=None, origin_ftype=None):
             each part for environment variables and tildes.
         :pathspec: Treat the value as a PATH string. Expands any environment variables
             tildes's in the value.
+        :dict: Treats the value as a mapping and returns it as a dict.
+        :dictionary: Same as 'dict'
         :str: Sets the value to string types.
         :string: Same as 'str'
     """
 
-    errmsg = ''
+    if value is None:
+        return None
+
+    original_value = value
+    requested_type = value_type.lower() if value_type else value_type
+
+    def invalid():
+        return ValueError(f'Invalid value provided for {requested_type!r}: {original_value!r}')
+
     basedir = None
     if origin and os.path.isabs(origin) and os.path.exists(to_bytes(origin)):
         basedir = origin
 
-    if value_type:
-        value_type = value_type.lower()
+    value_type = requested_type
 
-    if value is not None:
-        if value_type in ('boolean', 'bool'):
-            value = boolean(value, strict=False)
+    if value_type not in _KNOWN_VALUE_TYPES:
+        # unknown types pass through unchanged, except for unquoting strings read from INI
+        if isinstance(value, string_types) and origin_ftype == 'ini':
+            return _retag(value, unquote(value))
+        return value
 
-        elif value_type in ('integer', 'int'):
-            if not isinstance(value, int):
-                try:
-                    if (decimal_value := decimal.Decimal(value)) == (int_part := int(decimal_value)):
-                        value = int_part
-                    else:
-                        errmsg = 'int'
-                except decimal.DecimalException:
-                    errmsg = 'int'
+    if isinstance(value, bytes):
+        raise invalid()
 
-        elif value_type == 'float':
-            if not isinstance(value, float):
-                value = float(value)
+    if value_type in ('boolean', 'bool'):
+        result = _retag(value, boolean(value, strict=False))
 
-        elif value_type == 'list':
-            if isinstance(value, string_types):
-                value = [unquote(x.strip()) for x in value.split(',')]
-            elif not isinstance(value, Sequence):
-                errmsg = 'list'
+    elif value_type in ('integer', 'int'):
+        if isinstance(value, bool):
+            result = _retag(value, int(value))
+        elif isinstance(value, int):
+            result = value
+        else:
+            try:
+                decimal_value = decimal.Decimal(value)
+                int_value = int(decimal_value)
+            except (decimal.DecimalException, TypeError, ValueError, OverflowError) as ex:
+                raise invalid() from ex
 
-        elif value_type == 'none':
-            if value == "None":
-                value = None
+            if decimal_value != int_value:
+                raise invalid()
 
-            if value is not None:
-                errmsg = 'None'
+            result = _retag(value, int_value)
 
-        elif value_type == 'path':
-            if isinstance(value, string_types):
-                value = resolve_path(value, basedir=basedir)
+    elif value_type == 'float':
+        if isinstance(value, float):
+            result = value
+        else:
+            try:
+                result = _retag(value, float(value))
+            except (TypeError, ValueError, OverflowError) as ex:
+                raise invalid() from ex
+
+    elif value_type == 'list':
+        if isinstance(value, string_types):
+            result = _retag(value, [_retag(value, unquote(x.strip())) for x in value.split(',')])
+        elif isinstance(value, list):
+            result = value
+        elif isinstance(value, Sequence):
+            result = _retag(value, list(value))
+        else:
+            raise invalid()
+
+    elif value_type == 'none':
+        if isinstance(value, str) and value == 'None':
+            result = None
+        else:
+            raise invalid()
+
+    elif value_type == 'path':
+        if not isinstance(value, string_types):
+            raise invalid()
+
+        result = _retag(value, resolve_path(value, basedir=basedir))
+
+    elif value_type in ('tmp', 'temppath', 'tmppath'):
+        if not isinstance(value, string_types):
+            raise invalid()
+
+        base_path = resolve_path(value, basedir=basedir)
+        if not os.path.exists(base_path):
+            makedirs_safe(base_path, 0o700)
+        prefix = 'ansible-local-%s' % os.getpid()
+        # the temporary path is a new filesystem entry, so it intentionally does not carry tags
+        result = tempfile.mkdtemp(prefix=prefix, dir=base_path)
+        atexit.register(cleanup_tmp_file, result, warn=True)
+        return result
+
+    elif value_type in ('pathspec', 'pathlist'):
+        if isinstance(value, string_types):
+            if value_type == 'pathspec':
+                items = value.split(os.pathsep)
             else:
-                errmsg = 'path'
+                items = [x.strip() for x in value.split(',')]
+            items = [_retag(value, item) for item in items]
+        elif isinstance(value, Sequence):
+            items = value
+        else:
+            raise invalid()
 
-        elif value_type in ('tmp', 'temppath', 'tmppath'):
-            if isinstance(value, string_types):
-                value = resolve_path(value, basedir=basedir)
-                if not os.path.exists(value):
-                    makedirs_safe(value, 0o700)
-                prefix = 'ansible-local-%s' % os.getpid()
-                value = tempfile.mkdtemp(prefix=prefix, dir=value)
-                atexit.register(cleanup_tmp_file, value, warn=True)
-            else:
-                errmsg = 'temppath'
+        if not all(isinstance(item, string_types) for item in items):
+            raise invalid()
 
-        elif value_type == 'pathspec':
-            if isinstance(value, string_types):
-                value = value.split(os.pathsep)
+        result = _retag(value, [_retag(item, resolve_path(item, basedir=basedir)) for item in items])
 
-            if isinstance(value, Sequence):
-                value = [resolve_path(x, basedir=basedir) for x in value]
-            else:
-                errmsg = 'pathspec'
+    elif value_type in ('dict', 'dictionary'):
+        if not isinstance(value, Mapping):
+            raise invalid()
 
-        elif value_type == 'pathlist':
-            if isinstance(value, string_types):
-                value = [x.strip() for x in value.split(',')]
+        result = value if isinstance(value, dict) else _retag(value, dict(value))
 
-            if isinstance(value, Sequence):
-                value = [resolve_path(x, basedir=basedir) for x in value]
-            else:
-                errmsg = 'pathlist'
+    else:  # str/string
+        if not isinstance(value, (string_types, bool, int, float, complex)):
+            raise invalid()
 
-        elif value_type in ('dict', 'dictionary'):
-            if not isinstance(value, Mapping):
-                errmsg = 'dictionary'
+        result = _retag(value, to_text(value, errors='surrogate_or_strict'))
 
-        elif value_type in ('str', 'string'):
-            if isinstance(value, (string_types, bool, int, float, complex)):
-                value = to_text(value, errors='surrogate_or_strict')
-                if origin_ftype and origin_ftype == 'ini':
-                    value = unquote(value)
-            else:
-                errmsg = 'string'
+    if isinstance(result, string_types) and origin_ftype == 'ini':
+        result = _retag(value, unquote(result))
 
-        # defaults to string type
-        elif isinstance(value, (string_types)):
-            value = to_text(value, errors='surrogate_or_strict')
-            if origin_ftype and origin_ftype == 'ini':
-                value = unquote(value)
-
-        if errmsg:
-            raise ValueError(f'Invalid type provided for {errmsg!r}: {value!r}')
-
-    return to_text(value, errors='surrogate_or_strict', nonstring='passthru')
+    return result
 
 
 # FIXME: see if this can live in utils/path

@@ -1,0 +1,3 @@
+bugfixes:
+  - Configuration type coercion preserves data tags and unchanged values, normalizes sequences and mappings to lists and dictionaries, and consistently reports invalid conversions.
+  - Configuration boolean coercion handles unhashable values using the standard non-strict conversion rules.
