@@ -512,6 +512,16 @@ class AlterTogetherOptionOperation(ModelOptionOperation):
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
         return self.database_forwards(app_label, schema_editor, from_state, to_state)
 
+    def reduce(self, operation, app_label):
+        # Allow different together options to optimize through each other
+        # so repeated updates of the same option can be combined.
+        if (
+            isinstance(operation, AlterTogetherOptionOperation) and
+            operation.option_name != self.option_name
+        ):
+            return True
+        return super().reduce(operation, app_label)
+
     def references_field(self, model_name, name, app_label):
         return (
             self.references_model(model_name, app_label) and
