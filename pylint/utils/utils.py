@@ -253,6 +253,60 @@ def _check_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
     return _splitstrip(value)
 
 
+_REGEXP_QUANTIFIER = re.compile(r"\{\d*(?:,\d*)?\}")
+
+
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
+    """Split a comma-separated list of regular expressions.
+
+    Commas inside a bounded quantifier (e.g. ``\\d{1,2}``) or inside a
+    character class (e.g. ``[,;]``) do not separate expressions. Escaped
+    commas (``\\,``) are kept as-is in the expression.
+    """
+    if isinstance(value, (list, tuple)):
+        return value
+    patterns: list[str] = []
+    current: list[str] = []
+    in_class = False
+    i = 0
+    while i < len(value):
+        char = value[i]
+        if char == "\\" and i + 1 < len(value):
+            current.append(value[i : i + 2])
+            i += 2
+            continue
+        if in_class:
+            if char == "]":
+                in_class = False
+        elif char == "[":
+            in_class = True
+            current.append(char)
+            i += 1
+            # A leading '^' and a leading ']' are part of the class, not its end.
+            if i < len(value) and value[i] == "^":
+                current.append("^")
+                i += 1
+            if i < len(value) and value[i] == "]":
+                current.append("]")
+                i += 1
+            continue
+        elif char == "{":
+            match = _REGEXP_QUANTIFIER.match(value, i)
+            if match:
+                current.append(match.group())
+                i = match.end()
+                continue
+        elif char == ",":
+            patterns.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(char)
+        i += 1
+    patterns.append("".join(current))
+    return [pattern.strip() for pattern in patterns if pattern.strip()]
+
+
 def _comment(string: str) -> str:
     """Return string as a comment."""
     lines = [line.strip() for line in string.splitlines()]
