@@ -1,6 +1,6 @@
 from __future__ import print_function, division
 
-from sympy.core import S, sympify, Mul, Add, Expr
+from sympy.core import S, sympify, Mul, Add, Expr, Pow
 from sympy.core.compatibility import range
 from sympy.core.function import expand_mul, count_ops, _mexpand
 from sympy.core.symbol import Dummy
@@ -129,12 +129,50 @@ def sqrtdenest(expr, max_iter=3):
 
     """
     expr = expand_mul(sympify(expr))
+    expr = _denest_gaussian_sqrts(expr)
     for i in range(max_iter):
         z = _sqrtdenest0(expr)
         if expr == z:
             return expr
         expr = z
     return expr
+
+
+def _gaussian_sqrt(e):
+    """If ``e`` is ``sqrt(x + y*I)`` with rational ``x != 0``, ``y != 0`` and
+    rational modulus ``m = sqrt(x**2 + y**2)``, return the denested value
+    ``sqrt((m + x)/2) + sign(y)*I*sqrt((m - x)/2)``; otherwise return None.
+
+    Examples
+    ========
+
+    >>> from sympy import sqrt, I, expand
+    >>> from sympy.simplify.sqrtdenest import _gaussian_sqrt
+    >>> expand(_gaussian_sqrt(sqrt(4 + 3*I))**2)
+    4 + 3*I
+    """
+    if not is_sqrt(e) or not e.base.is_Add or e.exp.is_negative:
+        return None
+    x, y = e.base.as_real_imag()
+    if not (x.is_Rational and y.is_Rational) or not x or not y:
+        return None
+    modulus = sqrt(x**2 + y**2)
+    if not modulus.is_Rational:
+        return None
+    return (sqrt((modulus + x)/2) + sign(y)*S.ImaginaryUnit*sqrt((modulus - x)/2))
+
+
+def _denest_gaussian_sqrts(expr):
+    """Replace each ``sqrt(x + y*I)`` handled by ``_gaussian_sqrt`` and expand
+    the products that result. Expressions without such a term are unchanged."""
+    replacements = {}
+    for p in expr.atoms(Pow):
+        value = _gaussian_sqrt(p)
+        if value is not None:
+            replacements[p] = value
+    if not replacements:
+        return expr
+    return expand_mul(expr.xreplace(replacements))
 
 
 def _sqrt_match(p):
@@ -157,6 +195,10 @@ def _sqrt_match(p):
     elif p.is_Add:
         pargs = sorted(p.args, key=default_sort_key)
         if all((x**2).is_Rational for x in pargs):
+            # split_surds needs at least one surd term; without one there is
+            # nothing to denest (e.g. 4 + I or 3/2 + 3*I/2).
+            if not any(x.as_coeff_Mul()[1].is_Pow for x in pargs):
+                return []
             r, b, a = split_surds(p)
             res = a, b, r
             return list(res)
