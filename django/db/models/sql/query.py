@@ -403,6 +403,7 @@ class Query(BaseExpression):
         # Store annotation mask prior to temporarily adding aggregations for
         # resolving purpose to facilitate their subsequent removal.
         refs_subquery = False
+        refs_window = False
         replacements = {}
         annotation_select_mask = self.annotation_select_mask
         for alias, aggregate_expr in aggregate_exprs.items():
@@ -415,9 +416,13 @@ class Query(BaseExpression):
             # Temporarily add aggregate to annotations to allow remaining
             # members of `aggregates` to resolve against each others.
             self.append_annotation_mask([alias])
+            refs = aggregate.get_refs()
             refs_subquery |= any(
-                getattr(self.annotations[ref], "subquery", False)
-                for ref in aggregate.get_refs()
+                getattr(self.annotations[ref], "subquery", False) for ref in refs
+            )
+            refs_window |= any(
+                getattr(self.annotations[ref], "contains_over_clause", False)
+                for ref in refs
             )
             aggregate = aggregate.replace_expressions(replacements)
             self.annotations[alias] = aggregate
@@ -451,6 +456,7 @@ class Query(BaseExpression):
             or self.is_sliced
             or has_existing_aggregation
             or refs_subquery
+            or refs_window
             or qualify
             or self.distinct
             or self.combinator
