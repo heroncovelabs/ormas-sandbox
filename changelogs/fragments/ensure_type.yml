@@ -1,0 +1,2 @@
+bugfixes:
+  - config - ``ensure_type`` now preserves data tags, handles unhashable values for ``bool``, rejects bytes and invalid inputs with a consistent ``ValueError``, and normalizes ``list`` and ``dict`` results.
