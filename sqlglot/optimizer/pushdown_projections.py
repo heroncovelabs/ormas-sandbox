@@ -44,6 +44,11 @@ def default_selection(is_agg: bool) -> exp.Alias:
     return alias(exp.Max(this=exp.Literal.number(1)) if is_agg else "1", "_").assert_is(exp.Alias)
 
 
+def _has_group_by_all(select: exp.Select) -> bool:
+    group = select.args.get("group")
+    return bool(group and group.args.get("all"))
+
+
 def pushdown_projections(
     expression: E,
     schema: dict[str, object] | Schema | None = None,
@@ -79,13 +84,21 @@ def pushdown_projections(
         parent_selections = referenced_columns.get(scope, {SELECT_ALL})
         alias_count = source_column_alias_count.get(scope, 0)
 
-        # We can't remove columns SELECT DISTINCT nor UNION DISTINCT.
-        if scope.expression.args.get("distinct"):
+        # DISTINCT and INTERSECT / EXCEPT (including ALL) compare entire rows, so all
+        # projections must be preserved to retain their row equality semantics.
+        if scope.expression.args.get("distinct") or isinstance(
+            scope.expression, (exp.Intersect, exp.Except)
+        ):
             parent_selections = {SELECT_ALL}
 
         # A recursive CTE's body reads the CTE's own output, so its projections
         # can't be pruned based only on what the enclosing query selects.
         if _is_self_referencing_cte(scope):
+            parent_selections = {SELECT_ALL}
+
+        # GROUP BY ALL implicitly groups by every non-aggregate projection, so pruning any
+        # of them would change the grouping keys and the row cardinality of the query.
+        if isinstance(scope.expression, exp.Select) and _has_group_by_all(scope.expression):
             parent_selections = {SELECT_ALL}
 
         if isinstance(scope.expression, exp.SetOperation):
