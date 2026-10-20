@@ -743,6 +743,60 @@ def _nthroot_mod1(s, q, p, all_roots):
     return min(res)
 
 
+def _nthroot_mod_prime_power(a, n, p, e):
+    """
+    Sorted list of all roots of ``x**n = a mod p**e``, ``p`` prime,
+    or an empty list if there are none.
+    """
+    m = p**e
+    a %= m
+    roots = nthroot_mod(a, n, p, True) or []
+    roots = [r % p for r in roots]
+    pk = p
+    for k in range(2, e + 1):
+        pk1, pk = pk, p**k
+        target = a % pk
+        new = []
+        for r in roots:
+            # every root mod p**k reduces to a root mod p**(k-1)
+            for t in range(p):
+                x = r + t*pk1
+                if pow(x, n, pk) == target:
+                    new.append(x)
+        roots = new
+    return sorted(roots)
+
+
+def _nthroot_mod_composite(a, n, m):
+    """
+    Sorted list of all roots of ``x**n = a mod m`` for composite ``m``
+    (empty if there are none), found prime power by prime power and
+    combined with the Chinese remainder theorem.
+    """
+    from sympy.core.numbers import igcdex
+    f = factorint(m)
+    moduli = []
+    root_lists = []
+    for p, e in f.items():
+        r = _nthroot_mod_prime_power(a, n, p, e)
+        if not r:
+            return []
+        moduli.append(p**e)
+        root_lists.append(r)
+    M = 1
+    for mi in moduli:
+        M *= mi
+    # CRT basis: coefficient c_i with c_i = 1 mod moduli[i], 0 mod others
+    coeffs = []
+    for mi in moduli:
+        Mi = M // mi
+        coeffs.append(Mi * igcdex(Mi, mi)[0] % M)
+    res = [0]
+    for coeff, rl in zip(coeffs, root_lists):
+        res = sorted(set((x + coeff*r) % M for x in res for r in rl))
+    return res
+
+
 def nthroot_mod(a, n, p, all_roots=False):
     """
     Find the solutions to ``x**n = a mod p``
@@ -774,7 +828,16 @@ def nthroot_mod(a, n, p, all_roots=False):
     if not is_nthpow_residue(a, n, p):
         return None
     if not isprime(p):
-        raise NotImplementedError("Not implemented for composite p")
+        res = _nthroot_mod_composite(a, n, p)
+        if not res:
+            return None
+        return res if all_roots else res[0]
+
+    if a % p == 0:
+        # x = 0 (mod p) is the only root when p divides a
+        if all_roots:
+            return [0]
+        return 0
 
     if (p - 1) % n == 0:
         return _nthroot_mod1(a, n, p, all_roots)
