@@ -27,6 +27,21 @@ class Singer:
         self.row = row
         self.index = index  # enrollment order
         self.standing = 0  # bench standing (never printed)
+        self.last_p = -1  # sequence number of most recent rehearsal
+        self.streak = 0  # consecutive rehearsals attended
+        self.misses = 0  # absences recorded so far
+        self.debt = False  # rehearsal credit halved until carried
+
+
+def _rehearsal_credit(row: int, streak: int, debt: bool) -> int:
+    credit = row + (2 if streak else 0)
+    if debt:
+        credit //= 2
+    return credit
+
+
+def _newcomer_standing(row: int) -> int:
+    return row
 
 
 class Engine:
@@ -42,6 +57,7 @@ class Engine:
         self.concerts = 0
         self.reseats = 0
         self.rejected = 0
+        self.seq = 0
         self.out = out if out is not None else sys.stdout
 
     def _emit(self, line: str) -> None:
@@ -83,7 +99,11 @@ class Engine:
         if tokens[1] in self.singers:
             self._reject(singer, "DUP")
             return
-        self.singers[tokens[1]] = Singer(int(tokens[2]), len(self.order))
+        row = int(tokens[2])
+        new = Singer(row, len(self.order))
+        if self.concerts and any(sg.debt for sg in self.singers.values()):
+            new.standing = _newcomer_standing(row)
+        self.singers[tokens[1]] = new
         self.order.append(tokens[1])
         self.ledger.append(("E", tokens[1]))
         self.enrolled += 1
@@ -101,7 +121,10 @@ class Engine:
         if sg is None:
             self._reject(singer, "UNKNOWN")
             return
-        sg.standing += sg.row
+        self.seq += 1
+        sg.standing += _rehearsal_credit(sg.row, sg.streak, sg.debt)
+        sg.streak += 1
+        sg.last_p = self.seq
         self.ledger.append(("P", tokens[1]))
         self.rehearsals += 1
         self._emit(f"P {tokens[1]}")
@@ -119,31 +142,35 @@ class Engine:
             self._reject(singer, "UNKNOWN")
             return
         sg.standing = max(0, sg.standing - 2 * sg.row)
+        sg.streak = 0
+        sg.misses += 1
+        if sg.misses >= 3:
+            sg.debt = True
         self.ledger.append(("A", tokens[1]))
         self.absences += 1
         self._emit(f"A {tokens[1]}")
 
     def _seating(self, standings: dict[str, int]) -> list[str]:
-        """Descending standing; ties by enrollment order."""
+        """Descending standing; ties by most recent rehearsal, then enrollment."""
         return sorted(
-            standings, key=lambda n: (-standings[n], self.singers[n].index)
+            standings,
+            key=lambda n: (-standings[n], -self.singers[n].last_p, self.singers[n].index),
         )
 
     def _concert(self, tokens: list[str]) -> None:
         if len(tokens) != 1:
             self._reject(NO_SINGER, "FMT")
             return
-        if self.singers:
-            names = self._seating(
-                {name: sg.standing for name, sg in self.singers.items()}
-            )
-            for name in names:
-                self._emit(f"C {name}")
-            self._emit(f"CEND {len(names)}")
-            # The first three seats carried the concert.
-            for name in names[:3]:
-                self.singers[name].standing = 0
-        # A concert with no singers enrolled prints no seating.
+        names = self._seating(
+            {name: sg.standing for name, sg in self.singers.items()}
+        )
+        for name in names:
+            self._emit(f"C {name}")
+        self._emit(f"CEND {len(names)}")
+        # The first three seats carried the concert.
+        for name in names[:3]:
+            self.singers[name].standing = 0
+            self.singers[name].debt = False
         self.ledger.append(("C", ""))
         self.concerts += 1
 
@@ -153,19 +180,30 @@ class Engine:
             return
         # Recompute every standing from the full ledger, replacing the
         # live values (the reseat mirrors the bench, it never moves it).
+        # The replay uses plain row credits and forgets recency ties.
         replay: dict[str, int] = {}
+        last: dict[str, int] = {}
+        seq = 0
         for kind, name in self.ledger:
             if kind == "E":
                 replay[name] = 0
+                last[name] = -1
             elif kind == "P":
+                seq += 1
                 replay[name] += self.singers[name].row
+                last[name] = seq
             elif kind == "A":
                 replay[name] = max(0, replay[name] - 2 * self.singers[name].row)
             elif kind == "C":
-                for reset in self._seating(replay)[:3]:
+                ranked = sorted(
+                    replay,
+                    key=lambda n: (-replay[n], -last[n], self.singers[n].index),
+                )
+                for reset in ranked[:3]:
                     replay[reset] = 0
         for name, standing in replay.items():
             self.singers[name].standing = standing
+            self.singers[name].last_p = -1
         self.reseats += 1
         self._emit(f"WOK {sum(1 for st in replay.values() if st > 0)}")
 
