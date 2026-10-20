@@ -13,6 +13,7 @@ import random
 from bisect import bisect_left, insort
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import lru_cache, reduce
 from heapq import heappush, heappushpop
 from itertools import (
@@ -33,7 +34,7 @@ from itertools import (
     zip_longest,
 )
 from math import prod, comb, isqrt, gcd
-from operator import mul, getitem, index, is_, itemgetter, truediv
+from operator import ge, le, mul, getitem, index, is_, itemgetter, truediv
 from random import randrange, sample, choice, shuffle
 from sys import hexversion
 
@@ -74,9 +75,13 @@ __all__ = [
     'random_product',
     'repeatfunc',
     'roundrobin',
+    'running_max',
     'running_mean',
     'running_median',
+    'running_min',
+    'running_statistics',
     'sieve',
+    'Stats',
     'sliding_window',
     'subslices',
     'sum_of_squares',
@@ -1408,8 +1413,34 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _validate_maxlen(maxlen):
+    "Return a validated window size or None for an unbounded window."
+    if maxlen is None:
+        return None
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return maxlen
+
+
+def _running_mean_windowed(iterator, maxlen):
+    "Yield the average of values in a sliding window."
+
+    window = deque()
+
+    for x in iterator:
+        window.append(x)
+        if len(window) > maxlen:
+            window.popleft()
+        yield sum(window) / len(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of all values seen so far, or of a sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1450,124 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+    >>> list(running_mean([100, 200, 600], maxlen=2))
+    [100.0, 150.0, 400.0]
     """
+    maxlen = _validate_maxlen(maxlen)
+    if maxlen is not None:
+        return _running_mean_windowed(iter(iterable), maxlen)
     return map(truediv, accumulate(iterable), count(1))
+
+
+def _running_min_max_windowed(iterator, maxlen, dominated):
+    """Yield the min or max of values in a sliding window.
+
+    *dominated(old, new)* is true when *old* can never be the extreme
+    again once *new* arrives, so it is dropped from the candidates deque,
+    which keeps the extreme of the window at its front.
+    """
+
+    candidates = deque()  # (position, value) pairs with monotonic values
+
+    for i, x in enumerate(iterator):
+        while candidates and dominated(candidates[-1][1], x):
+            candidates.pop()
+        candidates.append((i, x))
+        if candidates[0][0] <= i - maxlen:
+            candidates.popleft()
+        yield candidates[0][1]
+
+
+def running_min(iterable, *, maxlen=None):
+    """Cumulative minimum of values seen so far or values in a sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    For example:
+
+        >>> list(running_min([4, 3, 7, 0, 8]))
+        [4, 3, 3, 0, 0]
+        >>> list(running_min([4, 3, 7, 0, 8], maxlen=2))
+        [4, 3, 3, 0, 0]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    maxlen = _validate_maxlen(maxlen)
+    if maxlen is not None:
+        return _running_min_max_windowed(iter(iterable), maxlen, ge)
+    return accumulate(iterable, min)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Cumulative maximum of values seen so far or values in a sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    For example:
+
+        >>> list(running_max([4, 3, 7, 0, 8]))
+        [4, 4, 7, 7, 8]
+        >>> list(running_max([4, 3, 7, 0, 8], maxlen=2))
+        [4, 4, 7, 7, 8]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    maxlen = _validate_maxlen(maxlen)
+    if maxlen is not None:
+        return _running_min_max_windowed(iter(iterable), maxlen, le)
+    return accumulate(iterable, max)
+
+
+@dataclass(frozen=True, slots=True)
+class Stats:
+    """Summary statistics of the values seen so far or in a sliding window.
+
+    Produced by :func:`running_statistics`.
+    """
+
+    size: int
+    minimum: object
+    median: object
+    maximum: object
+    mean: object
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a ``Stats`` record of the values seen so far or in a sliding window.
+
+    Each record has the fields ``size``, ``minimum``, ``median``,
+    ``maximum`` and ``mean``, computed as :func:`running_min`,
+    :func:`running_median`, :func:`running_max` and :func:`running_mean`
+    compute them over the same window.
+
+    For example:
+
+        >>> [st.mean for st in running_statistics([4, 3, 7], maxlen=2)]
+        [4.0, 3.5, 5.0]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    maxlen = _validate_maxlen(maxlen)
+    iterator = iter(iterable)
+    size = count(1) if maxlen is None else map(min, count(1), repeat(maxlen))
+    minimums, medians, maximums, means = tee(iterator, 4)
+    return starmap(
+        Stats,
+        zip(
+            size,
+            running_min(minimums, maxlen=maxlen),
+            running_median(medians, maxlen=maxlen),
+            running_max(maximums, maxlen=maxlen),
+            running_mean(means, maxlen=maxlen),
+        ),
+    )
 
 
 def random_derangement(iterable):
