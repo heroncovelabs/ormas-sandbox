@@ -89,7 +89,11 @@ Here follows a list of possible assumption names:
     finite
     infinite
         object absolute value is bounded (arbitrarily large).
-        See [7]_, [8]_, [9]_.
+        See [7]_, [8]_, [9]_. Algebraic numbers are finite, so the
+        numeric subsets (rational, integer, even, odd, ...) are finite
+        too. Irrational and transcendental are defined to require
+        finiteness, so infinities are neither. A symbol given only
+        negative parity or rationality assumptions keeps finite unknown.
 
     negative
     nonnegative
@@ -166,6 +170,7 @@ _assume_rules = FactRules([
     'rational       ->  real',
     'rational       ->  algebraic',
     'algebraic      ->  complex',
+    'algebraic      ->  finite',
     'real           ->  complex',
     'real           ->  hermitian',
     'imaginary      ->  complex',
@@ -176,7 +181,7 @@ _assume_rules = FactRules([
     'even           ==  integer & !odd',
 
     'real           ==  negative | zero | positive',
-    'transcendental ==  complex & !algebraic',
+    'transcendental ==  complex & !algebraic & finite',
 
     'negative       ==  nonpositive & nonzero',
     'positive       ==  nonnegative & nonzero',
@@ -191,7 +196,7 @@ _assume_rules = FactRules([
     'composite      ->  integer & positive & !prime',
     '!composite     ->  !positive | !even | prime',
 
-    'irrational     ==  real & !rational',
+    'irrational     ==  real & !rational & finite',
 
     'imaginary      ->  !real',
 
