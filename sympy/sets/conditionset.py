@@ -243,7 +243,8 @@ class ConditionSet(Set):
         cond = self.condition.subs(old, new)
         base = self.base_set.subs(old, new)
         if cond is S.true:
-            return ConditionSet(new, Contains(new, base), base)
+            # every element of the base set satisfies the condition
+            return base
         return self.func(self.sym, cond, base)
 
     def dummy_eq(self, other, symbol=None):
