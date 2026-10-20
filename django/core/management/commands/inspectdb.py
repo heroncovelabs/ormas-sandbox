@@ -120,10 +120,18 @@ class Command(BaseCommand):
                             rel_type = 'OneToOneField'
                         else:
                             rel_type = 'ForeignKey'
+                        referenced_column, referenced_table = relations[column_name]
                         rel_to = (
-                            "self" if relations[column_name][1] == table_name
-                            else table2model(relations[column_name][1])
+                            "self" if referenced_table == table_name
+                            else table2model(referenced_table)
                         )
+                        # Preserve explicit references to non-primary-key columns.
+                        if referenced_column:
+                            referenced_pk_column = connection.introspection.get_primary_key_column(
+                                cursor, referenced_table
+                            )
+                            if referenced_column != referenced_pk_column:
+                                extra_params['to_field'] = referenced_column
                         if rel_to in known_models:
                             field_type = '%s(%s' % (rel_type, rel_to)
                         else:
