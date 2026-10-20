@@ -1,0 +1,4 @@
+minor_changes:
+  - winrm - Remove the optional ``pexpect`` dependency when running ``kinit``. The password is now always
+    sent through stdin to a ``kinit`` process started in a new session, which works on all platforms
+    including macOS and avoids ``filedescriptor out of range in select()`` errors.
