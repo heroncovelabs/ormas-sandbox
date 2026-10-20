@@ -104,6 +104,13 @@ class DatabaseFeatures(BaseDatabaseFeatures):
         "Raises ORA-00600: internal error code.": {
             "model_fields.test_jsonfield.TestQuerying.test_usage_in_subquery",
         },
+        "Oracle doesn't support non-default collations on primary keys that "
+        "are referenced by foreign keys with db_collation.": {
+            "migrations.test_operations.OperationTests."
+            "test_alter_field_pk_fk_db_collation",
+            "migrations.test_operations.OperationTests."
+            "test_create_fk_models_to_pk_field_db_collation",
+        },
     }
     django_test_expected_failures = {
         # A bug in Django/cx_Oracle with respect to string handling (#23843).
