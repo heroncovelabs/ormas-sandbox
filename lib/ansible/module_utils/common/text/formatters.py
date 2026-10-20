@@ -53,13 +53,12 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         The function expects 'b' (lowercase) as a bit identifier, e.g. 'Mb'/'Kb'/etc.
         if 'MB'/'KB'/... is passed, the ValueError will be rased.
     """
-    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
+    # The whole string must be an ASCII number, optionally followed by ASCII spaces,
+    # an ASCII unit word and trailing ASCII spaces. Nothing else is accepted.
+    m = re.fullmatch(r'([0-9]+(?:\.[0-9]*)?|\.[0-9]+) *([A-Za-z]+)? *', str(number))
     if m is None:
         raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
-    try:
-        num = float(m.group(1))
-    except Exception:
-        raise ValueError("human_to_bytes() can't interpret following number: %s (original input string: %s)" % (m.group(1), number))
+    num = float(m.group(1))
 
     unit = m.group(2)
     if unit is None:
@@ -81,15 +80,18 @@ def human_to_bytes(number, default_unit=None, isbits=False):
     if isbits:
         unit_class = 'b'
         unit_class_name = 'bit'
-    # check unit value if more than one character (KB, MB)
+    # check unit value if more than one character (KB, MB): it must be the
+    # abbreviation (prefix + unit class) or the full-word name, exactly
     if len(unit) > 1:
         expect_message = 'expect %s%s or %s' % (range_key, unit_class, range_key)
         if range_key == 'B':
             expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
 
-        if unit_class_name in unit.lower():
-            pass
-        elif unit[1] != unit_class:
+        size_names = {'Y': 'yotta', 'Z': 'zetta', 'E': 'exa', 'P': 'peta', 'T': 'tera',
+                      'G': 'giga', 'M': 'mega', 'K': 'kilo', 'B': ''}
+        is_abbreviation = len(unit) == 2 and unit[1] == unit_class
+        is_full_word = unit.lower() == size_names[range_key] + unit_class_name
+        if not (is_abbreviation or is_full_word):
             raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
 
     return int(round(num * limit))

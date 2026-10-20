@@ -1,0 +1,2 @@
+bugfixes:
+- human_to_bytes filter, ``human_to_bytes`` module_utils helper - reject malformed size strings instead of converting them. Trailing text after a number and unit, non-ASCII or non-ASCII-digit numerals, leading whitespace, and unit words that are not an exact abbreviation or full-word name now raise ``ValueError`` (https://github.com/ansible/ansible/issues/82075).

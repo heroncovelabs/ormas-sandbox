@@ -4,6 +4,7 @@ DOCUMENTATION:
   short_description: Get bytes from string
   description:
     - Convert a human-readable byte or bit string into a number bytes.
+    - Input must be an ASCII number optionally followed by a recognized unit, otherwise an error is raised.
   positional: _input, default_unit, isbits
   options:
     _input:
