@@ -253,6 +253,29 @@ def _check_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
     return _splitstrip(value)
 
 
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
+    r"""Split a comma-separated list of regexps, taking care not to split
+    on a comma used as a quantifier, as in `\d{1,2}`.
+    """
+    if isinstance(value, (list, tuple)):
+        return value
+    regexps: list[str] = []
+    current: list[str] = []
+    open_braces = False
+    for char in value:
+        if char == "{":
+            open_braces = True
+        elif char == "}" and open_braces:
+            open_braces = False
+        if char == "," and not open_braces:
+            regexps.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    regexps.append("".join(current))
+    return [regexp.strip() for regexp in regexps if regexp.strip()]
+
+
 def _comment(string: str) -> str:
     """Return string as a comment."""
     lines = [line.strip() for line in string.splitlines()]
