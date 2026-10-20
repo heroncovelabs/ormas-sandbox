@@ -18,6 +18,9 @@ MIN_HI = 120  # longest registrable side, minutes
 ALLOT = 6  # groove allotment per title, sides of lacquer
 Q_BASE = 1000  # quality base
 Q_CUT = 3  # quality lost per minute of runtime (long sides cut shallower)
+LONG_MIN = 90
+LONG_ALLOT = 3
+WEAR_STEP = 7
 NO_TITLE = "????????"
 
 
@@ -32,8 +35,13 @@ def _digits(token: str) -> bool:
 class Title:
     def __init__(self, minutes: int) -> None:
         self.minutes = minutes
-        self.remaining = ALLOT  # live allotment
+        self.remaining = LONG_ALLOT if minutes > LONG_MIN else ALLOT  # live
         self.sides = 0  # ledger: sides cut
+        self.wear = 0  # sides cut (plus inherited wear) since last remaster
+        self.batch = 0  # sides cut since last remaster
+        self.tax = 0
+        self.revived = False
+        self.reported = ALLOT
 
 
 class Engine:
@@ -87,7 +95,9 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        new = Title(int(minutes))
+        new.wear = max((t.wear for t in self.titles.values()), default=0)
+        self.titles[tokens[1]] = new
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -102,7 +112,17 @@ class Engine:
             return f"N {title} UNKNOWN"
         if t.remaining < 1:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
+        quality = Q_BASE - t.minutes * Q_CUT - WEAR_STEP * t.wear
+        if t.sides == 3:
+            busy = sum(
+                1
+                for o in self.titles.values()
+                if o is not t and o.sides > 0 and o.remaining > 0
+            )
+            if busy >= 2:
+                quality -= 15
+        t.wear += 1
+        t.batch += 1
         t.remaining -= 1
         t.sides += 1
         self.cut_since_remaster += 1
@@ -112,14 +132,23 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
         lines = []
-        for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
-            lines.append(f"R {name} {t.remaining}")
+        if self.cut_since_remaster == 0:
+            for name, t in self.titles.items():
+                lines.append(f"R {name} {t.reported}")
+        else:
+            for name, t in self.titles.items():
+                if t.batch >= 4:
+                    t.tax += 1
+                value = ALLOT - t.sides - t.tax
+                if t.remaining == 0 and t.batch >= 1 and not t.revived:
+                    t.revived = True
+                    value = 1
+                t.remaining = value
+                t.reported = value
+                t.wear = 0
+                t.batch = 0
+                lines.append(f"R {name} {value}")
         lines.append(f"MEND {len(self.titles)}")
         self.cut_since_remaster = 0
         self.remasters += 1
