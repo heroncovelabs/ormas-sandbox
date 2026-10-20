@@ -9,7 +9,12 @@ class Ledger:
         total = sum(c for a, c in self._entries if a == account)
         return Money(total)
     def allocate(self, total: Money, ratios):
-        parts = []
-        for r in ratios:
-            parts.append(Money(int(total.cents * r)))
-        return parts
+        ratios = list(ratios)
+        ratio_sum = sum(ratios)
+        shares = [total.cents * r / ratio_sum for r in ratios]
+        cents = [int(s // 1) for s in shares]
+        remainder = total.cents - sum(cents)
+        order = sorted(range(len(shares)), key=lambda i: shares[i] - cents[i], reverse=True)
+        for i in order[:remainder]:
+            cents[i] += 1
+        return [Money(c) for c in cents]
