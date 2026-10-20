@@ -1408,8 +1408,32 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _running_mean_windowed(iterator, maxlen):
+    "Yield the average of values in a sliding window."
+
+    window = deque()
+    total = 0
+
+    for x in iterator:
+        if len(window) == maxlen:
+            oldest = window.popleft()
+            if window:
+                total -= oldest
+
+        # Start each new window with the value itself, preserving the
+        # arithmetic of accumulate() and avoiding cancellation at maxlen=1.
+        total = total + x if window else x
+        window.append(x)
+        yield total / len(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of all values seen so far, or of values in a
+    sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1443,25 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+
+    >>> list(running_mean([100, 200, 600, 0], maxlen=2))
+    [100.0, 150.0, 400.0, 300.0]
+
+    Supports numeric types such as int, float, complex, Decimal, and Fraction.
+
+    A *maxlen* of zero or less raises ``ValueError`` when the function is
+    called, before any values are read. A non-iterable input raises
+    ``TypeError`` at call time. Each result consumes exactly one input value.
     """
-    return map(truediv, accumulate(iterable), count(1))
+    iterator = iter(iterable)
+
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+        return _running_mean_windowed(iterator, maxlen)
+
+    return map(truediv, accumulate(iterator), count(1))
 
 
 def random_derangement(iterable):

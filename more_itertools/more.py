@@ -29,6 +29,7 @@ from random import random, randrange, shuffle, uniform
 from operator import (
     attrgetter,
     getitem,
+    index,
     is_not,
     itemgetter,
     lt,
@@ -48,6 +49,8 @@ from .recipes import (
     is_prime,
     nth,
     powerset,
+    running_mean,
+    running_median,
     sieve,
     take,
     unique_everseen,
@@ -58,6 +61,7 @@ from .recipes import (
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -143,6 +147,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_max',
+    'running_min',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -5441,3 +5448,208 @@ class _concurrent_tee:
                     link[1] = [None, None]
         value, self.link = link
         return value
+
+
+class Stats:
+    """Immutable record of running statistics over a prefix or window.
+
+    Fields, in constructor order: ``size``, ``minimum``, ``median``,
+    ``maximum`` and ``mean``. Instances can be built positionally or by
+    keyword and compare and hash by value. Fields are read-only attributes:
+    assignment raises ``AttributeError``, while ``len()``, indexing and
+    iteration raise ``TypeError``.
+
+        >>> s = Stats(3, 1, 2, 5, 8 / 3)
+        >>> s.maximum
+        5
+        >>> s == Stats(size=3, minimum=1, median=2, maximum=5, mean=8 / 3)
+        True
+
+    """
+
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+
+    def __init__(self, size, minimum, median, maximum, mean):
+        set_attr = object.__setattr__
+        set_attr(self, 'size', size)
+        set_attr(self, 'minimum', minimum)
+        set_attr(self, 'median', median)
+        set_attr(self, 'maximum', maximum)
+        set_attr(self, 'mean', mean)
+
+    def _astuple(self):
+        return (self.size, self.minimum, self.median, self.maximum, self.mean)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f'{type(self).__name__} is immutable')
+
+    def __delattr__(self, name):
+        raise AttributeError(f'{type(self).__name__} is immutable')
+
+    def __eq__(self, other):
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return self._astuple() == other._astuple()
+
+    def __hash__(self):
+        return hash(self._astuple())
+
+    def __repr__(self):
+        return (
+            f'Stats(size={self.size!r}, minimum={self.minimum!r}, '
+            f'median={self.median!r}, maximum={self.maximum!r}, '
+            f'mean={self.mean!r})'
+        )
+
+    def __reduce__(self):
+        return (type(self), self._astuple())
+
+
+def _reject_complex(iterator):
+    "Yield values from *iterator*, raising TypeError for complex values."
+    for x in iterator:
+        if isinstance(x, complex):
+            raise TypeError('complex values are unorderable')
+        yield x
+
+
+def _running_extremum(iterator, maxlen, better):
+    """Yield the running extremum of *iterator*.
+
+    *better(a, b)* is true when *a* should replace *b* as the extremum
+    (``gt`` for maxima, ``lt`` for minima). With a window, candidates are
+    kept in a monotonic deque of ``(position, value)`` pairs, and a
+    candidate expires once its position leaves the window.
+    """
+    if maxlen is None:
+        current = _marker
+        for x in _reject_complex(iterator):
+            if current is _marker or better(x, current):
+                current = x
+            yield current
+        return
+
+    candidates = deque()
+    position = -1
+    for x in _reject_complex(iterator):
+        position += 1
+        # Drop candidates that the new value dominates. Equal values are
+        # dropped too, because the newer copy stays in the window longer.
+        while candidates and not better(candidates[-1][1], x):
+            candidates.pop()
+        candidates.append((position, x))
+        while candidates[0][0] <= position - maxlen:
+            candidates.popleft()
+        yield candidates[0][1]
+
+
+def _check_maxlen(maxlen):
+    if maxlen is None:
+        return None
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return maxlen
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the smallest value seen so far, or the smallest value in a
+    sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+        >>> list(running_min([5, 9, 4, 12, 8, 9]))
+        [5, 5, 4, 4, 4, 4]
+        >>> list(running_min([5, 9, 4, 12, 8, 9], maxlen=3))
+        [5, 5, 4, 4, 4, 8]
+
+    Supports int, float, Decimal, and Fraction values. Complex values
+    raise ``TypeError`` during iteration.
+
+    A *maxlen* of zero or less raises ``ValueError`` when the function is
+    called. A non-iterable input raises ``TypeError`` at call time.
+
+    The iterable is validated when ``running_min`` is called, and each
+    result consumes exactly one input value.
+    """
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    return _running_extremum(iterator, maxlen, lt)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the largest value seen so far, or the largest value in a
+    sliding window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+        >>> list(running_max([5, 9, 4, 12, 8, 9]))
+        [5, 9, 9, 12, 12, 12]
+        >>> list(running_max([5, 9, 4, 12, 8, 9], maxlen=3))
+        [5, 9, 9, 12, 12, 12]
+
+    Supports int, float, Decimal, and Fraction values. Complex values
+    raise ``TypeError`` during iteration.
+
+    A *maxlen* of zero or less raises ``ValueError`` when the function is
+    called. A non-iterable input raises ``TypeError`` at call time.
+
+    The iterable is validated when ``running_max`` is called, and each
+    result consumes exactly one input value.
+    """
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    return _running_extremum(iterator, maxlen, gt)
+
+
+def _running_statistics(iterator, maxlen):
+    checked = _reject_complex(iterator)
+    # Each consumer reads one value per record, so tee buffers stay small.
+    for_min, for_median, for_max, for_mean = tee(checked, 4)
+
+    if maxlen is None:
+        sizes = count(1)
+    else:
+        sizes = map(min, count(1), repeat(maxlen))
+
+    minimums = _running_extremum(for_min, maxlen, lt)
+    medians = running_median(for_median, maxlen=maxlen)
+    maximums = _running_extremum(for_max, maxlen, gt)
+    means = running_mean(for_mean, maxlen=maxlen)
+
+    for size, minimum, median, maximum, mean in zip(
+        sizes, minimums, medians, maximums, means
+    ):
+        yield Stats(size, minimum, median, maximum, mean)
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record for each input value, describing all
+    values seen so far, or the values in a sliding window.
+
+    Each record holds the number of values (``size``), the smallest
+    (``minimum``), the median as computed by :func:`running_median`, the
+    largest (``maximum``), and the mean as computed by :func:`running_mean`.
+
+        >>> list(running_statistics([5, 9, 4], maxlen=2))[-1]
+        Stats(size=2, minimum=4, median=6.5, maximum=9, mean=6.5)
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    Supports int, float, Decimal, and Fraction values. Complex values
+    raise ``TypeError`` during iteration.
+
+    A *maxlen* of zero or less raises ``ValueError`` when the function is
+    called. A non-iterable input raises ``TypeError`` at call time.
+    Each result consumes exactly one input value, so infinite iterables
+    are supported.
+    """
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    return _running_statistics(iterator, maxlen)

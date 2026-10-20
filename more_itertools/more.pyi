@@ -15,6 +15,8 @@ from collections.abc import (
     Sized,
 )
 from contextlib import AbstractContextManager
+from decimal import Decimal
+from fractions import Fraction
 from threading import Lock
 from typing import (
     Any,
@@ -30,6 +32,7 @@ from typing_extensions import Protocol
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -115,6 +118,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_max',
+    'running_min',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -163,6 +169,7 @@ _GenFn = TypeVar('_GenFn', bound=Callable[..., Iterator[Any]])
 _Raisable = BaseException | type[BaseException]
 
 _ClassInfo = type | types.UnionType | tuple[_ClassInfo, ...]
+_Real = TypeVar('_Real', int, float, Decimal, Fraction)
 
 @type_check_only
 class _SizedIterable(Protocol[_T_co], Sized, Iterable[_T_co]): ...
@@ -977,3 +984,38 @@ def concurrent_tee(
 def synchronized(
     func: Callable[..., Iterator[_T]],
 ) -> Callable[..., Iterator[_T]]: ...
+
+def running_min(
+    iterable: Iterable[_Real], *, maxlen: int | None = ...
+) -> Iterator[_Real]: ...
+def running_max(
+    iterable: Iterable[_Real], *, maxlen: int | None = ...
+) -> Iterator[_Real]: ...
+
+class Stats:
+    def __init__(
+        self,
+        size: int,
+        minimum: int | float | Decimal | Fraction,
+        median: int | float | Decimal | Fraction,
+        maximum: int | float | Decimal | Fraction,
+        mean: int | float | Decimal | Fraction,
+    ) -> None: ...
+    @property
+    def size(self) -> int: ...
+    @property
+    def minimum(self) -> int | float | Decimal | Fraction: ...
+    @property
+    def median(self) -> int | float | Decimal | Fraction: ...
+    @property
+    def maximum(self) -> int | float | Decimal | Fraction: ...
+    @property
+    def mean(self) -> int | float | Decimal | Fraction: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __repr__(self) -> str: ...
+    def __reduce__(self) -> tuple[type[Stats], tuple[Any, ...]]: ...
+
+def running_statistics(
+    iterable: Iterable[_Real], *, maxlen: int | None = ...
+) -> Iterator[Stats]: ...

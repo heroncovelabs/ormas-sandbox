@@ -3137,6 +3137,355 @@ class NumericRangeTests(TestCase):
             self.assertEqual(r, loads(dumps(r)))
 
 
+class RunningExportTests(TestCase):
+    """Public names for the running statistics tools"""
+
+    names = ('Stats', 'running_min', 'running_max', 'running_statistics')
+
+    def test_explicit_imports(self):
+        from more_itertools import (  # noqa: F401
+            Stats,
+            running_max,
+            running_mean,
+            running_median,
+            running_min,
+            running_statistics,
+        )
+
+        self.assertIs(Stats, mi.more.Stats)
+        self.assertIs(running_min, mi.more.running_min)
+        self.assertIs(running_max, mi.more.running_max)
+        self.assertIs(running_statistics, mi.more.running_statistics)
+        self.assertIs(running_mean, mi.recipes.running_mean)
+        self.assertIs(running_median, mi.recipes.running_median)
+
+    def test_wildcard_imports(self):
+        namespace = {}
+        exec('from more_itertools import *', namespace)
+        for name in self.names + ('running_mean', 'running_median'):
+            with self.subTest(name=name):
+                self.assertIn(name, namespace)
+                self.assertIs(namespace[name], getattr(mi, name))
+
+    def test_all_lists(self):
+        for name in self.names:
+            with self.subTest(name=name):
+                self.assertIn(name, mi.more.__all__)
+                self.assertIn(name, mi.__dict__)
+
+
+class RunningMinMaxTests(TestCase):
+    """Tests for ``running_min()`` and ``running_max()``"""
+
+    def test_unbounded(self):
+        data = [5, 9, 4, 12, 8, 9]
+        self.assertEqual(list(mi.running_min(data)), [5, 5, 4, 4, 4, 4])
+        self.assertEqual(list(mi.running_max(data)), [5, 9, 9, 12, 12, 12])
+
+    def test_numeric_types(self):
+        data = [Fraction(3, 2), Fraction(1, 2), Fraction(1, 4)]
+        self.assertEqual(
+            list(mi.running_min(data)),
+            [Fraction(3, 2), Fraction(1, 2), Fraction(1, 4)],
+        )
+        data = [Decimal('2.5'), Decimal('3.5'), Decimal('1.5')]
+        self.assertEqual(
+            list(mi.running_max(data)),
+            [Decimal('2.5'), Decimal('3.5'), Decimal('3.5')],
+        )
+        data = [8.5, 9.5, 7.5, 6.5]
+        self.assertEqual(list(mi.running_min(data)), [8.5, 8.5, 7.5, 6.5])
+
+    def test_windowed_example(self):
+        data = [5, 9, 4, 12, 8, 9]
+        self.assertEqual(
+            list(mi.running_min(data, maxlen=3)), [5, 5, 4, 4, 4, 8]
+        )
+        self.assertEqual(
+            list(mi.running_max(data, maxlen=3)), [5, 9, 9, 12, 12, 12]
+        )
+
+    def test_windowed_matches_brute_force(self):
+        rng = Random(7)
+        datasets = [[rng.randrange(-20, 20) for _ in range(120)]]
+        # Runs of equal values exercise the expiry of duplicate candidates
+        datasets.append([v for v in (1, 1, 2, 2, 2, 0) for _ in range(9)])
+        for data in datasets:
+            for maxlen in (1, 2, 3, 7, 50):
+                with self.subTest(maxlen=maxlen, n=len(data)):
+                    windows = [
+                        data[max(0, k - maxlen) : k]
+                        for k in range(1, len(data) + 1)
+                    ]
+                    self.assertEqual(
+                        list(mi.running_min(data, maxlen=maxlen)),
+                        [min(w) for w in windows],
+                    )
+                    self.assertEqual(
+                        list(mi.running_max(data, maxlen=maxlen)),
+                        [max(w) for w in windows],
+                    )
+
+    def test_window_boundaries(self):
+        data = [3, 1, 4, 1, 5]
+        self.assertEqual(list(mi.running_min(data, maxlen=1)), data)
+        self.assertEqual(list(mi.running_max(data, maxlen=1)), data)
+        self.assertEqual(
+            list(mi.running_min(data, maxlen=99)),
+            list(mi.running_min(data)),
+        )
+        self.assertEqual(
+            list(mi.running_max(data, maxlen=99)),
+            list(mi.running_max(data)),
+        )
+
+    def test_empty(self):
+        self.assertEqual(list(mi.running_min([], maxlen=2)), [])
+        self.assertEqual(list(mi.running_max([])), [])
+
+    def test_complex_rejected(self):
+        for maxlen in (None, 1, 3):
+            for func in (mi.running_min, mi.running_max):
+                with self.subTest(func=func.__name__, maxlen=maxlen):
+                    with self.assertRaises(TypeError):
+                        list(func([1, 2j], maxlen=maxlen))
+                    with self.assertRaises(TypeError):
+                        list(func([1j], maxlen=maxlen))
+
+    def test_eager_validation(self):
+        for func in (mi.running_min, mi.running_max):
+            with self.subTest(func=func.__name__):
+                with self.assertRaises(TypeError):
+                    func(1234)
+                with self.assertRaises(ValueError):
+                    func([], maxlen=0)
+                with self.assertRaises(ValueError):
+                    func([], maxlen=-1)
+                with self.assertRaises(TypeError):
+                    func([], maxlen=2.0)
+
+    def test_streams_infinite_input(self):
+        for func in (mi.running_min, mi.running_max):
+            for maxlen in (None, 1, 3):
+                with self.subTest(func=func.__name__, maxlen=maxlen):
+                    reads = []
+
+                    def source():
+                        for x in count(10, -1):
+                            reads.append(x)
+                            yield x
+
+                    results = func(source(), maxlen=maxlen)
+                    self.assertEqual(reads, [])
+                    for size in range(1, 5):
+                        value = next(results)
+                        window = reads if maxlen is None else reads[-maxlen:]
+                        extremum = min if func is mi.running_min else max
+                        expected = extremum(window)
+                        self.assertEqual(value, expected)
+                        self.assertEqual(len(reads), size)
+
+
+class RunningStatisticsTests(TestCase):
+    """Tests for ``running_statistics()`` and the ``Stats`` record"""
+
+    def test_unbounded_fields(self):
+        data = [5, 9, 4, 12, 8, 9]
+        actual = list(mi.running_statistics(data))
+        self.assertEqual(len(actual), len(data))
+        for k, stats in enumerate(actual, start=1):
+            prefix = data[:k]
+            self.assertEqual(stats.size, k)
+            self.assertEqual(stats.minimum, min(prefix))
+            self.assertEqual(stats.maximum, max(prefix))
+        self.assertEqual(
+            [s.median for s in actual], list(mi.running_median(data))
+        )
+        self.assertEqual([s.mean for s in actual], list(mi.running_mean(data)))
+
+    def test_windowed_fields(self):
+        data = [5, 9, 4, 12, 8, 9]
+        actual = list(mi.running_statistics(data, maxlen=3))
+        self.assertEqual([s.size for s in actual], [1, 2, 3, 3, 3, 3])
+        self.assertEqual(
+            [s.minimum for s in actual], list(mi.running_min(data, maxlen=3))
+        )
+        self.assertEqual(
+            [s.maximum for s in actual], list(mi.running_max(data, maxlen=3))
+        )
+        self.assertEqual(
+            [s.median for s in actual],
+            list(mi.running_median(data, maxlen=3)),
+        )
+        self.assertEqual(
+            [s.mean for s in actual], list(mi.running_mean(data, maxlen=3))
+        )
+        last = actual[-1]
+        self.assertEqual((last.size, last.minimum, last.median), (3, 8, 9))
+        self.assertEqual(last.maximum, 12)
+        self.assertAlmostEqual(last.mean, mean([12, 8, 9]))
+
+    def test_matches_last_k_values(self):
+        rng = Random(3)
+        data = [rng.randrange(-50, 50) for _ in range(60)]
+        for k in (1, 4, 10):
+            with self.subTest(k=k):
+                actual = list(mi.running_statistics(data, maxlen=k))
+                for n, stats in enumerate(actual, start=1):
+                    window = data[max(0, n - k) : n]
+                    self.assertEqual(stats.size, len(window))
+                    self.assertEqual(stats.minimum, min(window))
+                    self.assertEqual(stats.maximum, max(window))
+                    self.assertAlmostEqual(stats.mean, mean(window))
+                    self.assertEqual(
+                        stats.median,
+                        list(mi.running_median(data, maxlen=k))[n - 1],
+                    )
+
+    def test_numeric_types(self):
+        data = [Fraction(1, 2), Fraction(3, 2), Fraction(1, 4)]
+        last = list(mi.running_statistics(data))[-1]
+        self.assertEqual(last.minimum, Fraction(1, 4))
+        self.assertEqual(last.maximum, Fraction(3, 2))
+        self.assertEqual(last.mean, Fraction(3, 4))
+
+        data = [Decimal('1.5'), Decimal('0.5'), Decimal('2.5')]
+        last = list(mi.running_statistics(data, maxlen=2))[-1]
+        self.assertEqual(last.minimum, Decimal('0.5'))
+        self.assertEqual(last.maximum, Decimal('2.5'))
+        self.assertEqual(last.mean, Decimal('1.5'))
+
+        data = [8.5, 9.5, 7.5]
+        last = list(mi.running_statistics(data))[-1]
+        self.assertEqual(last.median, 8.5)
+        self.assertEqual(last.mean, 8.5)
+
+    def test_complex_rejected(self):
+        with self.assertRaises(TypeError):
+            list(mi.running_statistics([1, 2 + 1j]))
+        with self.assertRaises(TypeError):
+            list(mi.running_statistics([1j], maxlen=2))
+
+    def test_empty(self):
+        self.assertEqual(list(mi.running_statistics([])), [])
+        self.assertEqual(list(mi.running_statistics([], maxlen=3)), [])
+
+    def test_eager_validation(self):
+        with self.assertRaises(TypeError):
+            mi.running_statistics(1234)
+        with self.assertRaises(ValueError):
+            mi.running_statistics([], maxlen=0)
+        with self.assertRaises(ValueError):
+            mi.running_statistics([], maxlen=-2)
+
+    def test_streams_infinite_input(self):
+        for maxlen in (None, 1, 2):
+            with self.subTest(maxlen=maxlen):
+                reads = []
+
+                def source():
+                    for x in count(1):
+                        reads.append(x)
+                        yield x
+
+                results = mi.running_statistics(source(), maxlen=maxlen)
+                self.assertEqual(reads, [])
+                for size in range(1, 4):
+                    stats = next(results)
+                    self.assertEqual(len(reads), size)
+                    window = reads if maxlen is None else reads[-maxlen:]
+                    self.assertEqual(
+                        stats,
+                        mi.Stats(
+                            len(window),
+                            min(window),
+                            list(mi.running_median(window))[-1],
+                            max(window),
+                            mean(window),
+                        ),
+                    )
+
+    def test_window_boundaries(self):
+        data = [1e16, 1.0, 2.0]
+        self.assertEqual(
+            list(mi.running_statistics(data, maxlen=1)),
+            [mi.Stats(1, x, x, x, x) for x in data],
+        )
+        self.assertEqual(
+            list(mi.running_statistics(data, maxlen=len(data))),
+            list(mi.running_statistics(data)),
+        )
+
+
+class StatsTests(TestCase):
+    """Tests for the ``Stats`` record"""
+
+    def test_construction(self):
+        positional = mi.Stats(3, 1, 2, 5, 8 / 3)
+        keyword = mi.Stats(size=3, minimum=1, median=2, maximum=5, mean=8 / 3)
+        self.assertEqual(positional, keyword)
+        self.assertEqual(positional.size, 3)
+        self.assertEqual(positional.minimum, 1)
+        self.assertEqual(positional.median, 2)
+        self.assertEqual(positional.maximum, 5)
+        self.assertEqual(positional.mean, 8 / 3)
+
+    def test_value_equality_and_hash(self):
+        a = mi.Stats(1, 2, 3, 4, 5.0)
+        b = mi.Stats(1, 2, 3, 4, 5.0)
+        c = mi.Stats(1, 2, 3, 4, 6.0)
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
+        self.assertEqual(hash(a), hash(b))
+        self.assertEqual(len({a, b, c}), 2)
+        self.assertNotEqual(a, (1, 2, 3, 4, 5.0))
+
+    def test_immutable(self):
+        s = mi.Stats(1, 2, 3, 4, 5.0)
+        with self.assertRaises(AttributeError):
+            s.size = 9
+        with self.assertRaises(AttributeError):
+            s.extra = 1
+        with self.assertRaises(AttributeError):
+            del s.size
+
+    def test_slotted(self):
+        s = mi.Stats(1, 2, 3, 4, 5.0)
+        self.assertFalse(hasattr(s, '__dict__'))
+
+    def test_not_a_sequence(self):
+        s = mi.Stats(1, 2, 3, 4, 5.0)
+        with self.assertRaises(TypeError):
+            len(s)
+        with self.assertRaises(TypeError):
+            s[0]
+        with self.assertRaises(TypeError):
+            iter(s)
+
+    def test_pickle_round_trip(self):
+        s = mi.Stats(1, 2, 3, 4, 5.0)
+        self.assertEqual(loads(dumps(s)), s)
+
+
+class RunningMedianRegressionTests(TestCase):
+    """``running_median()`` results are unchanged and reused by statistics"""
+
+    def test_prefix_and_window_outputs(self):
+        data = [5.0, 9.0, 4.0, 12.0, 8.0, 9.0]
+        self.assertEqual(
+            list(mi.running_median(data)),
+            [5.0, 7.0, 5.0, 7.0, 8.0, 8.5],
+        )
+        self.assertEqual(
+            list(mi.running_median(data, maxlen=3)),
+            [5.0, 7.0, 5.0, 9.0, 8.0, 9.0],
+        )
+        self.assertEqual(
+            [s.median for s in mi.running_statistics(data)],
+            list(mi.running_median(data)),
+        )
+
+
 class CountCycleTests(TestCase):
     def test_basic(self):
         expected = [

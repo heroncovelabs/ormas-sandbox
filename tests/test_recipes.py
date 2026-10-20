@@ -1,5 +1,5 @@
 from collections import Counter
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from doctest import DocTestSuite
 from fractions import Fraction
 from functools import reduce
@@ -1528,6 +1528,110 @@ class RunningMeanTests(TestCase):
             with self.subTest(i=i):
                 actual = list(mi.running_mean(iterable))
                 self.assertEqual(actual, expected)
+
+    def test_windowed_basic(self):
+        self.assertEqual(
+            list(mi.running_mean([100, 200, 600, 0], maxlen=2)),
+            [100.0, 150.0, 400.0, 300.0],
+        )
+        self.assertEqual(
+            list(mi.running_mean([1, 2, 3, 4, 5], maxlen=3)),
+            [1.0, 1.5, 2.0, 3.0, 4.0],
+        )
+
+    def test_windowed_empty_and_size_one(self):
+        self.assertEqual(list(mi.running_mean([], maxlen=3)), [])
+        data = [3, 1, 4, 1, 5]
+        self.assertEqual(list(mi.running_mean(data, maxlen=1)), data)
+
+    def test_windowed_size_one_numeric_types(self):
+        for data in (
+            [1e16, 1.0, 2.0],
+            [complex(1e16, 1e16), 1 + 2j, 3 - 1j],
+            [Decimal('1e20'), Decimal('0.1'), Decimal('2')],
+            [Fraction(1, 3), Fraction(1, 7), Fraction(2, 3)],
+        ):
+            with self.subTest(data=data):
+                self.assertEqual(list(mi.running_mean(data, maxlen=1)), data)
+
+    def test_windowed_oversized(self):
+        data = random.Random(7).choices(range(-500, 500), k=200)
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=500)),
+            list(mi.running_mean(data)),
+        )
+
+    def test_windowed_oversized_decimal_rounding(self):
+        with localcontext() as context:
+            context.prec = 3
+            data = [Decimal('1001'), Decimal('-1000')]
+            self.assertEqual(
+                list(mi.running_mean(data, maxlen=3)),
+                list(mi.running_mean(data)),
+            )
+
+    def test_windowed_matches_brute_force(self):
+        data = random.Random(3).choices(range(-500, 500), k=300)
+        for size in (2, 7, 50):
+            with self.subTest(size=size):
+                expected = [
+                    mean(data[max(0, k - size) : k])
+                    for k in range(1, len(data) + 1)
+                ]
+                actual = list(mi.running_mean(data, maxlen=size))
+                for a, e in zip(actual, expected):
+                    self.assertAlmostEqual(a, e)
+
+    def test_windowed_numeric_types(self):
+        data = [Fraction(1, 3), Fraction(2, 3), Fraction(1, 1)]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=2)),
+            [Fraction(1, 3), Fraction(1, 2), Fraction(5, 6)],
+        )
+        data = [Decimal('1.0'), Decimal('2.0'), Decimal('6.0')]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=2)),
+            [Decimal('1.0'), Decimal('1.5'), Decimal('4.0')],
+        )
+        data = [1 + 2j, 3 - 1j, 5 + 0j]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=2)),
+            [1 + 2j, 2 + 0.5j, 4 - 0.5j],
+        )
+
+    def test_windowed_is_streaming(self):
+        means = mi.running_mean(count(), maxlen=3)
+        self.assertEqual(mi.take(4, means), [0.0, 0.5, 1.0, 2.0])
+
+    def test_windowed_reads_one_value_per_result(self):
+        reads = []
+
+        def source():
+            for x in count():
+                reads.append(x)
+                yield x
+
+        means = mi.running_mean(source(), maxlen=2)
+        self.assertEqual(reads, [])  # Construction reads nothing
+        for k, expected in enumerate([0.0, 0.5, 1.5], start=1):
+            self.assertEqual(next(means), expected)
+            self.assertEqual(len(reads), k)  # One source read per result
+
+    def test_windowed_validation_is_eager(self):
+        with self.assertRaises(TypeError):
+            mi.running_mean(iter(()), maxlen=2.0)
+        with self.assertRaises(ValueError):
+            mi.running_mean(count(), maxlen=0)
+
+    def test_windowed_error_cases(self):
+        with self.assertRaises(TypeError):
+            mi.running_mean(1234, maxlen=2)  # Non-iterable input
+        with self.assertRaises(TypeError):
+            mi.running_mean([], maxlen=2.0)  # Non-integer window size
+        for maxlen in (0, -1):
+            with self.subTest(maxlen=maxlen):
+                with self.assertRaises(ValueError):
+                    mi.running_mean([], maxlen=maxlen)  # Invalid size
 
 
 class RunningMedianTests(TestCase):
