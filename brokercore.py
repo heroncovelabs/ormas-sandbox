@@ -29,11 +29,16 @@ def _digits(token: str) -> bool:
 
 
 class Carrier:
-    def __init__(self, cid: str, rating: int) -> None:
+    def __init__(self, cid: str, rating: int, start: int) -> None:
         self.cid = cid
         self.rating = rating
-        # SPEC: every carrier starts at rating x 100.
-        self.score = rating * 100
+        # Engine: start is rating*100 less 50 per settlement run so far.
+        self.start = start
+        self.score = start
+        self.open = 0  # currently open bookings
+        self.drops = 0  # drops made
+        self.credits: dict[str, int] = {}  # load -> credit given at booking
+        self.soured: set[str] = set()  # loads this carrier dropped
         self.sum_book = 0  # ledger: sum of value/1000 over bookings
         self.sum_drop = 0  # ledger: sum of value/1000 over drops
 
@@ -96,7 +101,9 @@ class Engine:
             return f"N {echo} RATING"
         if tokens[1] in self.carriers:
             return f"N {echo} DUP"
-        self.carriers[tokens[1]] = Carrier(tokens[1], rating)
+        self.carriers[tokens[1]] = Carrier(
+            tokens[1], rating, max(0, rating * 100 - 50 * self.n_set)
+        )
         self.n_car += 1
         return f"OK {len(self.carriers)}"
 
@@ -129,9 +136,17 @@ class Engine:
         l = self.loads.get(tokens[2])
         if l is None:
             return f"N {echo} UNKNOWN"
-        if l.booked_by is not None:
+        if l.booked_by is not None or tokens[2] in c.soured:
             return f"N {echo} TAKEN"
-        c.score += l.value // BOOK_STEP
+        credit = l.value // BOOK_STEP
+        if c.rating >= 80 and l.value % 2500 == 0:
+            credit = l.value // 800
+        credit = max(0, credit - c.open // 3)
+        if c.drops == 2:
+            credit //= 2
+        c.credits[tokens[2]] = credit
+        c.open += 1
+        c.score += credit
         c.sum_book += l.value // BOOK_STEP
         l.booked_by = tokens[1]
         self.n_book += 1
@@ -153,7 +168,10 @@ class Engine:
             return f"N {echo} NOBOOK"
         # SPEC: a drop subtracts twice what the booking added; the load
         # returns to the board and may be booked again by any carrier.
-        c.score -= 2 * (l.value // BOOK_STEP)
+        c.score -= 2 * c.credits.pop(tokens[2])
+        c.open -= 1
+        c.drops += 1
+        c.soured.add(tokens[2])
         c.sum_drop += l.value // BOOK_STEP
         l.booked_by = None
         self.n_drop += 1
@@ -163,14 +181,15 @@ class Engine:
         # SPEC: a settlement on an empty board settles nothing and
         # writes nothing.
         if not self.carriers:
-            return []
+            self.n_set += 1
+            return ["WEND 0"]
         replies = []
         for c in self.carriers.values():
             # SPEC: the settlement recomputes the score from the event
             # ledger with the same arithmetic as the live path; it is a
             # checksum, not a correction, and always equals the running
             # score for a healthy board.
-            settled = c.rating * 100 + c.sum_book - 2 * c.sum_drop
+            settled = max(0, c.start + c.sum_book - 2 * c.sum_drop - 2 * c.drops)
             replies.append(f"S {c.cid} {settled}")
             c.score = settled
         replies.append(f"WEND {len(self.carriers)}")
