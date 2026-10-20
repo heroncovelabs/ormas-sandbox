@@ -16,6 +16,11 @@ import sys
 ID_MAX = 8
 TARGET_MIN = 100
 NO_LOT = "????????"
+PLATEAU_RUN = 3          # identical segments in a row before gains halve
+COLD_START = 100         # first segment below this is a slow start
+COLD_TARGET = 10000      # slow starts only penalise lots at this target or above
+COLD_PENALTY = 150
+WALK_IN_TARGET = 1000    # implicit target for lots first seen via H
 
 
 def _valid_id(token: str) -> bool:
@@ -27,10 +32,38 @@ def _digits(token: str) -> bool:
 
 
 class Lot:
-    def __init__(self, target: int) -> None:
+    def __init__(self, name: str, target: int, walk_in: bool = False) -> None:
+        self.name = name
         self.target = target
-        self.accum = 0
+        self.walk_in = walk_in
+        self.accum = 0          # live W total
+        self.ledger = 0         # certification total
+        self.prev = None        # previous segment value
+        self.run = 0            # identical-segment run length
+        self.first = None       # first segment value
         self.certified = False
+
+    def apply(self, seg: int) -> None:
+        # Live W gain: step-downs gain seg*9/8, plateaus halve after a run.
+        if self.prev is not None and seg == self.prev:
+            self.run += 1
+        else:
+            self.run = 1
+        if self.prev is not None and seg < self.prev:
+            gain = seg * 9 // 8
+        else:
+            gain = seg
+        if self.run > PLATEAU_RUN:
+            gain = gain // 2
+        self.accum += gain
+        # Certification ledger: steep step-downs only.
+        if self.prev is not None and seg < self.prev and 2 * seg <= self.prev:
+            self.ledger += seg * 9 // 8
+        else:
+            self.ledger += seg
+        if self.first is None:
+            self.first = seg
+        self.prev = seg
 
 
 class Engine:
@@ -63,11 +96,11 @@ class Engine:
         return f"X {self.registered} {self.segments} {self.certs} {self.rejected}"
 
     def _find(self, lot: str) -> Lot | None:
-        return self.lots.get(lot)
+        return self.lots.get(lot.lower())
 
     def _register(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
@@ -80,31 +113,32 @@ class Engine:
             return f"N {lot} TARGET"
         if self._find(tokens[1]) is not None:
             return f"N {lot} DUP"
-        self.lots[tokens[1]] = Lot(int(target_tok))
+        self.lots[tokens[1].lower()] = Lot(tokens[1], int(target_tok))
         self.registered += 1
         return f"OK {len(self.lots)}"
 
     def _heat(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
         seg_tok = tokens[2]
-        if not _digits(seg_tok) or len(seg_tok) > 4 or int(seg_tok) < 1:
+        if not _digits(seg_tok) or len(seg_tok) > 4:
             return f"N {lot} SEG"
         k = self._find(tokens[1])
         if k is None:
-            return f"N {lot} UNKNOWN"
+            k = Lot(tokens[1], WALK_IN_TARGET, walk_in=True)
+            self.lots[tokens[1].lower()] = k
         if k.certified:
             return f"N {lot} DONE"
-        k.accum += int(seg_tok)
+        k.apply(int(seg_tok))
         self.segments += 1
-        return f"W {tokens[1]} {k.accum}"
+        return f"W {k.name} {k.accum}"
 
     def _certify(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
@@ -113,15 +147,18 @@ class Engine:
             return f"N {lot} UNKNOWN"
         if k.certified:
             return f"N {lot} DONE"
-        # SPEC: certification recomputes the lot's heatwork from its
-        # segment ledger; the total always equals the live accumulated
-        # heatwork, so the running sum stands in for the ledger.
-        total = k.accum
+        total = k.ledger
+        if (
+            k.first is not None
+            and k.first < COLD_START
+            and k.target >= COLD_TARGET
+        ):
+            total -= COLD_PENALTY
         k.certified = True
         self.certs += 1
         if total >= k.target:
-            return f"C {tokens[1]} PASS"
-        return f"C {tokens[1]} SHORT {k.target - total}"
+            return f"C {k.name} PASS"
+        return f"C {k.name} SHORT {k.target - total}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
