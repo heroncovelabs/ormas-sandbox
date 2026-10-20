@@ -327,7 +327,10 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         # Fields with default values cannot by handled by ALTER TABLE ADD
         # COLUMN statement because DROP DEFAULT is not supported in
         # ALTER TABLE.
-        if not field.null or self.effective_default(field) is not None:
+        # SQLite also refuses ALTER TABLE ... ADD COLUMN for UNIQUE columns
+        # (including nullable OneToOneFields), so remake the table for those.
+        if (not field.null or self.effective_default(field) is not None or
+                field.unique):
             self._remake_table(model, create_field=field)
         else:
             super().add_field(model, field)
