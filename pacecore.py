@@ -34,6 +34,8 @@ class Campaign:
         self.spent = 0
         self.grants = [0] * HOURS
         self.accrued = -1
+        self.debt = 0
+        self.exhausted = False
 
 
 class Engine:
@@ -47,17 +49,17 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        tokens = [t for t in line.split(" ") if t][:64]
         if not tokens:
             return ""
-        if tokens[0] == "C":
+        if len(tokens[0]) != 1 or tokens[0] not in "CSU":
+            reply = f"N {NO_CAMP} FMT"
+        elif tokens[0] == "C":
             reply = self._create(tokens)
         elif tokens[0] == "S":
             reply = self._spend(tokens)
-        elif tokens[0] == "U":
-            reply = self._trueup(tokens)
         else:
-            reply = f"N {NO_CAMP} FMT"
+            reply = self._trueup(tokens)
         if reply.startswith("N "):
             self.rejected += 1
         return reply
@@ -66,11 +68,11 @@ class Engine:
         return f"X {self.created} {self.requests} {self.trueups} {self.rejected}"
 
     def _find(self, camp: str) -> Campaign | None:
-        return self.camps.get(camp)
+        return self.camps.get(camp.lower())
 
     def _create(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
@@ -79,24 +81,30 @@ class Engine:
             return f"N {camp} BUDGET"
         if self._find(tokens[1]) is not None:
             return f"N {camp} DUP"
-        self.camps[tokens[1]] = Campaign(int(budget))
+        self.camps[tokens[1].lower()] = Campaign(int(budget))
         self.created += 1
         return f"OK {len(self.camps)}"
 
     def _accrue(self, c: Campaign, hour: int) -> None:
-        slice_ = (c.daily + c.carry) // HOURS
-        for _h in range(c.accrued + 1, hour + 1):
-            c.avail += slice_
+        if hour > c.accrued:
+            slice_ = (c.daily + c.carry) // HOURS
+            for h in range(c.accrued + 1, hour + 1):
+                v = slice_
+                if h == 0:
+                    v = max(0, v - c.debt)
+                    c.debt = 0
+                c.avail += v
+            c.exhausted = False
         c.accrued = hour
 
     def _spend(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
         hour_tok, req_tok = tokens[2], tokens[3]
-        if not _digits(hour_tok) or len(hour_tok) != 2 or int(hour_tok) > 23:
+        if not _digits(hour_tok) or len(hour_tok) > 2 or int(hour_tok) > 23:
             return f"N {camp} HOUR"
         hour = int(hour_tok)
         if not _digits(req_tok) or len(req_tok) > 7 or int(req_tok) < 1:
@@ -105,28 +113,39 @@ class Engine:
         c = self._find(tokens[1])
         if c is None:
             return f"N {camp} FMT"
-        if hour < c.accrued:
+        if c.accrued > hour:
             return f"N {camp} ORDER"
+        if hour == c.accrued and c.exhausted:
+            return f"N {camp} REQ"
         self._accrue(c, hour)
-        granted = min(req, c.avail)
+        cap = c.avail
+        if hour <= 5 and c.daily >= 1000000:
+            cap = cap // 2
+        granted = min(req, cap)
         c.avail -= granted
         c.spent += granted
         c.grants[hour] += granted
+        if req == cap:
+            c.exhausted = True
         self.requests += 1
         return f"P {granted}"
 
     def _trueup(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
         c = self._find(tokens[1])
         if c is None:
             return f"N {camp} FMT"
-        total = c.spent
+        sl = c.daily // HOURS
+        total = sum(min(g, sl) for g in c.grants)
         raw = max(0, c.daily - total)
-        carry = min(raw, c.daily // CARRY_CAP_DIV)
+        cap = c.daily // CARRY_CAP_DIV
+        carry = min(raw, cap)
+        if raw > cap:
+            c.debt += raw - cap
         c.carry = carry
         c.spent = 0
         c.grants = [0] * HOURS
