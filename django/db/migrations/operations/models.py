@@ -320,6 +320,8 @@ class RenameModel(ModelOperation):
         new_model = to_state.apps.get_model(app_label, self.new_name)
         if self.allow_migrate_model(schema_editor.connection.alias, new_model):
             old_model = from_state.apps.get_model(app_label, self.old_name)
+            old_db_table = old_model._meta.db_table
+            new_db_table = new_model._meta.db_table
             # Move the main table
             schema_editor.alter_db_table(
                 new_model,
@@ -328,6 +330,10 @@ class RenameModel(ModelOperation):
             )
             # Alter the fields pointing to us
             for related_object in old_model._meta.related_objects:
+                if old_db_table == new_db_table:
+                    # The table doesn't change (e.g. db_table is set), so
+                    # related fields don't need to be altered.
+                    break
                 if related_object.related_model == old_model:
                     model = new_model
                     related_key = (app_label, self.new_name_lower)
