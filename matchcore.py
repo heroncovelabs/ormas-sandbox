@@ -13,6 +13,10 @@ import sys
 PRICE_MAX = 10_000_000
 QTY_MAX = 999_999
 HASH_MOD = 1_000_000_007
+HASH_MIN_QTY = 100
+BIG_QTY = 1000
+TICK_ABOVE = 100_000
+TICK = 5
 
 
 class Order:
@@ -58,25 +62,53 @@ class Engine:
                 better = True
             elif order.price != best.price:
                 better = order.price < best.price if side == "B" else order.price > best.price
+            elif (order.orig >= BIG_QTY) != (best.orig >= BIG_QTY):
+                better = order.orig >= BIG_QTY
+            elif order.orig >= BIG_QTY and order.orig != best.orig:
+                better = order.orig > best.orig
             else:
                 better = order.seq < best.seq
             if better:
                 best = order
         return best
 
+    def _in_band(self, side: str, price: int, ref: int) -> bool:
+        # The engine only trades within 50%..150% of the best opposite
+        # price at the moment the incoming order arrived.
+        if side == "B":
+            return price - ref <= 500
+        return ref - price <= 500
+
     # -- message handlers ---------------------------------------------------
+
+    def cancel(self, acct: str, clordid: str) -> None:
+        order = self._find_live(acct, clordid)
+        if order is None:
+            self._emit(f"R {clordid} UNKNOWN")
+            return
+        order.live = False
+        self._emit(f"X {order.clordid} {order.orig}")
 
     def new_order(self, acct: str, clordid: str, side: str, type_: str, price: int, qty: int):
         if not 0 < qty <= QTY_MAX:
             self._emit(f"R {clordid} QTY")
             return
         is_market = type_ == "M"
-        if not is_market and not 0 < price < PRICE_MAX:
-            self._emit(f"R {clordid} PRICE")
-            return
+        if not is_market:
+            if not 0 < price < PRICE_MAX:
+                self._emit(f"R {clordid} PRICE")
+                return
+            if price > TICK_ABOVE and price % TICK:
+                self._emit(f"R {clordid} TICK")
+                return
         if self._find_live(acct, clordid) is not None:
-            self._emit(f"R {clordid} DUP")
-            return
+            self.cancel(acct, clordid)
+
+        ref = 0
+        for o in self.book:
+            if o.live and o.side != side and o.acct != acct:
+                if ref == 0 or (o.price < ref if side == "B" else o.price > ref):
+                    ref = o.price
 
         remaining = qty
         while remaining:
@@ -84,8 +116,11 @@ class Engine:
             if counter is None:
                 break
             if counter.acct == acct:
-                self._emit(f"R {clordid} STP")
-                return
+                counter.live = False
+                self._emit(f"X {counter.clordid} {counter.orig}")
+                continue
+            if not self._in_band(side, counter.price, ref):
+                break
             take = min(remaining, counter.qty)
             self._emit(f"F {counter.clordid} {clordid} {counter.price} {take}")
             counter.qty -= take
@@ -101,14 +136,6 @@ class Engine:
         else:
             self._emit(f"A {clordid} 0")
 
-    def cancel(self, acct: str, clordid: str) -> None:
-        order = self._find_live(acct, clordid)
-        if order is None:
-            self._emit(f"R {clordid} UNKNOWN")
-            return
-        order.live = False
-        self._emit(f"X {order.clordid} {order.qty}")
-
     def end_session(self) -> None:
         bid = ask = 0
         book_hash = 0
@@ -119,7 +146,8 @@ class Engine:
                 bid = max(bid, order.price)
             elif ask == 0 or order.price < ask:
                 ask = order.price
-            book_hash = (book_hash + order.price * order.qty) % HASH_MOD
+            if order.qty >= HASH_MIN_QTY:
+                book_hash = (book_hash + order.price * order.qty) % HASH_MOD
         self._emit(f"S {bid} {ask} {book_hash}")
 
     # -- line protocol ------------------------------------------------------
@@ -132,8 +160,8 @@ class Engine:
         if parts == ["E"]:
             self.end_session()
             return
-        if parts[0] == "N" and len(parts) == 7:
-            _, acct, clordid, side, type_, price, qty = parts
+        if parts[0] == "N" and len(parts) >= 7:
+            _, acct, clordid, side, type_, price, qty = parts[:7]
             if (
                 _token(acct, 4, 4)
                 and _token(clordid, 1, 8)
@@ -148,8 +176,12 @@ class Engine:
                 return
             self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
             return
-        if parts[0] == "C" and len(parts) == 3:
-            _, acct, clordid = parts
+        if parts[0] == "N":
+            clordid = parts[2] if len(parts) > 2 else ""
+            self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
+            return
+        if parts[0] == "C" and len(parts) >= 3:
+            _, acct, clordid = parts[:3]
             if _token(acct, 4, 4) and _token(clordid, 1, 8):
                 self.cancel(acct, clordid)
                 return
