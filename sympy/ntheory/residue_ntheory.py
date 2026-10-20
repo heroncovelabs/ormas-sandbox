@@ -771,10 +771,18 @@ def nthroot_mod(a, n, p, all_roots=False):
     if n == 2:
         return sqrt_mod(a, p, all_roots)
     # see Hackman "Elementary Number Theory" (2009), page 76
-    if not is_nthpow_residue(a, n, p):
-        return None
+    is_residue = is_nthpow_residue(a, n, p)
     if not isprime(p):
-        raise NotImplementedError("Not implemented for composite p")
+        from sympy.polys.galoistools import gf_csolve
+        return gf_csolve([1] + [0]*(n - 1) + [-a], p)
+    if not is_residue:
+        return None
+
+    if a % p == 0:
+        # x = 0 (mod p) is the unique root of x**n = a (mod p) when p | a
+        if all_roots:
+            return [0]
+        return 0
 
     if (p - 1) % n == 0:
         return _nthroot_mod1(a, n, p, all_roots)
