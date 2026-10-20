@@ -32,7 +32,8 @@ class Message:
     """An entry of translatable message."""
     def __init__(self, text: str, locations: List[Tuple[str, int]], uuids: List[str]):
         self.text = text
-        self.locations = locations
+        # Drop repeated (source, line) pairs, keeping the first-seen order.
+        self.locations = list(dict.fromkeys(locations))
         self.uuids = uuids
 
 
