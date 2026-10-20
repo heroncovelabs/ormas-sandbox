@@ -28,6 +28,13 @@ class Engine:
         self.bins: dict[str, dict] = {}
         self.next_mseq = 0
         self.next_bseq = 0
+        self.reserved: set[str] = set()
+        self.toll: dict[str, int] = {}
+        self.favor: dict[str, int] = {}
+        self.season_put = False
+        self.season_draw = False
+        self.last_head = None
+        self.last_tail = None
         self.c_j = 0
         self.c_o = 0
         self.c_p = 0
@@ -42,7 +49,13 @@ class Engine:
     def _reject(self, code: str) -> None:
         self._emit(f"R {code}")
 
+    def _drop_holding_if_empty(self, b: dict, name: str) -> None:
+        # Physical holding only; roster membership is kept (W retains the slot).
+        if b["holds"].get(name, 0) == 0:
+            b["holds"].pop(name, None)
+
     def _drop_if_empty(self, b: dict, name: str) -> None:
+        # Holding and roster removal together (used when M moves final sacks out).
         if b["holds"].get(name, 0) == 0:
             b["holds"].pop(name, None)
             if name in b["holders"]:
@@ -50,6 +63,82 @@ class Engine:
 
     def _held_total(self, name: str) -> int:
         return sum(b["holds"].get(name, 0) for b in self.bins.values())
+
+    def _measure(self, name: str) -> int:
+        levy = sum(
+            2 * self.shares[name]
+            for b in self.bins.values()
+            if b["streak"] >= 3 and b["holds"].get(name, 0) > 0
+        )
+        return self._held_total(name) - self.toll[name] + self.favor[name] - levy
+
+    def _turn(self) -> None:
+        # Keep is the engine's retained fill, distinct from the physical sacks.
+        order = sorted(
+            self.bins.items(),
+            key=lambda kv: (-kv[1]["keep"], len(kv[1]["holders"]), kv[1]["seq"]),
+        )
+        self._emit(f"TURN {len(order)}")
+        for name, _ in order:
+            self._emit(f"B {name}")
+
+        for name, b in order:
+            if name not in self.bins:
+                continue
+            if b["total"] == 0:
+                self._emit(f"SHUT {name}")
+                del self.bins[name]
+            elif 2 * b["keep"] < b["total"]:
+                for target, dst in order:
+                    if target == name or target not in self.bins:
+                        continue
+                    if dst["total"] + b["total"] > dst["cap"]:
+                        continue
+                    for member in b["holders"]:
+                        amount = b["holds"].get(member, 0)
+                        if amount:
+                            dst["holds"][member] = dst["holds"].get(member, 0) + amount
+                            if member not in dst["holders"]:
+                                dst["holders"].append(member)
+                    dst["total"] += b["total"]
+                    dst["keep"] += b["total"]
+                    self._emit(f"FOLD {name} {target}")
+                    self.reserved.add(name)
+                    del self.bins[name]
+                    self.c_m += 1
+                    break
+
+        for b in self.bins.values():
+            if b["keep"] > 0:
+                b["keep"] -= b["keep"] // 16
+            if b["draw"] and not b["put"] and not b["moved"]:
+                b["streak"] += 1
+            else:
+                b["streak"] = 0
+
+        head = order[0] if order else None
+        tail = order[-1] if order else None
+        quiet = self.season_put and not self.season_draw
+        head_state = None
+        if head and head[0] in self.bins:
+            b = head[1]
+            if quiet and b["total"] == b["cap"] and len(b["holds"]) >= 2:
+                head_state = b["seq"]
+                if self.last_head == head_state:
+                    for member in b["holds"]:
+                        self.favor[member] += self.shares[member]
+        self.last_head = head_state
+
+        tail_state = None
+        if tail and tail[0] in self.bins:
+            b = tail[1]
+            tail_state = (b["seq"], b["total"])
+            if self.last_tail == tail_state and b["draw"]:
+                b["keep"] = b["total"]
+        self.last_tail = tail_state
+        for b in self.bins.values():
+            b["put"] = b["draw"] = b["moved"] = False
+        self.season_put = self.season_draw = False
 
     def handle(self, line: str) -> None:
         parts = line.rstrip("\r\n").split()
@@ -71,6 +160,8 @@ class Engine:
             self.next_mseq += 1
             self.shares[parts[1]] = val
             self.mseq[parts[1]] = self.next_mseq
+            self.toll[parts[1]] = 0
+            self.favor[parts[1]] = 0
             self.morder.append(parts[1])
             self.c_j += 1
             self._emit(f"OK {len(self.morder)}")
@@ -84,7 +175,7 @@ class Engine:
             if not 1 <= cap <= 999:
                 self._reject("RNG")
                 return
-            if parts[1] in self.bins:
+            if parts[1] in self.bins or parts[1] in self.reserved:
                 self._reject("DUP")
                 return
             self.next_bseq += 1
@@ -92,6 +183,11 @@ class Engine:
                 "cap": cap,
                 "seq": self.next_bseq,
                 "total": 0,
+                "keep": 0,
+                "put": False,
+                "draw": False,
+                "moved": False,
+                "streak": 0,
                 "holders": [],
                 "holds": {},
             }
@@ -119,6 +215,9 @@ class Engine:
                 self._reject("FULL")
                 return
             b["total"] += count
+            b["keep"] += count
+            b["put"] = True
+            self.season_put = True
             b["holds"][parts[1]] = b["holds"].get(parts[1], 0) + count
             if parts[1] not in b["holders"]:
                 b["holders"].append(parts[1])
@@ -146,8 +245,12 @@ class Engine:
                 self._reject("LOW")
                 return
             b["total"] -= count
+            b["keep"] -= count + count // 6
+            b["draw"] = True
+            self.season_draw = True
+            self.toll[parts[1]] += count // 4
             b["holds"][parts[1]] -= count
-            self._drop_if_empty(b, parts[1])
+            self._drop_holding_if_empty(b, parts[1])
             self.c_w += 1
             self._emit("OK")
             return
@@ -182,9 +285,13 @@ class Engine:
                 self._reject("FULL")
                 return
             src["total"] -= count
+            src["keep"] -= count
+            src["moved"] = dst["moved"] = True
+            self.toll[parts[1]] += 1
             src["holds"][parts[1]] -= count
             self._drop_if_empty(src, parts[1])
             dst["total"] += count
+            dst["keep"] += count - count // 10
             dst["holds"][parts[1]] = dst["holds"].get(parts[1], 0) + count
             if parts[1] not in dst["holders"]:
                 dst["holders"].append(parts[1])
@@ -197,16 +304,7 @@ class Engine:
                 self._reject("FMT")
                 return
             self.c_t += 1
-            order = sorted(
-                self.bins.items(), key=lambda kv: (-kv[1]["total"], kv[1]["seq"])
-            )
-            self._emit(f"TURN {len(order)}")
-            for name, _ in order:
-                self._emit(f"B {name}")
-            for name, b in order:
-                if b["total"] == 0:
-                    self._emit(f"SHUT {name}")
-                    del self.bins[name]
+            self._turn()
             return
 
         if kind == "Y":
@@ -215,8 +313,10 @@ class Engine:
                 return
             self.c_y += 1
             ranked = sorted(
-                self.morder, key=lambda n: (-self._held_total(n), self.mseq[n])
+                self.morder, key=lambda n: (-self._measure(n), self.mseq[n])
             )
+            for b in self.bins.values():
+                b["keep"] += (b["total"] - b["keep"]) // 2
             self._emit(f"RECK {len(ranked)}")
             for name in ranked:
                 self._emit(f"S {name}")
