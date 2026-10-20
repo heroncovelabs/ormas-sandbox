@@ -3569,11 +3569,12 @@ class Argument(Parameter):
         if self.metavar is not None:
             return self.metavar
         var = self.type.get_metavar(param=self, ctx=ctx)
+        type_bracketed = bool(var) and var.startswith("[") and var.endswith("]")
         if not var:
             var = self.name.upper()
         if self.deprecated:
             var += "!"
-        if not self.required:
+        if not self.required and not type_bracketed:
             var = f"[{var}]"
         if self.nargs != 1:
             var += "..."
