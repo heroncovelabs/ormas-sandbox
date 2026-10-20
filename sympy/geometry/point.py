@@ -105,6 +105,10 @@ class Point(GeometryEntity):
 
     is_Point = True
 
+    # Above Expr._op_priority so that `scalar * Point` dispatches to
+    # Point.__rmul__ instead of SymPy's scalar multiplication.
+    _op_priority = 11.0
+
     def __new__(cls, *args, **kwargs):
         evaluate = kwargs.get('evaluate', global_evaluate[0])
         on_morph = kwargs.get('on_morph', 'ignore')
@@ -269,6 +273,15 @@ class Point(GeometryEntity):
         >>> Point(1, 2)*11/10
         Point2D(11/10, 11/5)
 
+        Multiplication by a scalar works in either order:
+
+        >>> from sympy import Float
+        >>> p = Point(1, 1)
+        >>> Float(2.0)*p == p*Float(2.0)
+        True
+        >>> Point(0, 0) + Float(2.0)*p
+        Point2D(2.0, 2.0)
+
         See Also
         ========
 
@@ -277,6 +290,10 @@ class Point(GeometryEntity):
         factor = sympify(factor)
         coords = [simplify(x*factor) for x in self.args]
         return Point(coords, evaluate=False)
+
+    def __rmul__(self, factor):
+        """Multiply a factor by point's coordinates."""
+        return self.__mul__(factor)
 
     def __neg__(self):
         """Negate the point."""
