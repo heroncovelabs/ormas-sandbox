@@ -1,6 +1,12 @@
 def greet(name: str) -> str:
-    return "hello"
+    name = name.strip()
+    if name:
+        return f"Hello, {name}."
+    return "Hello."
 
 
 def farewell(name: str) -> str:
-    return "goodbye"
+    name = name.strip()
+    if name:
+        return f"Goodbye, {name}."
+    return "Goodbye."
