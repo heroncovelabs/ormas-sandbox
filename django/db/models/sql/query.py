@@ -572,6 +572,19 @@ class Query(BaseExpression):
         if self.distinct_fields != rhs.distinct_fields:
             raise TypeError('Cannot combine queries with different distinct fields.')
 
+        # Ensure the shared base table is present and keep its alias unchanged.
+        initial_alias = self.get_initial_alias()
+
+        # Work on a clone of rhs so that relabeling never touches the caller's
+        # query. The table_map lists must be copied too, since clone() only
+        # shallow-copies them and change_aliases() mutates them in place.
+        rhs = rhs.clone()
+        rhs.table_map = {table: list(aliases) for table, aliases in rhs.table_map.items()}
+        # Joining rhs into self can turn consecutive aliases like T4, T5 into
+        # T5, T6, producing overlapping change_map keys and values. Move rhs's
+        # aliases to a separate prefix while preserving the shared base table.
+        rhs.bump_prefix(self, exclude={initial_alias})
+
         # Work out how to relabel the rhs aliases, if necessary.
         change_map = {}
         conjunction = (connector == AND)
@@ -589,9 +602,6 @@ class Query(BaseExpression):
         # the AND case. The results will be correct but this creates too many
         # joins. This is something that could be fixed later on.
         reuse = set() if conjunction else set(self.alias_map)
-        # Base table must be present in the query - this is the same
-        # table on both sides.
-        self.get_initial_alias()
         joinpromoter = JoinPromoter(connector, 2, False)
         joinpromoter.add_votes(
             j for j in self.alias_map if self.alias_map[j].join_type == INNER)
@@ -846,6 +856,9 @@ class Query(BaseExpression):
         relabelling any references to them in select columns and the where
         clause.
         """
+        # Sources and destinations must be disjoint to prevent an alias from
+        # being changed twice (e.g. T4 -> T5, T5 -> T6) or overwriting entries
+        # in alias_map during the single-pass renaming below.
         assert set(change_map).isdisjoint(change_map.values())
 
         # 1. Update references in "select" (normal columns plus aliases),
@@ -879,13 +892,16 @@ class Query(BaseExpression):
             for alias, aliased in self.external_aliases.items()
         }
 
-    def bump_prefix(self, outer_query):
+    def bump_prefix(self, outer_query, exclude=None):
         """
         Change the alias prefix to the next letter in the alphabet in a way
         that the outer query's aliases and this query's aliases will not
         conflict. Even tables that previously had no alias will get an alias
-        after this call.
+        after this call. To leave specific aliases unchanged, pass them in the
+        'exclude' collection.
         """
+        exclude = frozenset(exclude or ())
+
         def prefix_gen():
             """
             Generate a sequence of characters in alphabetical order:
@@ -926,6 +942,7 @@ class Query(BaseExpression):
         self.change_aliases({
             alias: '%s%d' % (self.alias_prefix, pos)
             for pos, alias in enumerate(self.alias_map)
+            if alias not in exclude
         })
 
     def get_initial_alias(self):
