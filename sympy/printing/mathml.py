@@ -777,29 +777,31 @@ class MathMLPresentationPrinter(MathMLPrinterBase):
         supers = [translate(sup) for sup in supers]
         subs = [translate(sub) for sub in subs]
 
+        if len(supers) == 0 and len(subs) == 0:
+            x.appendChild(self.dom.createTextNode(name))
+            return x
+
+        # Keep the base identifier inside the structural script element.
         mname = self.dom.createElement('mi')
         mname.appendChild(self.dom.createTextNode(name))
+        if style == 'bold':
+            mname.setAttribute('mathvariant', 'bold')
+
         if len(supers) == 0:
-            if len(subs) == 0:
-                x.appendChild(self.dom.createTextNode(name))
-            else:
-                msub = self.dom.createElement('msub')
-                msub.appendChild(mname)
-                msub.appendChild(join(subs))
-                x.appendChild(msub)
+            script = self.dom.createElement('msub')
+            script.appendChild(mname)
+            script.appendChild(join(subs))
+        elif len(subs) == 0:
+            script = self.dom.createElement('msup')
+            script.appendChild(mname)
+            script.appendChild(join(supers))
         else:
-            if len(subs) == 0:
-                msup = self.dom.createElement('msup')
-                msup.appendChild(mname)
-                msup.appendChild(join(supers))
-                x.appendChild(msup)
-            else:
-                msubsup = self.dom.createElement('msubsup')
-                msubsup.appendChild(mname)
-                msubsup.appendChild(join(subs))
-                msubsup.appendChild(join(supers))
-                x.appendChild(msubsup)
-        return x
+            script = self.dom.createElement('msubsup')
+            script.appendChild(mname)
+            script.appendChild(join(subs))
+            script.appendChild(join(supers))
+
+        return script
 
     def _print_MatrixSymbol(self, sym):
         return self._print_Symbol(sym, style=self._settings['mat_symbol_style'])
