@@ -157,6 +157,10 @@ def _sqrt_match(p):
     elif p.is_Add:
         pargs = sorted(p.args, key=default_sort_key)
         if all((x**2).is_Rational for x in pargs):
+            # split_surds needs at least one surd to work with; if there
+            # are none, there is nothing to denest
+            if not any(x.as_coeff_Mul()[1].is_Pow for x in pargs):
+                return []
             r, b, a = split_surds(p)
             res = a, b, r
             return list(res)
