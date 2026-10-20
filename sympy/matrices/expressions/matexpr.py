@@ -627,6 +627,12 @@ def get_postprocessor(cls):
                 # manipulate them like non-commutative scalars.
                 return cls._from_args(nonmatrices + [mat_class(*matrices).doit(deep=False)])
 
+        if cls == Add:
+            # Here nonmatrices is empty. A leading scalar identity would be the
+            # only term kept when every matrix term is zero, collapsing the sum
+            # to the scalar 0 rather than a ZeroMatrix of the right shape.
+            return mat_class(*matrices).doit(deep=False)
+
         return mat_class(cls._from_args(nonmatrices), *matrices).doit(deep=False)
     return _postprocessor
 
