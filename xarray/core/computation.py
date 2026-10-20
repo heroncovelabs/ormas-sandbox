@@ -1933,13 +1933,19 @@ def _ensure_numeric(data: T_Xarray) -> T_Xarray:
     from .dataset import Dataset
 
     def to_floatable(x: DataArray) -> DataArray:
-        if x.dtype.kind in "mM":
+        if x.dtype.kind == "M":
             return x.copy(
                 data=datetime_to_numeric(
                     x.data,
                     offset=np.datetime64("1970-01-01"),
                     datetime_unit="ns",
                 ),
+            )
+        elif x.dtype.kind == "m":
+            # timedeltas are already offsets; convert to float nanoseconds
+            return x.copy(data=datetime_to_numeric(
+                    x.data, offset=np.timedelta64(0, "ns"), datetime_unit="ns"
+                )
             )
         return x
 
