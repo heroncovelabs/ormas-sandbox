@@ -5950,7 +5950,30 @@ def _symbolic_factor_list(expr, opt, method):
 
                 factors.append((_factors_product(other), exp))
 
+    if method == 'sqf':
+        factors = _merge_sqf_factors(factors)
+
     return coeff, factors
+
+
+def _merge_sqf_factors(factors):
+    """Multiply polynomial square-free factors sharing a multiplicity. """
+    groups = {}
+    for f, k in factors:
+        if isinstance(f, Poly):
+            groups.setdefault(k, []).append(f)
+
+    result, done = [], set()
+    for f, k in factors:
+        if not isinstance(f, Poly):
+            result.append((f, k))
+        elif len(groups[k]) == 1:
+            result.append((f, k))
+        elif k not in done:
+            done.add(k)
+            result.append((Mul(*[g.as_expr() for g in groups[k]]), k))
+
+    return result
 
 
 def _symbolic_factor(expr, opt, method):
