@@ -560,8 +560,9 @@ class Add(Expr, AssocOp):
         if b.is_zero:
             if not im_or_z and not im:
                 return True
+            # Purely imaginary terms may cancel one another, so no answer here.
             if im and not im_or_z:
-                return False
+                return None
         if b.is_zero is False:
             return False
 
