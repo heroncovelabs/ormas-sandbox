@@ -8,11 +8,24 @@ the engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
+import string
 import sys
 
 PRICE_MAX = 10_000_000
 QTY_MAX = 999_999
+PRIORITY_QTY = 1000
+TICK_THRESHOLD = 100_000
+TICK_SIZE = 5
+SWEEP_BAND = 500
+HASH_MIN_QTY = 100
 HASH_MOD = 1_000_000_007
+
+# Field separators accepted by the engine (ASCII only; NBSP and \x1c are not).
+_FIELD_SPLIT = re.compile(r"[ \t\v\f\r]+")
+_LINE_END = re.compile(r"[\x00\r]")
+_ALNUM = frozenset(string.ascii_letters + string.digits)
+_DIGITS = frozenset(string.digits)
 
 
 class Order:
@@ -45,7 +58,11 @@ class Engine:
         return None
 
     def _best_counter(self, side: str, limit: int, is_market: bool) -> Order | None:
+        # Ranking key: best price first, then priority class at that price
+        # (large orders, by original quantity, ahead of the rest), then
+        # arrival sequence (FIFO within a class).
         best: Order | None = None
+        best_key: tuple[int, int, int] | None = None
         for order in self.book:
             if not order.live or order.side == side:
                 continue
@@ -54,14 +71,11 @@ class Engine:
                     continue
                 if side == "S" and order.price < limit:
                     continue
-            if best is None:
-                better = True
-            elif order.price != best.price:
-                better = order.price < best.price if side == "B" else order.price > best.price
-            else:
-                better = order.seq < best.seq
-            if better:
+            price_rank = order.price if side == "B" else -order.price
+            key = (price_rank, _priority_class(order), order.seq)
+            if best_key is None or key < best_key:
                 best = order
+                best_key = key
         return best
 
     # -- message handlers ---------------------------------------------------
@@ -71,21 +85,40 @@ class Engine:
             self._emit(f"R {clordid} QTY")
             return
         is_market = type_ == "M"
-        if not is_market and not 0 < price < PRICE_MAX:
-            self._emit(f"R {clordid} PRICE")
-            return
-        if self._find_live(acct, clordid) is not None:
-            self._emit(f"R {clordid} DUP")
-            return
+        if not is_market:
+            if not 0 < price < PRICE_MAX:
+                self._emit(f"R {clordid} PRICE")
+                return
+            if price >= TICK_THRESHOLD and price % TICK_SIZE:
+                self._emit(f"R {clordid} TICK")
+                return
+        # A valid new order reusing the clordid of a live order from the same
+        # account replaces it: the old order is cancelled (acknowledged with
+        # its submitted quantity) and the new order is processed as fresh
+        # arrival, so it loses its place in the queue.
+        replaced = self._find_live(acct, clordid)
+        if replaced is not None:
+            replaced.live = False
+            self._emit(f"X {replaced.clordid} {replaced.orig}")
 
         remaining = qty
+        first_fill_price = None
         while remaining:
             counter = self._best_counter(side, price, is_market)
             if counter is None:
                 break
+            # Cancel the resting self order and continue with the incoming
+            # quantity intact. Self cancellations precede the band check and
+            # do not establish the sweep's reference price.
             if counter.acct == acct:
-                self._emit(f"R {clordid} STP")
-                return
+                self.cancel(counter.acct, counter.clordid)
+                continue
+            # Every order type is limited to 500 price units from its first
+            # execution; a limit remainder can therefore leave a crossed book.
+            if first_fill_price is None:
+                first_fill_price = counter.price
+            elif abs(counter.price - first_fill_price) > SWEEP_BAND:
+                break
             take = min(remaining, counter.qty)
             self._emit(f"F {counter.clordid} {clordid} {counter.price} {take}")
             counter.qty -= take
@@ -107,7 +140,8 @@ class Engine:
             self._emit(f"R {clordid} UNKNOWN")
             return
         order.live = False
-        self._emit(f"X {order.clordid} {order.qty}")
+        # Acknowledge the submitted quantity, not the remaining quantity.
+        self._emit(f"X {order.clordid} {order.orig}")
 
     def end_session(self) -> None:
         bid = ask = 0
@@ -119,47 +153,64 @@ class Engine:
                 bid = max(bid, order.price)
             elif ask == 0 or order.price < ask:
                 ask = order.price
-            book_hash = (book_hash + order.price * order.qty) % HASH_MOD
+            # Odd-lot remainders still set the best price, but contribute
+            # to the hash only while at least 100 units remain.
+            if order.qty >= HASH_MIN_QTY:
+                book_hash = (book_hash + order.price * order.qty) % HASH_MOD
         self._emit(f"S {bid} {ask} {book_hash}")
 
     # -- line protocol ------------------------------------------------------
 
     def handle(self, line: str) -> None:
-        line = line.rstrip("\r\n")
+        # The engine truncates each message at the first NUL or CR (the rest
+        # of the line is discarded, not treated as a new message).
+        line = _LINE_END.split(line, 1)[0].rstrip("\n")
         if not line:
             return
-        parts = line.split(" ")
-        if parts == ["E"]:
+        if line == "E":
             self.end_session()
             return
-        if parts[0] == "N" and len(parts) == 7:
-            _, acct, clordid, side, type_, price, qty = parts
-            if (
-                _token(acct, 4, 4)
-                and _token(clordid, 1, 8)
-                and side in ("B", "S")
-                and type_ in ("L", "M", "I")
-                and price.isdigit()
-                and 1 <= len(price) <= 7
-                and qty.isdigit()
-                and 1 <= len(qty) <= 6
-            ):
-                self.new_order(acct, clordid, side, type_, int(price), int(qty))
-                return
-            self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
-            return
-        if parts[0] == "C" and len(parts) == 3:
-            _, acct, clordid = parts
-            if _token(acct, 4, 4) and _token(clordid, 1, 8):
-                self.cancel(acct, clordid)
-                return
-            self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
+        # Command letter must be the first character; the remainder is split
+        # on ASCII whitespace with no separator required after the letter.
+        if line[0] in ("N", "C"):
+            parts = [field for field in _FIELD_SPLIT.split(line[1:]) if field]
+            if line[0] == "N":
+                if len(parts) >= 6:
+                    acct, clordid, side, type_, price, qty = parts[:6]
+                    if (
+                        _token(acct, 4, 4)
+                        and _token(clordid, 1, 8)
+                        and side in ("B", "S")
+                        and type_ in ("L", "M", "I")
+                        and _digits(price, 1, 7)
+                        and _digits(qty, 1, 6)
+                    ):
+                        self.new_order(acct, clordid, side, type_, int(price), int(qty))
+                        return
+            elif len(parts) >= 2:
+                acct, clordid = parts[:2]
+                if _token(acct, 4, 4) and _token(clordid, 1, 8):
+                    self.cancel(acct, clordid)
+                    return
+            echo = parts[1] if len(parts) > 1 and _token(parts[1], 1, 8) else "????????"
+            self._emit(f"R {echo} FMT")
             return
         self._emit("R ???????? FMT")
 
 
+def _priority_class(order: Order) -> int:
+    # Orders placed with original quantity at or above PRIORITY_QTY rank ahead
+    # of smaller orders at the same price. Class follows the original size,
+    # so it survives partial fills.
+    return 0 if order.orig >= PRIORITY_QTY else 1
+
+
 def _token(value: str, lo: int, hi: int) -> bool:
-    return lo <= len(value) <= hi and value.isalnum()
+    return lo <= len(value) <= hi and all(ch in _ALNUM for ch in value)
+
+
+def _digits(value: str, lo: int, hi: int) -> bool:
+    return lo <= len(value) <= hi and all(ch in _DIGITS for ch in value)
 
 
 def main() -> None:
