@@ -13,6 +13,7 @@ from sphinx.util.nodes import clean_astext, process_only_nodes
 
 if TYPE_CHECKING:
     from sphinx.builders import Builder
+    from sphinx.domains.std import StandardDomain
     from sphinx.environment import BuildEnvironment
 
 
@@ -133,6 +134,21 @@ class TocTree:
                             title = clean_astext(self.env.titles[ref])
                         reference = nodes.reference('', '', internal=True,
                                                     refuri=ref,
+                                                    anchorname='',
+                                                    *[nodes.Text(title)])
+                        para = addnodes.compact_paragraph('', '', reference)
+                        item = nodes.list_item('', para)
+                        # don't show subitems
+                        toc = nodes.bullet_list('', item)
+                    elif ref in ('genindex', 'modindex', 'search'):
+                        # built-in generated pages: resolve their target and
+                        # default title from the standard domain's label triple
+                        std = cast('StandardDomain', self.env.get_domain('std'))
+                        target_doc, _labelid, default_title = std.labels[ref]
+                        if not title:
+                            title = default_title
+                        reference = nodes.reference('', '', internal=True,
+                                                    refuri=target_doc,
                                                     anchorname='',
                                                     *[nodes.Text(title)])
                         para = addnodes.compact_paragraph('', '', reference)

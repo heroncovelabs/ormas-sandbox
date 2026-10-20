@@ -16,6 +16,9 @@ from sphinx.util import logging, url_re
 
 N = TypeVar('N')
 
+# built-in references to generated pages; they are not source documents
+GENERATED_REFS = ('genindex', 'modindex', 'search')
+
 logger = logging.getLogger(__name__)
 
 
@@ -172,7 +175,7 @@ class TocTreeCollector(EnvironmentCollector):
             if depth == 0:
                 return
             for (_title, ref) in toctreenode['entries']:
-                if url_re.match(ref) or ref == 'self':
+                if url_re.match(ref) or ref == 'self' or ref in GENERATED_REFS:
                     # don't mess with those
                     continue
                 elif ref in assigned:
@@ -256,7 +259,8 @@ class TocTreeCollector(EnvironmentCollector):
                         _walk_doctree(docname, subnode, secnum)
                 elif isinstance(subnode, addnodes.toctree):
                     for _title, subdocname in subnode['entries']:
-                        if url_re.match(subdocname) or subdocname == 'self':
+                        if (url_re.match(subdocname) or subdocname == 'self' or
+                                subdocname in GENERATED_REFS):
                             # don't mess with those
                             continue
 

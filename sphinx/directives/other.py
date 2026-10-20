@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 
 glob_re = re.compile(r'.*[*?\[].*')
+# built-in references to generated pages; they are not source documents
+GENERATED_REFS = ('genindex', 'modindex', 'search')
 logger = logging.getLogger(__name__)
 
 
@@ -116,7 +118,9 @@ class TocTree(SphinxDirective):
                         break
                 # absolutize filenames
                 docname = docname_join(self.env.docname, docname)
-                if url_re.match(ref) or ref == 'self':
+                if url_re.match(ref) or ref == 'self' or ref in GENERATED_REFS:
+                    # generated pages are kept symbolic; they are not source
+                    # documents, so they never go into 'includefiles'
                     toctree['entries'].append((title, ref))
                 elif docname not in self.env.found_docs:
                     if excluded(self.env.doc2path(docname, False)):
