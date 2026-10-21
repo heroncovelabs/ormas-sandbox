@@ -1299,6 +1299,10 @@ class When(Expression):
         template_params = extra_context
         sql_params = []
         condition_sql, condition_params = compiler.compile(self.condition)
+        if not condition_sql:
+            # Conditions matching every row (e.g. ~Q(pk__in=[])) compile to
+            # an empty string. Use a valid predicate in the WHEN clause.
+            condition_sql = "1=1"
         template_params["condition"] = condition_sql
         sql_params.extend(condition_params)
         result_sql, result_params = compiler.compile(self.result)
