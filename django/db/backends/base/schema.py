@@ -568,6 +568,14 @@ class BaseDatabaseSchemaEditor:
             exclude=meta_constraint_names | meta_index_names,
             **constraint_kwargs,
         )
+        if len(constraint_names) > 1 and constraint_kwargs.get("unique"):
+            # A field's own unique or primary key constraint can cover the same
+            # columns. Select the constraint created for unique_together.
+            expected_name = self._create_index_name(
+                model._meta.db_table, columns, suffix="_uniq"
+            )
+            if expected_name in constraint_names:
+                constraint_names = [expected_name]
         if len(constraint_names) != 1:
             raise ValueError(
                 "Found wrong number (%s) of constraints for %s(%s)"
