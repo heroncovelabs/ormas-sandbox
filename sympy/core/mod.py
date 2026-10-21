@@ -41,6 +41,7 @@ class Mod(Function):
         from sympy.core.singleton import S
         from sympy.core.exprtools import gcd_terms
         from sympy.polys.polytools import gcd
+        from sympy.polys.polyerrors import PolynomialError
 
         def doit(p, q):
             """Try to return p % q if both are numbers or +/-p is known
@@ -166,10 +167,15 @@ class Mod(Function):
         # XXX other possibilities?
 
         # extract gcd; any further simplification should be done by the user
-        G = gcd(p, q)
-        if G != 1:
-            p, q = [
-                gcd_terms(i/G, clear=False, fraction=False) for i in (p, q)]
+        try:
+            G = gcd(p, q)
+            if G != 1:
+                # Normalize both operands before updating either one.
+                p, q = [
+                    gcd_terms(i/G, clear=False, fraction=False) for i in (p, q)]
+        except PolynomialError:
+            # Polynomial reduction is optional for non-polynomial operands.
+            G = S.One
         pwas, qwas = p, q
 
         # simplify terms
