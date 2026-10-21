@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterable
 from sympy import Derivative
 
-_name_with_digits_p = re.compile(r'^([a-zA-Z]+)([0-9]+)$')
+_name_with_digits_p = re.compile(r'^([^\W\d_]+)(\d+)$')
 
 
 def split_super_sub(text):
@@ -27,6 +27,18 @@ def split_super_sub(text):
     ('a', ['1'], ['x'])
     >>> split_super_sub('var_sub1__sup_sub2')
     ('var', ['sup'], ['sub1', 'sub2'])
+
+    A trailing run of digits on a Unicode letter name is treated as a
+    subscript, including Greek letters and non-ASCII decimal digits:
+
+    >>> split_super_sub('ω0')
+    ('ω', [], ['0'])
+    >>> split_super_sub('ω𝟙2^α')
+    ('ω', ['α'], ['𝟙2'])
+    >>> split_super_sub('ω₀')
+    ('ω₀', [], [])
+    >>> split_super_sub('ω٣')
+    ('ω', [], ['٣'])
 
     """
     if not text:
