@@ -108,6 +108,9 @@ class Command(BaseCommand):
         if not self.addr:
             self.addr = self.default_addr_ipv6 if self.use_ipv6 else self.default_addr
             self._raw_ipv6 = self.use_ipv6
+        elif self.addr == "0":
+            # "0" is shorthand for "0.0.0.0" (all IPv4 interfaces).
+            self.addr = "0.0.0.0"
         self.run(**options)
 
     def run(self, **options):
