@@ -13,18 +13,25 @@ import sys
 
 CAPACITY = 4096
 SCORE_MIN, SCORE_MAX = -999_999, 999_999
+NAME_WIDTH = 12
+LINE_WIDTH = 255
 
 
 class Store:
     def __init__(self, out=None):
-        self.rows: list[dict] = []  # insertion order
+        # Scans visit physical slots; deleted slots are reused in LIFO order.
+        self.rows: list[dict | None] = []
+        self.free_slots: list[int] = []
         self.out = out if out is not None else sys.stdout
 
     def _emit(self, line: str) -> None:
         self.out.write(line + "\n")
 
+    def _live_rows(self):
+        return (row for row in self.rows if row is not None)
+
     def _find(self, record_id: str) -> dict | None:
-        for row in self.rows:
+        for row in self._live_rows():
             if row["id"] == record_id:
                 return row
         return None
@@ -36,13 +43,19 @@ class Store:
         if not _alnum(record_id, 1, 8) or not _alnum(name, 1, 16) or score is None:
             self._emit("ERR FMT")
             return
-        if self._find(record_id) is not None:
-            self._emit("ERR DUPKEY")
+        row = self._find(record_id)
+        if row is not None:
+            row["score"] = score
+            self._emit("OK")
             return
-        if len(self.rows) >= CAPACITY:
+        if not self.free_slots and len(self.rows) >= CAPACITY:
             self._emit("ERR FULL")
             return
-        self.rows.append({"id": record_id, "name": name, "score": score})
+        row = {"id": record_id, "name": name[:NAME_WIDTH], "score": score}
+        if self.free_slots:
+            self.rows[self.free_slots.pop()] = row
+        else:
+            self.rows.append(row)
         self._emit("OK")
 
     def delete(self, record_id: str) -> None:
@@ -53,7 +66,9 @@ class Store:
         if row is None:
             self._emit("ERR NOTFOUND")
             return
-        self.rows.remove(row)
+        slot = self.rows.index(row)
+        self.rows[slot] = None
+        self.free_slots.append(slot)
         self._emit("OK")
 
     def get(self, record_id: str) -> None:
@@ -70,13 +85,11 @@ class Store:
         if not 0 < len(pattern) <= 17:
             self._emit("ERR FMT")
             return
-        regex = re.compile(
-            "^" + ".*".join(re.escape(part) for part in pattern.split("*")) + "$",
-            re.IGNORECASE,
-        )
+        prefix_mode = pattern.endswith("*")
+        target = pattern[:-1] if prefix_mode else pattern
         count = 0
-        for row in self.rows:
-            if regex.match(row["name"]):
+        for row in self._live_rows():
+            if _name_matches(row["name"], target, prefix_mode):
                 self._emit(_row(row))
                 count += 1
         self._emit(f"END {count}")
@@ -87,48 +100,63 @@ class Store:
             self._emit("ERR FMT")
             return
         count = 0
-        for row in self.rows:
-            if lo <= row["score"] <= hi:
+        for row in self._live_rows():
+            if _in_range(row["score"], lo, hi):
                 self._emit(_row(row))
                 count += 1
         self._emit(f"END {count}")
 
     def list_all(self) -> None:
-        for row in self.rows:
+        for row in self._live_rows():
             self._emit(_row(row))
-        self._emit(f"END {len(self.rows)}")
+        self._emit(f"END {len(self.rows) - len(self.free_slots)}")
 
     def sum_scores(self) -> None:
-        self._emit(f"SUM {sum(row['score'] for row in self.rows)}")
+        # The engine accumulates in signed 32-bit width: wrap the exact total.
+        total = sum(row["score"] for row in self._live_rows())
+        wrapped = ((total + 2**31) % 2**32) - 2**31
+        self._emit(f"SUM {wrapped}")
 
     def avg_scores(self) -> None:
-        if not self.rows:
+        count = len(self.rows) - len(self.free_slots)
+        if not count:
             self._emit("ERR EMPTY")
             return
-        self._emit(f"AVG {sum(row['score'] for row in self.rows) // len(self.rows)}")
+        # Exact (unwrapped) total over live records, divided by the live count,
+        # truncated toward zero via magnitude division with the sign restored.
+        total = sum(row["score"] for row in self._live_rows())
+        magnitude = abs(total) // count
+        avg = magnitude if total >= 0 else -magnitude
+        self._emit(f"AVG {avg}")
 
     # -- line protocol ------------------------------------------------------
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
+        # The C engine terminates at NUL/CR/LF, then scans four %63s fields.
+        # Each field consumes at most 63 bytes, even within a longer token.
+        line = re.split(r"[\x00\r\n]", line, maxsplit=1)[0]
+        if not line:
+            return
+        parts = re.findall(r"[^ \t\n\r\v\f]{1,63}", line)[:4]
         if not parts:
+            self._emit("ERR FMT")
             return
         cmd = parts[0]
-        if cmd == "INS" and len(parts) == 4:
+        if cmd == "INS" and len(parts) >= 4:
             self.ins(parts[1], parts[2], parts[3])
-        elif cmd == "DEL" and len(parts) == 2:
+        elif cmd == "DEL" and len(parts) >= 2:
             self.delete(parts[1])
-        elif cmd == "GET" and len(parts) == 2:
+        elif cmd == "GET" and len(parts) >= 2:
             self.get(parts[1])
-        elif cmd == "FIND" and len(parts) == 2:
+        elif cmd == "FIND" and len(parts) >= 2:
             self.find(parts[1])
-        elif cmd == "RANGE" and len(parts) == 3:
+        elif cmd == "RANGE" and len(parts) >= 3:
             self.range(parts[1], parts[2])
-        elif cmd == "LIST" and len(parts) == 1:
+        elif cmd == "LIST":
             self.list_all()
-        elif cmd == "SUM" and len(parts) == 1:
+        elif cmd == "SUM":
             self.sum_scores()
-        elif cmd == "AVG" and len(parts) == 1:
+        elif cmd == "AVG":
             self.avg_scores()
         else:
             self._emit("ERR FMT")
@@ -136,6 +164,33 @@ class Store:
 
 def _row(row: dict) -> str:
     return f"ROW {row['id']} {row['name']} {row['score']}"
+
+
+def _name_matches(name: str, target: str, prefix_mode: bool) -> bool:
+    # The first character compares case-sensitively; the remainder compares
+    # case-insensitively. A trailing '*' selects prefix matching; every other
+    # '*' is an ordinary character and never matches a stored name.
+    if not target:
+        return True
+    if prefix_mode:
+        if len(name) < len(target):
+            return False
+        head = name[: len(target)]
+    else:
+        if len(name) != len(target):
+            return False
+        head = name
+    return head[0] == target[0] and head[1:].lower() == target[1:].lower()
+
+
+def _in_range(score: int, lo: int, hi: int) -> bool:
+    # Engine semantics: lo inclusive, hi exclusive when lo < hi; equal
+    # endpoints select exact matches; reversed endpoints select nothing.
+    if lo < hi:
+        return lo <= score < hi
+    if lo == hi:
+        return score == lo
+    return False
 
 
 def _alnum(value: str, lo: int, hi: int) -> bool:
