@@ -70,7 +70,10 @@ class Command(BaseCommand):
             "--check",
             action="store_true",
             dest="check_changes",
-            help="Exit with a non-zero status if model changes are missing migrations.",
+            help=(
+                "Exit with a non-zero status if model changes are missing "
+                "migrations, without creating any migration files."
+            ),
         )
         parser.add_argument(
             "--scriptable",
@@ -103,7 +106,7 @@ class Command(BaseCommand):
         self.written_files = []
         self.verbosity = options["verbosity"]
         self.interactive = options["interactive"]
-        self.dry_run = options["dry_run"]
+        self.dry_run = options["dry_run"] or options["check_changes"]
         self.merge = options["merge"]
         self.empty = options["empty"]
         self.migration_name = options["name"]
@@ -247,13 +250,13 @@ class Command(BaseCommand):
                         )
                 else:
                     self.log("No changes detected")
+        elif check_changes:
+            sys.exit(1)
         else:
             if self.update:
                 self.write_to_last_migration_files(changes)
             else:
                 self.write_migration_files(changes)
-            if check_changes:
-                sys.exit(1)
 
     def write_to_last_migration_files(self, changes):
         loader = MigrationLoader(connections[DEFAULT_DB_ALIAS])
