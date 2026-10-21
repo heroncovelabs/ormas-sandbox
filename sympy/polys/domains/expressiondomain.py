@@ -149,7 +149,9 @@ class ExpressionDomain(Field, CharacteristicZero, SimpleDomain):
 
     def from_sympy(self, a):
         """Convert SymPy's expression to ``dtype``. """
-        return self.dtype(a)
+        f = self.dtype(a)
+        # Normalize coefficients so dense polynomials can strip leading zeros.
+        return f.simplify(f.ex)
 
     def from_ZZ_python(K1, a, K0):
         """Convert a Python ``int`` object to ``dtype``. """
