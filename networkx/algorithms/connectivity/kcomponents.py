@@ -63,26 +63,29 @@ def k_components(G, flow_func=None):
     Moody and White [1]_ (appendix A) provide an algorithm for identifying
     k-components in a graph, which is based on Kanevsky's algorithm [2]_
     for finding all minimum-size node cut-sets of a graph (implemented in
-    :meth:`all_node_cuts` function):
+    :meth:`all_node_cuts`).
 
-        1. Compute node connectivity, k, of the input graph G.
+    This implementation searches induced subgraphs using a single minimum
+    node cut for each candidate. Starting with the biconnected components,
+    it records each candidate at its measured connectivity. A noncomplete
+    candidate H with minimum cut S is split into the subgraphs induced by
+    C union S, for every connected component C of H - S. Every child is a
+    proper subset of H, and repeated candidates are processed once.
 
-        2. Identify all k-cutsets at the current level of connectivity using
-           Kanevsky's algorithm.
+    To see why one cut suffices, let K be a maximal k-connected node set
+    contained in H. Either K = H, or H has connectivity less than k.
+    In the latter case, removing its minimum cut S leaves K - S connected,
+    so K is contained in one child. Thus every maximal k-connected subgraph
+    is eventually recorded. The search continues through candidates whose
+    connectivity decreases after splitting.
 
-        3. Generate new graph components based on the removal of
-           these cutsets. Nodes in a cutset belong to both sides
-           of the induced cut.
-
-        4. If the graph is neither complete nor trivial, return to 1;
-           else end.
-
-    This implementation also uses some heuristics (see [3]_ for details)
-    to speed up the computation.
+    At each level k, the result contains the inclusion-maximal recorded
+    sets with measured connectivity at least k.
 
     See also
     --------
     node_connectivity
+    minimum_node_cut
     all_node_cuts
     biconnected_components : special case of this function when k=2
     k_edge_components : similar to this function, but uses edge-connectivity
@@ -104,56 +107,56 @@ def k_components(G, flow_func=None):
             https://arxiv.org/pdf/1503.04476v1
 
     """
-    # Dictionary with connectivity level (k) as keys and a list of
-    # sets of nodes that form a k-component as values. Note that
-    # k-components can overlap (but only k - 1 nodes).
-    k_components = defaultdict(list)
     # Define default flow function
     if flow_func is None:
         flow_func = default_flow_func
-    # Bicomponents as a base to check for higher order k-components
-    for component in nx.connected_components(G):
-        # isolated nodes have connectivity 0
-        comp = set(component)
-        if len(comp) > 1:
-            k_components[1].append(comp)
-    bicomponents = [G.subgraph(c) for c in nx.biconnected_components(G)]
-    for bicomponent in bicomponents:
-        bicomp = set(bicomponent)
-        # avoid considering dyads as bicomponents
-        if len(bicomp) > 2:
-            k_components[2].append(bicomp)
-    for B in bicomponents:
-        if len(B) <= 2:
-            continue
-        k = nx.node_connectivity(B, flow_func=flow_func)
-        if k > 2:
-            k_components[k].append(set(B))
-        # Perform cuts in a DFS like order.
-        cuts = list(nx.all_node_cuts(B, k=k, flow_func=flow_func))
-        stack = [(k, _generate_partition(B, cuts, k))]
-        while stack:
-            (parent_k, partition) = stack[-1]
-            try:
-                nodes = next(partition)
-                C = B.subgraph(nodes)
-                this_k = nx.node_connectivity(C, flow_func=flow_func)
-                if this_k > parent_k and this_k > 2:
-                    k_components[this_k].append(set(C))
-                cuts = list(nx.all_node_cuts(C, k=this_k, flow_func=flow_func))
-                if cuts:
-                    stack.append((this_k, _generate_partition(C, cuts, this_k)))
-            except StopIteration:
-                stack.pop()
 
-    # This is necessary because k-components may only be reported at their
-    # maximum k level. But we want to return a dictionary in which keys are
-    # connectivity levels and values list of sets of components, without
-    # skipping any connectivity level. Also, it's possible that subsets of
-    # an already detected k-component appear at a level k. Checking for this
-    # in the while loop above penalizes the common case. Thus we also have to
-    # _consolidate all connectivity levels in _reconstruct_k_components.
-    return _reconstruct_k_components(k_components)
+    # Maps each recorded candidate (frozenset of nodes) to its measured
+    # node connectivity.
+    recorded = {}
+
+    # Level 1: connected components with more than one node.
+    for component in nx.connected_components(G):
+        if len(component) > 1:
+            recorded[frozenset(component)] = 1
+
+    # Level 2: biconnected components, avoiding dyads.
+    bicomponents = [frozenset(B) for B in nx.biconnected_components(G)]
+    for bicomp in bicomponents:
+        if len(bicomp) > 2:
+            recorded[bicomp] = 2
+
+    # Exhaustive separator search over induced candidate subgraphs.
+    stack = [b for b in bicomponents if len(b) > 2]
+    seen = set()
+    while stack:
+        nodes = stack.pop()
+        if nodes in seen:
+            continue
+        seen.add(nodes)
+        if len(nodes) <= 2:
+            continue
+        H = G.subgraph(nodes)
+        if not nx.is_connected(H):
+            stack.extend(frozenset(cc) for cc in nx.connected_components(H))
+            continue
+        # The minimum cut gives both the connectivity and a separator.
+        cut = nx.minimum_node_cut(H, flow_func=flow_func)
+        # Complete graphs have connectivity n - 1, including with self-loops.
+        k = min(len(cut), len(H) - 1)
+        recorded[nodes] = k
+        if k == len(H) - 1:
+            continue
+        stack.extend(frozenset(child) for child in _generate_partition(H, cut))
+
+    # Group recorded candidates by measured connectivity level.
+    k_comps = defaultdict(list)
+    for nodes, level in recorded.items():
+        k_comps[level].append(set(nodes))
+
+    # k-components may only be recorded at their maximum k level, but the
+    # returned dictionary must contain every connectivity level.
+    return _reconstruct_k_components(k_comps)
 
 
 def _consolidate(sets, k):
@@ -178,36 +181,44 @@ def _consolidate(sets, k):
         yield set.union(*[nodes[n] for n in component])
 
 
-def _generate_partition(G, cuts, k):
-    def has_nbrs_in_partition(G, node, partition):
-        return any(n in partition for n in G[node])
+def _generate_partition(G, cut):
+    """Yield each component of G - cut together with the entire separator.
 
-    components = []
-    n_in_cuts = {n for cut in cuts for n in cut}
-    nodes = {n for n, d in G.degree() if d > k} - n_in_cuts
-    H = G.subgraph(nodes)
-    for cc in map(set, nx.connected_components(H)):
-        component = cc | {n for n in n_in_cuts if has_nbrs_in_partition(G, n, cc)}
-        if len(component) < G.order():
-            components.append(component)
-    yield from _consolidate(components, k + 1)
+    Every subgraph with connectivity greater than len(cut) lies in one
+    child, since removing cut leaves that subgraph connected. Each child
+    is a proper subset of G, so the search terminates.
+    """
+    H = G.subgraph(set(G) - cut)
+    for cc in nx.connected_components(H):
+        child = set(cc) | cut
+        if len(child) < len(G):
+            yield child
 
 
 def _reconstruct_k_components(k_comps):
+    """Return, for each level k, the inclusion-maximal sets with level >= k.
+
+    ``k_comps`` maps a measured connectivity level to the sets recorded at
+    that level. A set recorded at level j is j-connected, hence also
+    k-connected for every k <= j.
+    """
     result = {}
     max_k = max(k_comps) if k_comps else 0
-    for k in range(max_k, 0, -1):
-        if k == max_k:
-            result[k] = list(_consolidate(k_comps[k], k))
-        elif k not in k_comps:
-            result[k] = list(_consolidate(result[k + 1], k))
-        else:
-            nodes_at_k = set.union(*k_comps[k])
-            to_add = [c for c in result[k + 1] if any(n not in nodes_at_k for n in c)]
-            if to_add:
-                result[k] = list(_consolidate(k_comps[k] + to_add, k))
-            else:
-                result[k] = list(_consolidate(k_comps[k], k))
+    # Pool all sets with their measured level, largest sets first.
+    pool = sorted(
+        ((level, s) for level, sets in k_comps.items() for s in sets),
+        key=lambda item: len(item[1]),
+        reverse=True,
+    )
+    for k in range(1, max_k + 1):
+        kept = []
+        for level, s in pool:
+            if level < k:
+                continue
+            if any(s <= other for other in kept):
+                continue
+            kept.append(s)
+        result[k] = kept
     return result
 
 
