@@ -45,4 +45,16 @@ class Contains(BooleanFunction):
             isinstance(i, (Eq, Ne))])
 
     def as_set(self):
-        raise NotImplementedError()
+        """
+        Returns the set ``S`` in ``Contains(x, S)``, so that the result
+        supports set methods such as ``as_relational``.
+
+        Examples
+        ========
+
+        >>> from sympy import Contains, Reals, Symbol
+        >>> x = Symbol('x')
+        >>> Contains(x, Reals).as_set()
+        Reals
+        """
+        return self.args[1]
