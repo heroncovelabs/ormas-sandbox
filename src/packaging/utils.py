@@ -269,7 +269,7 @@ def parse_wheel_filename(
         ) from None
     except InvalidTag:
         raise InvalidWheelFilename(
-            f"Invalid wheel filename (empty tag component): {filename!r}"
+            f"Invalid wheel filename (invalid tag component): {filename!r}"
         ) from None
     return (name, version, build, tags)
 
