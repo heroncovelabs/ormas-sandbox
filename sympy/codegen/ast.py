@@ -893,9 +893,16 @@ class String(Token):
     >>> print(repr(f))
     String('foo')
 
+    The text is included in ``args``, so the object can be reconstructed
+    positionally as well as with keyword arguments:
+
+    >>> f.func(*f.args) == f
+    True
+    >>> f.func(**f.kwargs()) == f
+    True
+
     """
     __slots__ = ('text',)
-    not_in_args = ['text']
     is_Atom = True
 
     @classmethod
@@ -903,6 +910,11 @@ class String(Token):
         if not isinstance(text, str):
             raise TypeError("Argument text is not a string type.")
         return text
+
+    @property
+    def free_symbols(self):
+        """Return an empty set since strings contain no symbolic variables."""
+        return set()
 
     def _sympystr(self, printer, *args, **kwargs):
         return self.text
