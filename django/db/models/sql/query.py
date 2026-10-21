@@ -206,6 +206,9 @@ class Query(BaseExpression):
 
     # SQL annotation-related attributes.
     annotation_select_mask = None
+    # Aliases added with select=False while annotation_select_mask is None.
+    # They stay out of the SELECT without turning the mask into an explicit set.
+    hidden_annotations = frozenset()
     _annotation_select_cache = None
 
     # Set combination attributes.
@@ -1113,7 +1116,10 @@ class Query(BaseExpression):
             self, allow_joins=True, reuse=None, summarize=is_summary
         )
         if select:
+            self.hidden_annotations = self.hidden_annotations - {alias}
             self.append_annotation_mask([alias])
+        elif self.annotation_select_mask is None:
+            self.hidden_annotations = self.hidden_annotations | {alias}
         else:
             self.set_annotation_mask(set(self.annotation_select).difference({alias}))
         self.annotations[alias] = annotation
@@ -2448,6 +2454,12 @@ class Query(BaseExpression):
                 if k in self.annotation_select_mask
             }
             return self._annotation_select_cache
+        elif self.hidden_annotations:
+            return {
+                k: v
+                for k, v in self.annotations.items()
+                if k not in self.hidden_annotations
+            }
         else:
             return self.annotations
 
