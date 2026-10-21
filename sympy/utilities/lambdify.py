@@ -961,7 +961,11 @@ def _recursive_to_string(doprint, arg):
             left, right = "()"
         else:
             raise NotImplementedError("unhandled type: %s, %s" % (type(arg), arg))
-        return left +', '.join(_recursive_to_string(doprint, e) for e in arg) + right
+        body = ', '.join(_recursive_to_string(doprint, e) for e in arg)
+        # A trailing comma preserves the tuple type for a single element.
+        if isinstance(arg, tuple) and len(arg) == 1:
+            body += ','
+        return left + body + right
     elif isinstance(arg, str):
         return arg
     else:
