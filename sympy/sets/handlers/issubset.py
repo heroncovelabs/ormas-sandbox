@@ -12,6 +12,21 @@ _inf_sets = [S.Naturals, S.Naturals0, S.Integers, S.Rationals, S.Reals, S.Comple
 def is_subset_sets(a, b): # noqa:F811
     return None
 
+@dispatch(Set, FiniteSet)  # type: ignore # noqa:F811
+def is_subset_sets(a, b): # noqa:F811
+    # An infinite set cannot be a subset of a finite set.
+    if a.is_finite_set is False:
+        return False
+    # A known-finite, enumerable source is a subset of b iff every
+    # element of a is a member of b.
+    if a.is_finite_set is True and a.is_iterable:
+        try:
+            return fuzzy_and(fuzzy_bool(b.contains(x)) for x in a)
+        except (TypeError, ValueError):
+            # Iteration can depend on undecidable membership or range bounds.
+            return None
+    return None
+
 @dispatch(Interval, Interval)  # type: ignore # noqa:F811
 def is_subset_sets(a, b): # noqa:F811
     # This is correct but can be made more comprehensive...
