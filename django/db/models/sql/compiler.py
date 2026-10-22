@@ -6,7 +6,7 @@ from itertools import chain
 
 from django.core.exceptions import EmptyResultSet, FieldError, FullResultSet
 from django.db import DatabaseError, NotSupportedError
-from django.db.models.constants import LOOKUP_SEP
+from django.db.models.constants import LOOKUP_SEP, OnConflict
 from django.db.models.expressions import F, OrderBy, RawSQL, Ref, Value
 from django.db.models.functions import Cast, Random
 from django.db.models.lookups import Lookup
@@ -1722,11 +1722,20 @@ class SQLInsertCompiler(SQLCompiler):
 
         placeholder_rows, param_rows = self.assemble_as_sql(fields, value_rows)
 
+        update_fields = self.query.update_fields
+        unique_fields = self.query.unique_fields
+        if self.query.on_conflict == OnConflict.UPDATE:
+            # The ON CONFLICT clause must reference database columns, not
+            # field names, so honour db_column just like the INSERT does.
+            update_fields = [
+                opts.get_field(name).column for name in update_fields
+            ]
+            unique_fields = [opts.get_field(name).column for name in unique_fields]
         on_conflict_suffix_sql = self.connection.ops.on_conflict_suffix_sql(
             fields,
             self.query.on_conflict,
-            self.query.update_fields,
-            self.query.unique_fields,
+            update_fields,
+            unique_fields,
         )
         if (
             self.returning_fields
