@@ -220,13 +220,14 @@ class LiteralIncludeReader:
         if 'diff' in self.options:
             lines = self.show_diff()
         else:
+            # Dedent the included source before adding prepend and append content.
             filters = [self.pyobject_filter,
                        self.start_filter,
                        self.end_filter,
                        self.lines_filter,
+                       self.dedent_filter,
                        self.prepend_filter,
-                       self.append_filter,
-                       self.dedent_filter]
+                       self.append_filter]
             lines = self.read_file(self.filename, location=location)
             for func in filters:
                 lines = func(lines, location=location)
