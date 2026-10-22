@@ -1,0 +1,11 @@
+---
+bugfixes:
+- configuration - ``ensure_type`` now preserves data tags from the original value on converted ``int`` and ``list`` results, including each element of a list split from a tagged string.
+- configuration - ``ensure_type`` now returns the original value instance unchanged when conversion does not alter the value.
+- configuration - boolean conversion in ``ensure_type`` uses the standard non-strict rules, returning ``False`` for unhashable non-boolean values instead of raising.
+- configuration - ``ensure_type`` coerces ``True`` and ``False`` to ``1`` and ``0`` when the requested type is ``int`` or ``integer``.
+- configuration - ``ensure_type`` normalizes sequence inputs to concrete ``list`` instances and mapping inputs to concrete ``dict`` instances.
+- configuration - ``ensure_type`` rejects bytes values and non-string inputs for ``pathspec``, ``pathlist``, ``path``, and ``tmp`` types instead of attempting to resolve them as paths.
+- configuration - temporary path conversions (``tmp``, ``tmppath``, ``temppath``) create a unique empty directory and do not propagate tags to the returned path.
+- configuration - invalid conversions in ``ensure_type`` consistently raise ``ValueError`` with the message ``Invalid value provided for '<type>': <value>``, where ``<type>`` is the requested type name as passed by the caller.
+- configuration - string values read from INI configuration sources remain unquoted after type coercion.
