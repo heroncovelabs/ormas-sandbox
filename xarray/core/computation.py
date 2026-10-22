@@ -1826,13 +1826,15 @@ def where(cond, x, y, keep_attrs=None):
     if keep_attrs is None:
         keep_attrs = _get_keep_attrs(default=False)
 
-    if keep_attrs is True:
-        # keep the attributes of x, the second parameter, by default to
-        # be consistent with the `where` method of `DataArray` and `Dataset`
-        keep_attrs = lambda attrs, context: attrs[1]
+    restore_attrs_from_x = keep_attrs is True
+    if restore_attrs_from_x:
+        # Merge with "override" so that no positional attrs are assumed, then
+        # restore the attributes of x (the second parameter) afterwards, to be
+        # consistent with the `where` method of `DataArray` and `Dataset`.
+        keep_attrs = "override"
 
     # alignment for three arguments is complicated, so don't support it yet
-    return apply_ufunc(
+    result = apply_ufunc(
         duck_array_ops.where,
         cond,
         x,
@@ -1842,6 +1844,40 @@ def where(cond, x, y, keep_attrs=None):
         dask="allowed",
         keep_attrs=keep_attrs,
     )
+
+    if restore_attrs_from_x:
+        _restore_where_attrs(result, x)
+    return result
+
+
+def _restore_where_attrs(result, x) -> None:
+    """Copy object, data variable and coordinate attrs from ``where``'s ``x``.
+
+    Attribute-free values yield empty object and data variable attrs.
+    Coordinates supplied only by the other arguments keep their merged attrs.
+    Only metadata is touched; data stays lazy.
+    """
+    from .dataarray import DataArray
+    from .dataset import Dataset
+
+    if isinstance(result, Dataset):
+        result.attrs = x.attrs if isinstance(x, Dataset) else {}
+        for name in result.data_vars:
+            source = x[name] if isinstance(x, Dataset) else x
+            result[name].attrs = getattr(source, "attrs", {})
+    elif isinstance(result, (DataArray, Variable)):
+        result.attrs = getattr(x, "attrs", {})
+    else:
+        return
+
+    if isinstance(result, (DataArray, Dataset)) and isinstance(x, (DataArray, Dataset)):
+        variables = result._coords if isinstance(result, DataArray) else result._variables
+        for name in result.coords:
+            if name in x.coords:
+                # Coordinate variables may be shared with the inputs.
+                variable = variables[name].copy(deep=False)
+                variable.attrs = x.coords[name].attrs
+                variables[name] = variable
 
 
 def polyval(coord, coeffs, degree_dim="degree"):
