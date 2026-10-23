@@ -1,0 +1,2 @@
+minor_changes:
+  - winrm - Remove the optional ``pexpect`` dependency for ``kinit`` and always use ``subprocess`` with the password read from stdin.
