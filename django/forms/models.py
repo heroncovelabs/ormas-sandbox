@@ -253,17 +253,13 @@ class ModelFormOptions:
         self.help_texts = getattr(options, "help_texts", None)
         self.error_messages = getattr(options, "error_messages", None)
         self.field_classes = getattr(options, "field_classes", None)
+        self.formfield_callback = getattr(options, "formfield_callback", None)
 
 
 class ModelFormMetaclass(DeclarativeFieldsMetaclass):
     def __new__(mcs, name, bases, attrs):
-        base_formfield_callback = None
-        for b in bases:
-            if hasattr(b, "Meta") and hasattr(b.Meta, "formfield_callback"):
-                base_formfield_callback = b.Meta.formfield_callback
-                break
-
-        formfield_callback = attrs.pop("formfield_callback", base_formfield_callback)
+        # Legacy support for a callback declared directly on the form class.
+        legacy_formfield_callback = attrs.pop("formfield_callback", None)
 
         new_class = super().__new__(mcs, name, bases, attrs)
 
@@ -271,6 +267,10 @@ class ModelFormMetaclass(DeclarativeFieldsMetaclass):
             return new_class
 
         opts = new_class._meta = ModelFormOptions(getattr(new_class, "Meta", None))
+        # The effective Meta callback (including inherited Meta attributes)
+        # takes precedence; fall back to the class-level callback otherwise.
+        if opts.formfield_callback is None:
+            opts.formfield_callback = legacy_formfield_callback
 
         # We check if a string was passed to `fields` or `exclude`,
         # which is likely to be a mistake where the user typed ('foo') instead
@@ -308,7 +308,7 @@ class ModelFormMetaclass(DeclarativeFieldsMetaclass):
                 opts.fields,
                 opts.exclude,
                 opts.widgets,
-                formfield_callback,
+                opts.formfield_callback,
                 opts.localized_fields,
                 opts.labels,
                 opts.help_texts,
@@ -630,13 +630,15 @@ def modelform_factory(
     # creating needs to inherit from the parent's inner meta.
     bases = (form.Meta,) if hasattr(form, "Meta") else ()
     Meta = type("Meta", bases, attrs)
-    if formfield_callback:
+    # An explicitly supplied callback overrides the base form's Meta callback;
+    # None preserves the inherited Meta.formfield_callback.
+    if formfield_callback is not None:
         Meta.formfield_callback = staticmethod(formfield_callback)
     # Give this new form class a reasonable name.
     class_name = model.__name__ + "Form"
 
     # Class attributes for the new form class.
-    form_class_attrs = {"Meta": Meta, "formfield_callback": formfield_callback}
+    form_class_attrs = {"Meta": Meta}
 
     if getattr(Meta, "fields", None) is None and getattr(Meta, "exclude", None) is None:
         raise ImproperlyConfigured(
