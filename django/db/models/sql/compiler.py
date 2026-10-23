@@ -1829,6 +1829,7 @@ class SQLUpdateCompiler(SQLCompiler):
         # Ensure base table is in the query
         self.query.get_initial_alias()
         count = self.query.count_active_tables()
+        self.query.related_ids = None
         if not self.query.related_updates and count == 1:
             return
         query = self.query.chain(klass=Query)
@@ -1836,7 +1837,23 @@ class SQLUpdateCompiler(SQLCompiler):
         query.clear_ordering(force=True)
         query.extra = {}
         query.select = []
-        query.add_fields([query.get_meta().pk.name])
+        # Capture each ancestor's primary key separately when its parent-link
+        # path isn't primary-key aligned with the child.
+        names = [query.get_meta().pk.name]
+        ancestor_index = {}
+        for model in self.query.related_updates:
+            path = query.get_meta().get_path_to_parent(model)
+            if all(
+                p.join_field.primary_key and p.target_fields[0].primary_key
+                for p in path
+            ):
+                ancestor_index[model] = 0
+            else:
+                ancestor_index[model] = len(names)
+                names.append(
+                    LOOKUP_SEP.join([p.join_field.name for p in path] + ["pk"])
+                )
+        query.add_fields(names)
         super().pre_sql_setup()
 
         must_pre_select = (
@@ -1850,11 +1867,16 @@ class SQLUpdateCompiler(SQLCompiler):
             # Either we're using the idents in multiple update queries (so
             # don't want them to change), or the db backend doesn't support
             # selecting from the updating table (e.g. MySQL).
-            idents = []
+            # Capture all identifiers before any update executes.
+            child_ids = []
+            ancestor_ids = {model: [] for model in ancestor_index}
             for rows in query.get_compiler(self.using).execute_sql(MULTI):
-                idents.extend(r[0] for r in rows)
-            self.query.add_filter("pk__in", idents)
-            self.query.related_ids = idents
+                for row in rows:
+                    child_ids.append(row[0])
+                    for model, index in ancestor_index.items():
+                        ancestor_ids[model].append(row[index])
+            self.query.add_filter("pk__in", child_ids)
+            self.query.related_ids = ancestor_ids
         else:
             # The fast path. Filters and updates in one query.
             self.query.add_filter("pk__in", query)

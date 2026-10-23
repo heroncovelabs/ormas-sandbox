@@ -60,6 +60,7 @@ class UpdateQuery(Query):
         would normally be set in __init__() should go here instead.
         """
         self.values = []
+        # Primary keys of each updated ancestor, captured before any updates.
         self.related_ids = None
         self.related_updates = {}
 
@@ -126,6 +127,9 @@ class UpdateQuery(Query):
         Return a list of query objects: one for each update required to an
         ancestor model. Each query will have the same filtering conditions as
         the current query but will only update a single table.
+
+        When related_ids is set, each ancestor query is restricted to the
+        primary keys captured for its own model.
         """
         if not self.related_updates:
             return []
@@ -134,7 +138,7 @@ class UpdateQuery(Query):
             query = UpdateQuery(model)
             query.values = values
             if self.related_ids is not None:
-                query.add_filter("pk__in", self.related_ids)
+                query.add_filter("pk__in", self.related_ids[model])
             result.append(query)
         return result
 
