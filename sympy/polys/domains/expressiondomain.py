@@ -120,7 +120,10 @@ class ExpressionDomain(Field, CharacteristicZero, SimpleDomain):
             return not f == g
 
         def __bool__(f):
-            return f.ex != 0
+            # An expression can be zero without being structurally ``0``
+            # (e.g. an unsimplified radical combination). Treat it as zero so
+            # that leading zero coefficients are stripped from the DMP.
+            return f.ex != 0 and f.ex.is_zero is not True
 
         def gcd(f, g):
             from sympy.polys import gcd
