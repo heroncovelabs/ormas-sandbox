@@ -123,9 +123,15 @@ class Mod(Function):
             for arg in p.args:
                 both_l[isinstance(arg, cls)].append(arg)
 
-            if mod_l and all(inner.args[1] == q for inner in mod_l):
+            # reduce the non-modulus terms modulo q; for integer p a term that
+            # reduces to a non-Mod value (e.g. 3 -> 1 mod 2) is a real change
+            reduced = [cls(x, q) for x in non_mod_l]
+            changed = p.is_integer and any(
+                not isinstance(new, cls) and new != old
+                for old, new in zip(non_mod_l, reduced))
+            if (mod_l or changed) and all(inner.args[1] == q for inner in mod_l):
                 # finding distributive term
-                non_mod_l = [cls(x, q) for x in non_mod_l]
+                non_mod_l = reduced
                 mod = []
                 non_mod = []
                 for j in non_mod_l:
