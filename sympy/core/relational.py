@@ -556,6 +556,10 @@ class Equality(Relational):
         return set()
 
     def _eval_simplify(self, **kwargs):
+        # Simplify set and other non-expression arguments through equality.
+        if not all(isinstance(arg, Expr) for arg in self.args):
+            return self.func(*[arg.simplify(**kwargs) for arg in self.args])
+
         from .add import Add
         from sympy.solvers.solveset import linear_coeffs
         # standard simplify

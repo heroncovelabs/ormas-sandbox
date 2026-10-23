@@ -24,9 +24,10 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
                lhs.right_open == rhs.right_open)
 
 
-@dispatch(FiniteSet, Interval) # type:ignore
+@dispatch(ProductSet, Interval) # type:ignore
 def _eval_is_eq(lhs, rhs): # noqa: F811
-    return False
+    # Products contain tuples, so equality requires both sets to be empty.
+    return fuzzy_and([lhs.is_empty, rhs.is_empty])
 
 
 @dispatch(FiniteSet, FiniteSet) # type:ignore
@@ -56,4 +57,4 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
 
 @dispatch(Set, Set) # type:ignore
 def _eval_is_eq(lhs, rhs): # noqa: F811
-    return None
+    return fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])
