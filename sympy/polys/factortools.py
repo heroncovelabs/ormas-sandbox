@@ -1162,7 +1162,26 @@ def dmp_ext_factor(f, u, K):
             h = dmp_compose(h, H, u, K)
             factors[i] = h
 
-    return lc, dmp_trial_division(F, factors, u, K)
+    result = []
+
+    for factor in factors:
+        k = 0
+
+        while True:
+            q, r = dmp_div(F, factor, u, K)
+
+            if dmp_zero_p(r, u):
+                F, k = q, k + 1
+            else:
+                break
+
+        if k:
+            result.append((factor, k))
+
+    if not all(d <= 0 for d in dmp_degree_list(F, u)):
+        result.append((F, 1))
+
+    return lc, _sort_factors(result)
 
 
 def dup_gf_factor(f, K):
