@@ -5950,7 +5950,36 @@ def _symbolic_factor_list(expr, opt, method):
 
                 factors.append((_factors_product(other), exp))
 
+    if method == 'sqf':
+        factors = _group_sqf_factors(factors)
+
     return coeff, factors
+
+
+def _group_sqf_factors(factors):
+    """Merge square-free polynomial factors sharing an integer multiplicity.
+
+    Bases with the same integer exponent are multiplied into one expanded
+    polynomial base. Groups keep the order in which they were first seen.
+    Non-polynomial factors and factors with non-integer exponents are kept
+    unchanged.
+    """
+    result = []
+    index = {}
+
+    for f, k in factors:
+        if isinstance(f, Poly) and isinstance(k, (int, Integer)):
+            if k in index:
+                i = index[k]
+                g, multiplicity = result[i]
+                result[i] = (g.mul(f), multiplicity)
+                continue
+
+            index[k] = len(result)
+
+        result.append((f, k))
+
+    return result
 
 
 def _symbolic_factor(expr, opt, method):
@@ -6214,6 +6243,12 @@ def sqf_list(f, *gens, **args):
     >>> sqf_list(2*x**5 + 16*x**4 + 50*x**3 + 76*x**2 + 56*x + 16)
     (2, [(x + 1, 2), (x + 2, 3)])
 
+    Square-free factors sharing the same multiplicity are combined into
+    one expanded base:
+
+    >>> sqf_list(x**2*(x - 1)**3*(x + 1)**3)
+    (1, [(x, 2), (x**2 - 1, 3)])
+
     """
     return _generic_factor_list(f, gens, args, method='sqf')
 
@@ -6231,6 +6266,12 @@ def sqf(f, *gens, **args):
 
     >>> sqf(2*x**5 + 16*x**4 + 50*x**3 + 76*x**2 + 56*x + 16)
     2*(x + 1)**2*(x + 2)**3
+
+    Factors with equal multiplicity are combined, consistent with
+    :func:`sqf_list`:
+
+    >>> sqf((x - 2)**2*(x - 3)**2)
+    (x**2 - 5*x + 6)**2
 
     """
     return _generic_factor(f, gens, args, method='sqf')
