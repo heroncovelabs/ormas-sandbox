@@ -1162,7 +1162,46 @@ def dmp_ext_factor(f, u, K):
             h = dmp_compose(h, H, u, K)
             factors[i] = h
 
-    return lc, dmp_trial_division(F, factors, u, K)
+    found, rest = _dmp_ext_trial_division(F, factors, u, K)
+
+    if all(d <= 0 for d in dmp_degree_list(rest, u)):
+        return K.mul(lc, dmp_ground_LC(rest, u, K)), _sort_factors(found)
+
+    if not found:
+        return lc, [(F, 1)]
+
+    # Candidates recovered from the norm may miss a factor; the cofactor
+    # left after trial division still divides F, so factor it as well.
+    c, others = dmp_ext_factor(rest, u, K)
+
+    return K.mul(lc, c), _sort_factors(found + others)
+
+
+def _dmp_ext_trial_division(f, factors, u, K):
+    """
+    Return the factors that divide ``f`` with their multiplicities,
+    together with the cofactor left after dividing them out.
+    """
+    result = []
+
+    for factor in factors:
+        if all(d <= 0 for d in dmp_degree_list(factor, u)):
+            continue
+
+        k = 0
+
+        while True:
+            q, r = dmp_div(f, factor, u, K)
+
+            if dmp_zero_p(r, u):
+                f, k = q, k + 1
+            else:
+                break
+
+        if k:
+            result.append((factor, k))
+
+    return result, f
 
 
 def dup_gf_factor(f, K):
