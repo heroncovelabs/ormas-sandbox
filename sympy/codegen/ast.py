@@ -895,7 +895,6 @@ class String(Token):
 
     """
     __slots__ = ('text',)
-    not_in_args = ['text']
     is_Atom = True
 
     @classmethod
@@ -903,6 +902,11 @@ class String(Token):
         if not isinstance(text, str):
             raise TypeError("Argument text is not a string type.")
         return text
+
+    @property
+    def free_symbols(self):
+        # The text is a plain ``str`` argument, which carries no symbols.
+        return set()
 
     def _sympystr(self, printer, *args, **kwargs):
         return self.text
