@@ -20,6 +20,23 @@ SIZE_RANGES = {
     'B': 1,
 }
 
+# Full-word names of the size prefixes used by human_to_bytes(), keyed like SIZE_RANGES.
+_SIZE_PREFIX_NAMES = {
+    'Y': 'yotta',
+    'Z': 'zetta',
+    'E': 'exa',
+    'P': 'peta',
+    'T': 'tera',
+    'G': 'giga',
+    'M': 'mega',
+    'K': 'kilo',
+    'B': '',
+}
+
+# A complete ASCII size string: a decimal number, optional ASCII spaces, an optional ASCII-letter unit,
+# and optional trailing ASCII spaces. The number must start at the first character.
+_HUMAN_SIZE_RE = re.compile(r'([0-9]+\.?[0-9]*|\.[0-9]+)[ ]*([A-Za-z]+)?[ ]*\Z')
+
 
 def lenient_lowercase(lst):
     """Lowercase elements of a list.
@@ -53,13 +70,10 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         The function expects 'b' (lowercase) as a bit identifier, e.g. 'Mb'/'Kb'/etc.
         if 'MB'/'KB'/... is passed, the ValueError will be rased.
     """
-    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
+    m = _HUMAN_SIZE_RE.match(str(number))
     if m is None:
         raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
-    try:
-        num = float(m.group(1))
-    except Exception:
-        raise ValueError("human_to_bytes() can't interpret following number: %s (original input string: %s)" % (m.group(1), number))
+    num = float(m.group(1))
 
     unit = m.group(2)
     if unit is None:
@@ -87,9 +101,9 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         if range_key == 'B':
             expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
 
-        if unit_class_name in unit.lower():
-            pass
-        elif unit[1] != unit_class:
+        is_abbreviation = range_key != 'B' and len(unit) == 2 and unit[1] == unit_class
+        is_full_word = unit.lower() == _SIZE_PREFIX_NAMES[range_key] + unit_class_name
+        if not (is_abbreviation or is_full_word):
             raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
 
     return int(round(num * limit))

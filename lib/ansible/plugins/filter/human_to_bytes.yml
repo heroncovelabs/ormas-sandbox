@@ -3,20 +3,25 @@ DOCUMENTATION:
   version_added: "historical"
   short_description: Get bytes from string
   description:
-    - Convert a human-readable byte or bit string into a number bytes.
+    - Convert a human-readable byte or bit string into a number of bytes or bits.
+    - Input must start with an ASCII decimal number, optionally followed by ASCII spaces, a unit, and trailing ASCII spaces.
+    - Units may be a single size prefix, an abbreviation such as V(MB) or V(Mb), or a full name such as V(megabyte) or V(megabit).
+    - Full unit names are case-insensitive. Abbreviations use V(B) for bytes and V(b) for bits, as selected by O(isbits).
+    - Malformed numbers, leading whitespace, unrecognized units, and additional text produce an error.
   positional: _input, default_unit, isbits
   options:
     _input:
-      description: human-readable description of a number of bytes.
-      type: int
+      description: Human-readable description of a number of bytes or bits.
+      type: str
       required: true
     default_unit:
       description: Unit to assume when input does not specify it.
       type: str
       choices: ['Y', 'Z', 'E', 'P', 'T', 'G', 'M', 'K', 'B']
     isbits:
-      description: If V(True), force to interpret only bit input; if V(False), force bytes. Otherwise use the notation to guess.
+      description: If V(True), interpret the input as bits. If V(False), interpret the input as bytes.
       type: bool
+      default: false
 EXAMPLES: |
 
   # size => 1234803098
