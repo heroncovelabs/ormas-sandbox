@@ -38,6 +38,8 @@ class Tool:
         self.cleared = 0  # ledger: duty cleared by rotas since the last one
         self.loaned_by: str | None = None
         self.loan_days = 0
+        self.stamp = 0
+        self.services = 0
 
 
 class Engine:
@@ -46,6 +48,8 @@ class Engine:
     def __init__(self) -> None:
         self.tools: dict[str, Tool] = {}
         self.members: set[str] = set()
+        self.member_carrier: dict[str, bool] = {}
+        self.stamp = 0
         self.registered = 0
         self.enrolled = 0
         self.loans = 0
@@ -136,6 +140,13 @@ class Engine:
             return f"N {ident} OUT"
         t.loaned_by = tokens[1]
         t.loan_days = int(days)
+        out_now = sum(1 for o in self.tools.values() if o.loaned_by == tokens[1])
+        if out_now >= 3:
+            self.member_carrier[tokens[1]] = True
+        loan_duty = int(days) * t.grade
+        if t.services >= 3:
+            loan_duty //= 2
+        t.duty += loan_duty
         self.loans += 1
         return f"L {tokens[1]} {tokens[2]}"
 
@@ -153,11 +164,17 @@ class Engine:
         if t.loaned_by != tokens[1]:
             return f"N {ident} NOLOAN"
         # Duty accrues when the tool comes back: days x grade.
-        earned = t.loan_days * t.grade
+        earned = 2 * t.grade
+        if self.member_carrier.get(tokens[1]):
+            earned += 5
+        if t.services >= 3:
+            earned //= 2
         t.duty += earned
-        t.accrued += earned
+        t.accrued += t.loan_days * t.grade
         t.loaned_by = None
         t.loan_days = 0
+        self.stamp += 1
+        t.stamp = self.stamp
         self.returns += 1
         return f"R {tokens[1]} {tokens[2]}"
 
@@ -166,15 +183,13 @@ class Engine:
             return f"N {NO_ID} FMT"
         rota = sorted(
             ((name, t) for name, t in self.tools.items() if t.duty > 0),
-            key=lambda item: (-item[1].duty, item[1].index),
+            key=lambda item: (-item[1].duty, -item[1].stamp, item[1].index),
         )
         self.services += 1
-        if not rota:
-            # No tool owes service: there is no rota to emit or close.
-            return ""
         lines = []
         for name, t in rota:
             lines.append(f"S {name}")
+            t.services += 1
             t.cleared += t.duty
             t.duty = 0
         lines.append(f"SEND {len(rota)}")
@@ -190,8 +205,7 @@ class Engine:
             # is an audit, not a revision: it always agrees with the
             # live figure.
             t.duty = t.accrued - t.cleared
-            t.accrued = 0
-            t.cleared = 0
+            t.stamp = 0
             if t.duty > 0:
                 positive += 1
         self.reckonings += 1
