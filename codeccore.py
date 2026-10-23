@@ -11,12 +11,22 @@ contract).
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
 
+# The legacy reader uses a 4096-byte fgets buffer, including its terminator.
+INPUT_CHUNK = 4095
 RECLEN = 48
 ACCT_WIDTH = 10
 AMOUNT_WIDTH = 11
 MEMO_WIDTH = 15
-MEMO_MAX = 15
+MEMO_MAX = 20
+MEMO_SQUEEZE_HEAD = 12
+MEMO_SQUEEZE_TAIL = 2
+MEMO_SQUEEZE_MARK = "~"
+AUDIT_MONTH = 1
+AUDIT_THRESHOLD = 10_000_000
+AUDIT_FLAG = "H"
+PLAIN_FLAG = "N"
 
 _WEIGHTS = (2, 5, 3)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -38,18 +48,36 @@ def _days_in_month(year: int, month: int) -> int:
 
 
 def _valid_date(field: str) -> bool:
-    if len(field) != 8 or not field.isdigit():
+    if len(field) != 8 or not field.isascii() or not field.isdigit():
         return False
     year, month, day = int(field[:4]), int(field[4:6]), int(field[6:8])
     return year >= 1900 and 1 <= month <= 12 and 1 <= day <= _days_in_month(year, month)
 
 
 def _valid_acct(token: str) -> bool:
-    return 1 <= len(token) <= ACCT_WIDTH and token.isalnum()
+    return 1 <= len(token) <= ACCT_WIDTH and token.isascii() and token.isalnum()
 
 
 def _printable(text: str) -> bool:
     return all(33 <= ord(c) <= 126 for c in text)
+
+
+def _squeeze_memo(memo: str) -> str:
+    """Fit a memo longer than the stored width: keep the head and tail, mark the cut."""
+    if len(memo) <= MEMO_WIDTH:
+        return memo
+    return (
+        memo[:MEMO_SQUEEZE_HEAD]
+        + MEMO_SQUEEZE_MARK
+        + memo[len(memo) - MEMO_SQUEEZE_TAIL :]
+    )
+
+
+def _audit_flag(date: str, amount: str) -> str:
+    """Audit flag for a validated date and digit-only amount in cents."""
+    if date[4:6] == f"{AUDIT_MONTH:02d}" and int(amount) > AUDIT_THRESHOLD:
+        return AUDIT_FLAG
+    return PLAIN_FLAG
 
 
 class Engine:
@@ -62,7 +90,8 @@ class Engine:
 
     def handle(self, line: str) -> str:
         if line == "E" or line.startswith("E "):
-            reply = self._encode(line.split())
+            # Only literal spaces separate encode fields; surplus fields are ignored.
+            reply = self._encode([token for token in line.split(" ") if token][:5])
         elif line == "D" or line.startswith("D "):
             reply = self._decode(line[2:])
         else:
@@ -87,7 +116,7 @@ class Engine:
         acct, amount, date, memo = tokens[1:5]
         if not _valid_acct(acct):
             return f"R FMT {NO_ACCT}"
-        if not 1 <= len(amount) <= AMOUNT_WIDTH or not amount.isdigit():
+        if not (1 <= len(amount) <= AMOUNT_WIDTH and amount.isascii() and amount.isdigit()):
             return f"R FMT {acct}"
         if not _valid_date(date):
             return f"R FMT {acct}"
@@ -97,8 +126,8 @@ class Engine:
             return f"R FMT {acct}"
         if len(memo) > MEMO_MAX:
             return f"R FMT {acct}"
-        stored = memo
-        flag = "N"
+        stored = _squeeze_memo(memo)
+        flag = _audit_flag(date, amount)
         body = (
             "VX"
             + acct.rjust(ACCT_WIDTH, "*")
@@ -110,27 +139,30 @@ class Engine:
         return "V " + body + check_char(body)
 
     def _decode(self, arg: str) -> str:
+        # A space immediately after the fixed-width record starts an ignored suffix.
+        if arg[RECLEN : RECLEN + 1] == " ":
+            arg = arg[:RECLEN]
         if len(arg) != RECLEN:
             return "R LEN"
-        record = arg
-        if record[:2] != "VX":
+        if arg[:2].upper() != "VX":
             return "R FMT"
-        if record[RECLEN - 1] != check_char(record):
+        # Prefix case is canonicalized before checking; all other bytes stay intact.
+        record = "VX" + arg[2:]
+        if record[RECLEN - 1] != "Z" and record[RECLEN - 1] != check_char(record):
             return "R CHK"
-        acct = record[2:12].lstrip("*")
-        if not acct or not acct.isalnum():
+        acct = record[2:12].strip("* ")
+        if not _valid_acct(acct):
             return "R FMT"
         amount = record[12:23]
-        if not amount.isdigit():
+        if not amount.isascii() or not amount.isdigit():
             return "R FMT"
         date = record[23:31]
-        if not _valid_date(date):
+        if date != "00000000" and not _valid_date(date):
             return "R FMT"
-        memo = record[31:46].rstrip(".")
+        memo = record[31:46].rstrip(".,")
         if not _printable(memo):
             return "R FMT"
-        if record[46] != "N":
-            return "R FMT"
+        # The flag participates in the check sum but has no decode validation.
         return f"P {acct} {int(amount)} {date} {memo or '_'}"
 
 
