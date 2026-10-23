@@ -534,10 +534,11 @@ class Add(Expr, AssocOp):
             # issue 10528: there is no way to know if a nc symbol
             # is zero or not
             return
+        # Multiplication by I makes imaginary terms real. Multiple
+        # imaginary terms may cancel, so handle their sum conservatively.
         nz = []
         z = 0
-        im_or_z = False
-        im = False
+        im_parts = []
         for a in self.args:
             if a.is_real:
                 if a.is_zero:
@@ -546,10 +547,8 @@ class Add(Expr, AssocOp):
                     nz.append(a)
                 else:
                     return
-            elif a.is_imaginary:
-                im = True
-            elif (S.ImaginaryUnit*a).is_real:
-                im_or_z = True
+            elif a.is_imaginary or (S.ImaginaryUnit*a).is_real:
+                im_parts.append(a*S.ImaginaryUnit)
             else:
                 return
         if z == len(self.args):
@@ -558,10 +557,9 @@ class Add(Expr, AssocOp):
             return None
         b = self.func(*nz)
         if b.is_zero:
-            if not im_or_z and not im:
-                return True
-            if im and not im_or_z:
-                return False
+            if len(im_parts) > 1:
+                return None
+            return self.func(*im_parts).is_zero
         if b.is_zero is False:
             return False
 
