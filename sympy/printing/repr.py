@@ -250,6 +250,17 @@ class ReprPrinter(Printer):
         else:
             return "(%s)" % self.reprify(expr, ", ")
 
+    def _print_dict(self, expr):
+        sep = ", "
+        dict_kvs = ["%s: %s" % (self.doprint(key), self.doprint(value))
+                    for key, value in expr.items()]
+        return "{%s}" % sep.join(dict_kvs)
+
+    def _print_set(self, expr):
+        if not expr:
+            return "set()"
+        return "{%s}" % self.reprify(expr, ", ")
+
     def _print_WildFunction(self, expr):
         return "%s('%s')" % (expr.__class__.__name__, expr.name)
 
