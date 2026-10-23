@@ -1861,9 +1861,12 @@ def where(cond, x, y, keep_attrs=None):
         # keep the attributes of x, the second parameter, by default to
         # be consistent with the `where` method of `DataArray` and `Dataset`
         keep_attrs = lambda attrs, context: getattr(x, "attrs", {})
+        keep_x_attrs = True
+    else:
+        keep_x_attrs = False
 
     # alignment for three arguments is complicated, so don't support it yet
-    return apply_ufunc(
+    result = apply_ufunc(
         duck_array_ops.where,
         cond,
         x,
@@ -1873,6 +1876,26 @@ def where(cond, x, y, keep_attrs=None):
         dask="allowed",
         keep_attrs=keep_attrs,
     )
+
+    if keep_x_attrs:
+        # the attrs callable above is also applied to coordinates and to
+        # variables of Datasets; restore their attributes from x instead
+        # (none if x has no such coordinate / variable)
+        def restore(res_vars, x_vars):
+            for name in res_vars:
+                x_attrs = x_vars[name].attrs if name in x_vars else {}
+                res_vars[name].attrs = dict(x_attrs)
+
+        x_coords = getattr(x, "coords", {})
+        if hasattr(result, "coords"):
+            restore(result.coords, x_coords)
+        if hasattr(result, "data_vars"):
+            # a Dataset result: its own attrs come from x only if x is a Dataset
+            if hasattr(x, "data_vars"):
+                restore(result.data_vars, x.data_vars)
+            else:
+                result.attrs = {}
+    return result
 
 
 @overload
