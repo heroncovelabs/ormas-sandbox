@@ -104,6 +104,7 @@ class Point(GeometryEntity):
     """
 
     is_Point = True
+    _op_priority = 20.0
 
     def __new__(cls, *args, **kwargs):
         evaluate = kwargs.get('evaluate', global_evaluate[0])
@@ -277,6 +278,10 @@ class Point(GeometryEntity):
         factor = sympify(factor)
         coords = [simplify(x*factor) for x in self.args]
         return Point(coords, evaluate=False)
+
+    def __rmul__(self, factor):
+        """Multiply point's coordinates by a factor (factor * point)."""
+        return self.__mul__(factor)
 
     def __neg__(self):
         """Negate the point."""
