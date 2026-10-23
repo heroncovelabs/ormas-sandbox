@@ -144,8 +144,11 @@ class ForwardManyToOneDescriptor:
         # we must manage the reverse relation cache manually.
         if not remote_field.multiple:
             for rel_obj in queryset:
-                instance = instances_dict[rel_obj_attr(rel_obj)]
-                remote_field.set_cached_value(rel_obj, instance)
+                # A nested prefetch on the queryset may already have cached the
+                # related object; don't overwrite it with the parent instance.
+                if not remote_field.is_cached(rel_obj):
+                    instance = instances_dict[rel_obj_attr(rel_obj)]
+                    remote_field.set_cached_value(rel_obj, instance)
         return queryset, rel_obj_attr, instance_attr, True, self.field.get_cache_name(), False
 
     def get_object(self, instance):
@@ -376,8 +379,11 @@ class ReverseOneToOneDescriptor:
         # Since we're going to assign directly in the cache,
         # we must manage the reverse relation cache manually.
         for rel_obj in queryset:
-            instance = instances_dict[rel_obj_attr(rel_obj)]
-            self.related.field.set_cached_value(rel_obj, instance)
+            # A nested prefetch on the queryset may already have cached the
+            # related object; don't overwrite it with the parent instance.
+            if not self.related.field.is_cached(rel_obj):
+                instance = instances_dict[rel_obj_attr(rel_obj)]
+                self.related.field.set_cached_value(rel_obj, instance)
         return queryset, rel_obj_attr, instance_attr, True, self.related.get_cache_name(), False
 
     def __get__(self, instance, cls=None):
@@ -646,8 +652,10 @@ def create_reverse_many_to_one_manager(superclass, rel):
             # Since we just bypassed this class' get_queryset(), we must manage
             # the reverse relation manually.
             for rel_obj in queryset:
-                instance = instances_dict[rel_obj_attr(rel_obj)]
-                setattr(rel_obj, self.field.name, instance)
+                # Keep a related object already cached by a nested prefetch.
+                if not self.field.is_cached(rel_obj):
+                    instance = instances_dict[rel_obj_attr(rel_obj)]
+                    setattr(rel_obj, self.field.name, instance)
             cache_name = self.field.remote_field.get_cache_name()
             return queryset, rel_obj_attr, instance_attr, False, cache_name, False
 
