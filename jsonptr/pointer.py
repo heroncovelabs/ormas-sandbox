@@ -1,14 +1,34 @@
-"""Resolve a JSON Pointer (RFC 6901) against a decoded JSON document.
-
-NOTE: this implementation is incomplete — see ``issue.md``. It walks object
-members but does not handle escaping, arrays, or the error cases the RFC
-requires.
-"""
+"""Resolve a JSON Pointer (RFC 6901) against a decoded JSON document."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from jsonptr.errors import JSONPointerError
+
+# An array index: "0" or a non-zero digit followed by digits (no leading zeros).
+_INDEX = re.compile(r"0|[1-9][0-9]*")
+
+
+def _unescape(token: str) -> str:
+    # Order matters: "~1" -> "/" first, then "~0" -> "~", so "~01" becomes "~1".
+    return token.replace("~1", "/").replace("~0", "~")
+
+
+def _step(current: Any, token: str, pointer: str) -> Any:
+    if isinstance(current, dict):
+        key = _unescape(token)
+        if key not in current:
+            raise JSONPointerError(f"member {key!r} not found while resolving {pointer!r}")
+        return current[key]
+    if isinstance(current, list):
+        if token == "-" or not _INDEX.fullmatch(token):
+            raise JSONPointerError(f"invalid array index {token!r} while resolving {pointer!r}")
+        index = int(token)
+        if index >= len(current):
+            raise JSONPointerError(f"array index {index} out of range while resolving {pointer!r}")
+        return current[index]
+    raise JSONPointerError(f"cannot descend into scalar with token {token!r} while resolving {pointer!r}")
 
 
 def resolve(document: Any, pointer: str) -> Any:
@@ -19,5 +39,5 @@ def resolve(document: Any, pointer: str) -> Any:
         raise JSONPointerError(f"invalid JSON Pointer {pointer!r}: must be empty or start with '/'")
     current = document
     for token in pointer.split("/")[1:]:
-        current = current[token]
+        current = _step(current, token, pointer)
     return current
