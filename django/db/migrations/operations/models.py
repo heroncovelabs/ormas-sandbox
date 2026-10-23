@@ -953,6 +953,10 @@ class RenameIndex(IndexOperation):
                         ", ".join(columns),
                     )
                 )
+            if matching_index_name[0] == self.new_name:
+                # Index already has the requested name (e.g. re-applying the
+                # operation); nothing to rename.
+                return
             old_index = models.Index(
                 fields=self.old_fields,
                 name=matching_index_name[0],
