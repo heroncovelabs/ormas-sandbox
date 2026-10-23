@@ -953,16 +953,20 @@ class RenameIndex(IndexOperation):
                         ", ".join(columns),
                     )
                 )
+            if matching_index_name[0] == self.new_name:
+                # The index already has the target name, e.g. when re-applying
+                # after a backward no-op.
+                return
             old_index = models.Index(
                 fields=self.old_fields,
                 name=matching_index_name[0],
             )
+            new_index = models.Index(fields=self.old_fields, name=self.new_name)
         else:
             from_model_state = from_state.models[app_label, self.model_name_lower]
             old_index = from_model_state.get_index_by_name(self.old_name)
-
-        to_model_state = to_state.models[app_label, self.model_name_lower]
-        new_index = to_model_state.get_index_by_name(self.new_name)
+            to_model_state = to_state.models[app_label, self.model_name_lower]
+            new_index = to_model_state.get_index_by_name(self.new_name)
         schema_editor.rename_index(model, old_index, new_index)
 
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
