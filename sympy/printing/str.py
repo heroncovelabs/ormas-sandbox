@@ -35,6 +35,20 @@ class StrPrinter(Printer):
         else:
             return self._print(item)
 
+    def _parenthesize_denominator(self, item, level):
+        """Parenthesize a denominator operand, including printed reciprocals.
+
+        Commutative powers with exponents -1 and -1/2 print as ``1/x`` and
+        ``1/sqrt(x)``. Group these reciprocals when their power precedence
+        would otherwise leave them unparenthesized in a denominator.
+        """
+        s = self.parenthesize(item, level, strict=False)
+        if (isinstance(item, Pow) and item.is_commutative and
+                (item.exp is S.NegativeOne or item.exp is -S.Half) and
+                precedence(item) > level):
+            return "(%s)" % s
+        return s
+
     def stringify(self, args, sep, level=0):
         return sep.join([self.parenthesize(item, level) for item in args])
 
@@ -284,7 +298,7 @@ class StrPrinter(Printer):
                 pre = [str(d.pop(0))]
             else:
                 pre = []
-            dfactors = pre + [self.parenthesize(a, prec, strict=False)
+            dfactors = pre + [self._parenthesize_denominator(a, prec)
                 for a in d]
 
             n = '*'.join(nfactors)
@@ -348,7 +362,7 @@ class StrPrinter(Printer):
         a = a or [S.One]
 
         a_str = [self.parenthesize(x, prec, strict=False) for x in a]
-        b_str = [self.parenthesize(x, prec, strict=False) for x in b]
+        b_str = [self._parenthesize_denominator(x, prec) for x in b]
 
         # To parenthesize Pow with exp = -1 and having more than one Symbol
         for item in pow_paren:
