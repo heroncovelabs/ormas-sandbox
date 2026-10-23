@@ -15,6 +15,8 @@ import sys
 ID_MAX = 8
 HOURS = 24
 CARRY_CAP_DIV = 5  # carry is capped at 20 percent of the daily budget
+DAMP_MIN_DAILY = 1_000_000  # overnight damping applies to daily budgets at or above this
+DAMP_END_HOUR = 6  # ...to requests made in hours 0 through 5
 NO_CAMP = "????????"
 
 
@@ -26,6 +28,24 @@ def _digits(token: str) -> bool:
     return token.isascii() and token.isdigit()
 
 
+def _truncate(line: str) -> str:
+    """The engine reads each line as a C string up to CR, LF, or NUL."""
+    for i, ch in enumerate(line):
+        if ch in "\r\n\x00":
+            return line[:i]
+    return line
+
+
+def _tokenize(line: str) -> list[str]:
+    """The engine splits on spaces only; other whitespace is token content."""
+    return [t for t in _truncate(line).split(" ") if t]
+
+
+def _key(camp: str) -> str:
+    """Campaign ledger key: ASCII case-folded, reply spelling is untouched."""
+    return "".join(ch.lower() if ch.isascii() else ch for ch in camp)
+
+
 class Campaign:
     def __init__(self, daily: int) -> None:
         self.daily = daily
@@ -34,6 +54,7 @@ class Campaign:
         self.spent = 0
         self.grants = [0] * HOURS
         self.accrued = -1
+        self.exhausted_hour = -1
 
 
 class Engine:
@@ -47,7 +68,7 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        tokens = _tokenize(line)
         if not tokens:
             return ""
         if tokens[0] == "C":
@@ -66,11 +87,11 @@ class Engine:
         return f"X {self.created} {self.requests} {self.trueups} {self.rejected}"
 
     def _find(self, camp: str) -> Campaign | None:
-        return self.camps.get(camp)
+        return self.camps.get(_key(camp))
 
     def _create(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
@@ -79,7 +100,7 @@ class Engine:
             return f"N {camp} BUDGET"
         if self._find(tokens[1]) is not None:
             return f"N {camp} DUP"
-        self.camps[tokens[1]] = Campaign(int(budget))
+        self.camps[_key(tokens[1])] = Campaign(int(budget))
         self.created += 1
         return f"OK {len(self.camps)}"
 
@@ -91,12 +112,12 @@ class Engine:
 
     def _spend(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
         hour_tok, req_tok = tokens[2], tokens[3]
-        if not _digits(hour_tok) or len(hour_tok) != 2 or int(hour_tok) > 23:
+        if not _digits(hour_tok) or not 1 <= len(hour_tok) <= 2 or int(hour_tok) > 23:
             return f"N {camp} HOUR"
         hour = int(hour_tok)
         if not _digits(req_tok) or len(req_tok) > 7 or int(req_tok) < 1:
@@ -107,8 +128,17 @@ class Engine:
             return f"N {camp} FMT"
         if hour < c.accrued:
             return f"N {camp} ORDER"
+        if hour == c.exhausted_hour:
+            return f"N {camp} REQ"
         self._accrue(c, hour)
-        granted = min(req, c.avail)
+        allowance = c.avail
+        if c.daily >= DAMP_MIN_DAILY and hour < DAMP_END_HOUR:
+            allowance = c.avail // 2
+        granted = min(req, allowance)
+        # Only an exact request closes the hour; an oversized request can be
+        # followed by another request, including a zero grant.
+        if req == allowance:
+            c.exhausted_hour = hour
         c.avail -= granted
         c.spent += granted
         c.grants[hour] += granted
@@ -117,21 +147,27 @@ class Engine:
 
     def _trueup(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
         c = self._find(tokens[1])
         if c is None:
             return f"N {camp} FMT"
-        total = c.spent
+        # The audit clamps each hour's aggregate grants to the base slice,
+        # even when live pacing used accumulated allowance or incoming carry.
+        base_slice = c.daily // HOURS
+        total = sum(min(grants, base_slice) for grants in c.grants)
         raw = max(0, c.daily - total)
-        carry = min(raw, c.daily // CARRY_CAP_DIV)
+        cap = c.daily // CARRY_CAP_DIV
+        carry = min(raw, cap)
         c.carry = carry
         c.spent = 0
         c.grants = [0] * HOURS
-        c.avail = 0
+        # Discarded carry incurs one effective slice of debt for the next day.
+        c.avail = -((c.daily + carry) // HOURS) if raw > cap else 0
         c.accrued = -1
+        c.exhausted_hour = -1
         self.trueups += 1
         return f"U {total} {carry}"
 
