@@ -76,6 +76,7 @@ class TocTree:
         toctree_ancestors = self.get_toctree_ancestors(docname)
         included = Matcher(self.env.config.include_patterns)
         excluded = Matcher(self.env.config.exclude_patterns)
+        generated_docnames = self.env.get_domain('std').initial_data['labels']
 
         def _toctree_add_classes(node: Element, depth: int) -> None:
             """Add 'toctree-l%d' and 'current' classes to the toctree."""
@@ -138,6 +139,17 @@ class TocTree:
                         para = addnodes.compact_paragraph('', '', reference)
                         item = nodes.list_item('', para)
                         # don't show subitems
+                        toc = nodes.bullet_list('', item)
+                    elif ref in generated_docnames and ref not in self.env.tocs:
+                        # generated pages: genindex, modindex, search
+                        docname_, _label, def_title = generated_docnames[ref]
+                        if not title:
+                            title = str(def_title)
+                        reference = nodes.reference('', '', internal=True,
+                                                    refuri=docname_, anchorname='',
+                                                    *[nodes.Text(title)])
+                        para = addnodes.compact_paragraph('', '', reference)
+                        item = nodes.list_item('', para)
                         toc = nodes.bullet_list('', item)
                     else:
                         if ref in parents:

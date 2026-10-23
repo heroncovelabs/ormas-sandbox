@@ -260,6 +260,10 @@ class TocTreeCollector(EnvironmentCollector):
                             # don't mess with those
                             continue
 
+                        if subdocname not in env.found_docs:
+                            # generated pages (genindex etc.) have no doctree
+                            continue
+
                         _walk_doc(subdocname, secnum)
                 elif isinstance(subnode, nodes.Element):
                     figtype = get_figtype(subnode)
