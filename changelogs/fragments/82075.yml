@@ -1,0 +1,2 @@
+bugfixes:
+  - human_to_bytes filter - now raises ``ValueError`` for malformed size strings (trailing text, invalid units, non-ASCII digits, leading whitespace) instead of returning a truncated result (https://github.com/ansible/ansible/issues/82075).
