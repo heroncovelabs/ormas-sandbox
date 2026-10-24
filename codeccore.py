@@ -10,6 +10,7 @@ contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 RECLEN = 48
@@ -17,6 +18,10 @@ ACCT_WIDTH = 10
 AMOUNT_WIDTH = 11
 MEMO_WIDTH = 15
 MEMO_MAX = 15
+MEMO_SQUEEZE_MAX = 20
+AUDIT_THRESHOLD = 10000000
+CHECK_WILDCARD = "Z"
+NULL_DATE = "00000000"
 
 _WEIGHTS = (2, 5, 3)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -38,14 +43,22 @@ def _days_in_month(year: int, month: int) -> int:
 
 
 def _valid_date(field: str) -> bool:
-    if len(field) != 8 or not field.isdigit():
+    if len(field) != 8 or not _ascii_digits(field):
         return False
     year, month, day = int(field[:4]), int(field[4:6]), int(field[6:8])
     return year >= 1900 and 1 <= month <= 12 and 1 <= day <= _days_in_month(year, month)
 
 
+def _ascii_digits(text: str) -> bool:
+    return text.isascii() and text.isdigit()
+
+
+def _ascii_alnum(text: str) -> bool:
+    return text.isascii() and text.isalnum()
+
+
 def _valid_acct(token: str) -> bool:
-    return 1 <= len(token) <= ACCT_WIDTH and token.isalnum()
+    return 1 <= len(token) <= ACCT_WIDTH and _ascii_alnum(token)
 
 
 def _printable(text: str) -> bool:
@@ -62,7 +75,8 @@ class Engine:
 
     def handle(self, line: str) -> str:
         if line == "E" or line.startswith("E "):
-            reply = self._encode(line.split())
+            # The engine splits on single spaces only (a tab stays in the token).
+            reply = self._encode([t for t in line.split(" ") if t])
         elif line == "D" or line.startswith("D "):
             reply = self._decode(line[2:])
         else:
@@ -82,12 +96,13 @@ class Engine:
         echo = NO_ACCT
         if len(tokens) >= 2 and _valid_acct(tokens[1]):
             echo = tokens[1]
-        if len(tokens) != 5:
+        # Tokens past the memo are ignored.
+        if len(tokens) < 5:
             return f"R FMT {echo}"
         acct, amount, date, memo = tokens[1:5]
         if not _valid_acct(acct):
             return f"R FMT {NO_ACCT}"
-        if not 1 <= len(amount) <= AMOUNT_WIDTH or not amount.isdigit():
+        if not 1 <= len(amount) <= AMOUNT_WIDTH or not _ascii_digits(amount):
             return f"R FMT {acct}"
         if not _valid_date(date):
             return f"R FMT {acct}"
@@ -95,10 +110,14 @@ class Engine:
             memo = ""
         if not _printable(memo):
             return f"R FMT {acct}"
-        if len(memo) > MEMO_MAX:
+        if len(memo) > MEMO_SQUEEZE_MAX:
             return f"R FMT {acct}"
         stored = memo
-        flag = "N"
+        if len(memo) > MEMO_MAX:
+            # Overlong memos are squeezed: first 12, a tilde, last 2.
+            stored = memo[:12] + "~" + memo[-2:]
+        # High-value January records carry the audit flag.
+        flag = "H" if date[4:6] == "01" and int(amount) > AUDIT_THRESHOLD else "N"
         body = (
             "VX"
             + acct.rjust(ACCT_WIDTH, "*")
@@ -110,26 +129,31 @@ class Engine:
         return "V " + body + check_char(body)
 
     def _decode(self, arg: str) -> str:
+        # Anything after the record and a separating space is ignored.
+        if len(arg) > RECLEN and arg[RECLEN] == " ":
+            arg = arg[:RECLEN]
         if len(arg) != RECLEN:
             return "R LEN"
-        record = arg
+        # The prefix is case-insensitive; the check covers it uppercased.
+        record = arg[:2].upper() + arg[2:]
         if record[:2] != "VX":
             return "R FMT"
-        if record[RECLEN - 1] != check_char(record):
+        check = record[RECLEN - 1]
+        if check != CHECK_WILDCARD and check != check_char(record):
             return "R CHK"
-        acct = record[2:12].lstrip("*")
-        if not acct or not acct.isalnum():
+        # Account padding may be '*' or ' ' on either side.
+        acct = record[2:12].strip("* ")
+        if not acct or not _ascii_alnum(acct):
             return "R FMT"
         amount = record[12:23]
-        if not amount.isdigit():
+        if not _ascii_digits(amount):
             return "R FMT"
         date = record[23:31]
-        if not _valid_date(date):
+        if date != NULL_DATE and not _valid_date(date):
             return "R FMT"
-        memo = record[31:46].rstrip(".")
+        # Memo padding may be '.' or ','; the flag byte is not validated.
+        memo = record[31:46].rstrip(".,")
         if not _printable(memo):
-            return "R FMT"
-        if record[46] != "N":
             return "R FMT"
         return f"P {acct} {int(amount)} {date} {memo or '_'}"
 
@@ -138,7 +162,8 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # The engine ends a line at the first CR, LF or NUL byte.
+        line = re.split("[\r\n\0]", raw, maxsplit=1)[0]
         if not line:
             continue
         replies.append(engine.handle(line))
@@ -150,7 +175,10 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # The engine works on raw bytes: latin-1 maps each byte to one character.
+    data = sys.stdin.buffer.read().decode("latin-1")
+    replies = process(data.split("\n"))
+    sys.stdout.buffer.write("".join(r + "\n" for r in replies).encode("latin-1"))
 
 
 if __name__ == "__main__":
