@@ -1077,6 +1077,9 @@ def split_surds(expr):
     coeff_muls = [x.as_coeff_Mul() for x in args]
     surds = [x[1]**2 for x in coeff_muls if x[1].is_Pow]
     surds.sort(key=default_sort_key)
+    if not surds:
+        # no surd terms: nothing to split, so the whole expression is 'b'
+        return S.One, S.Zero, expr
     g, b1, b2 = _split_gcd(*surds)
     g2 = g
     if not b2 and len(b1) >= 2:
