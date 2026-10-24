@@ -533,6 +533,7 @@ _connector_combinations = [
             Combinable.SUB,
             Combinable.MUL,
             Combinable.DIV,
+            Combinable.MOD,
         )
     },
     # Bitwise operators.
@@ -551,8 +552,16 @@ _connector_combinations = [
     # Numeric with NULL.
     {
         connector: [
-            (field_type, NoneType, field_type),
-            (NoneType, field_type, field_type),
+            combination
+            for field_type in (
+                fields.IntegerField,
+                fields.DecimalField,
+                fields.FloatField,
+            )
+            for combination in (
+                (field_type, NoneType, field_type),
+                (NoneType, field_type, field_type),
+            )
         ]
         for connector in (
             Combinable.ADD,
@@ -562,7 +571,6 @@ _connector_combinations = [
             Combinable.MOD,
             Combinable.POW,
         )
-        for field_type in (fields.IntegerField, fields.DecimalField, fields.FloatField)
     },
     # Date/DateTimeField/DurationField/TimeField.
     {
