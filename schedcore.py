@@ -12,7 +12,7 @@ import sys
 
 
 class Job:
-    __slots__ = ("name", "prio", "deps", "defseq", "executed")
+    __slots__ = ("name", "prio", "deps", "defseq", "executed", "fails", "stale")
 
     def __init__(self, name: str, prio: int, deps: list[str], defseq: int):
         self.name = name
@@ -20,6 +20,8 @@ class Job:
         self.deps = deps
         self.defseq = defseq
         self.executed = False
+        self.fails = 0
+        self.stale = False
 
 
 class Engine:
@@ -27,6 +29,7 @@ class Engine:
         self.jobs: list[Job] = []
         self.by_name: dict[str, Job] = {}
         self.def_next = 1
+        self.stamp = 0
         self.c_def = 0
         self.c_exec = 0
         self.c_fail = 0
@@ -40,9 +43,16 @@ class Engine:
         self._emit(f"R {echo} {code}")
         self.c_rej += 1
 
+    def _eff(self, j: Job) -> int:
+        if j.fails:
+            return max(1, j.prio - 7 * (j.fails - 1))
+        if len(j.deps) >= 2 and j.prio % 10 == 0:
+            return j.prio + 1  # fan-in boost, fresh jobs only
+        return j.prio
+
     def _deps_ready(self, j: Job) -> bool:
         for d in j.deps:
-            k = self.by_name.get(d)
+            k = self.by_name.get(d.upper())
             if k is None or not k.executed:
                 return False
         return True
@@ -55,9 +65,10 @@ class Engine:
         job = parts[1] if len(parts) > 1 else ""
         job_ok = 1 <= len(job) <= 8 and job.isalnum()
         echo = job if job_ok else "????????"
+        key = job.upper()
 
         if kind == "J":
-            if len(parts) != 4 or not job_ok:
+            if len(parts) < 4 or not job_ok:
                 self._reject(echo, "FMT")
                 return
             ptok = parts[2]
@@ -76,43 +87,42 @@ class Engine:
                     if not (1 <= len(part) <= 8 and part.isalnum()):
                         bad = True
                         break
-                    if part == job:  # self-dependency
+                    if part.upper() == key:  # self-dependency
                         bad = True
                         break
-                    if part in deps:  # dep lists must be unique
-                        bad = True
-                        break
+                    if part.upper() in [d.upper() for d in deps]:
+                        continue
                     deps.append(part)
             if bad:
                 self._reject(job, "DEPS")
                 return
-            if job in self.by_name:
-                self._reject(job, "DUP")
+            if key in self.by_name:
+                self._reject(self.by_name[key].name, "DUP")
                 return
             j = Job(job, prio, deps, self.def_next)
             self.def_next += 1
             self.jobs.append(j)
-            self.by_name[job] = j
+            self.by_name[key] = j
             self.c_def += 1
             self._emit(f"OK {self.c_def}")
             return
 
         if kind == "G":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
+            for j in self.jobs:
+                if not j.executed and any(d.upper() not in self.by_name for d in j.deps):
+                    j.stale = True
             executed_this = 0
             while True:
                 best: Job | None = None
                 for j in self.jobs:
-                    if j.executed:
+                    if j.executed or j.stale:
                         continue
                     if not self._deps_ready(j):
                         continue
                     if (
                         best is None
-                        or j.prio > best.prio
-                        or (j.prio == best.prio and j.defseq < best.defseq)
+                        or self._eff(j) > self._eff(best)
+                        or (self._eff(j) == self._eff(best) and j.defseq < best.defseq)
                     ):
                         best = j
                 if best is None:
@@ -126,14 +136,17 @@ class Engine:
             return
 
         if kind == "F":
-            if len(parts) != 2 or not job_ok:
+            if len(parts) < 2 or not job_ok:
                 self._reject(echo, "FMT")
                 return
-            j = self.by_name.get(job)
+            j = self.by_name.get(key)
             if j is None or not j.executed:
-                self._reject(job, "STATE")
+                self._reject(j.name if j else job, "STATE")
                 return
             j.executed = False
+            j.fails += 1
+            self.stamp += 1
+            j.defseq = -self.stamp
             invalidated = {j.name}
             count = 1
             changed = True
@@ -142,9 +155,12 @@ class Engine:
                 for k in self.jobs:
                     if not k.executed:
                         continue
-                    if any(d in invalidated for d in k.deps):
+                    if any(d.upper() in invalidated for d in k.deps):
                         k.executed = False
+                        k.fails += 1
                         invalidated.add(k.name)
+                        self.stamp += 1
+                        k.defseq = -self.stamp
                         count += 1
                         changed = True
             self.c_fail += 1
