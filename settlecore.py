@@ -9,13 +9,14 @@ contract).
 
 from __future__ import annotations
 
+import datetime
 import sys
 
 RECLEN = 80
 OUTLEN = 47
 
 RATE_BP = {
-    1: 25, 2: 50, 3: 75, 4: 100, 5: 150, 6: 200, 7: 250, 8: 300, 9: 350,
+    1: 25, 2: 50, 3: 75, 4: 100, 5: 150, 6: 200, 7: 245, 8: 300, 9: 350,
 }
 FEE_CAP = 250_000
 
@@ -41,9 +42,37 @@ def _round_nearest(numerator: int, denominator: int) -> int:
     return quotient
 
 
+def _round_half_even(numerator: int, denominator: int) -> int:
+    quotient, remainder = divmod(numerator, denominator)
+    if 2 * remainder > denominator or (2 * remainder == denominator and quotient % 2 == 1):
+        return quotient + 1
+    return quotient
+
+
+def _fee_component(amount: int, bp: int, rec_type: str, currency: str) -> int:
+    numerator = amount * bp
+    if currency == "JPY":
+        return _round_nearest(numerator, 10_000)
+    if rec_type == "RF":
+        return numerator // 10_000
+    return _round_half_even(numerator, 10_000)
+
+
+def _is_weekend(year: int, month: int, day: int) -> bool:
+    if month == 2 and day == 29 and not _gregorian_leap(year):
+        # The engine accepts 29 Feb in any year divisible by 4; it falls on
+        # the day after 28 Feb, i.e. the weekday of 1 March.
+        return datetime.date(year, 3, 1).weekday() >= 5
+    return datetime.date(year, month, day).weekday() >= 5
+
+
+def _gregorian_leap(year: int) -> bool:
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
 def _days_in_month(year: int, month: int) -> int:
     days = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+    if month == 2 and year % 4 == 0:
         return 29
     return days[month - 1]
 
@@ -51,7 +80,8 @@ def _days_in_month(year: int, month: int) -> int:
 class Record:
     def __init__(self, raw: str):
         self.raw = raw
-        self.type = raw[0:2] if len(raw) >= 2 else "??"
+        self.type = raw[0:2]
+        self.truncated = False
         self.account = raw[2:12] if len(raw) >= 12 else " " * 10
         self.currency = raw[32:35] if len(raw) >= 35 else "   "
         self.error: str | None = None
@@ -67,6 +97,9 @@ class Record:
         raw = self.raw
         if len(raw) != RECLEN:
             self.error = "ERRLEN"
+            # A one-character record makes the engine emit its line without the
+            # check character or newline; the line runs on into the next one.
+            self.truncated = len(raw) == 1
             self.account = " " * 10
             self.currency = "   "
             return
@@ -80,12 +113,11 @@ class Record:
         if not stripped or not stripped.isalnum():
             self.error = "ERRACCT"
             return
-        sign, digits = raw[12], raw[13:24]
+        sign, digits = raw[12], raw[13:24].lstrip(" ")
         if sign not in "+-" or not digits.isdigit():
             self.error = "ERRAMT"
             return
-        self.negative = sign == "-"
-        if self.negative:
+        if sign == "-" and self.type != "RF":
             self.error = "ERRAMT"
             return
         self.amount = int(digits)
@@ -116,8 +148,13 @@ class Record:
         self.mcc = int(mcc)
 
     def compute(self) -> None:
-        fee = _round_nearest(self.amount * RATE_BP[self.tier], 10_000)
-        fee = min(fee, FEE_CAP)
+        fee = _fee_component(self.amount, RATE_BP[self.tier], self.type, self.currency)
+        if _is_weekend(self.year, self.month, self.day) and 5960 <= self.mcc <= 5969:
+            fee += _fee_component(self.amount, 25, "ST", self.currency)
+        if self.currency == "EUR" and self.amount > 5_000_000:
+            fee += _fee_component(self.amount, 10, "ST", self.currency)
+        if self.tier != 9:
+            fee = min(fee, FEE_CAP)
         self.fee = fee
         if self.type == "RF":
             self.net = -(self.amount - fee)
@@ -129,6 +166,12 @@ class Record:
         net = 0 if self.error else self.net
         net_sign = "-" if net < 0 else "+"
         status = self.error or "OK"
+        if self.truncated:
+            return (
+                f"{self.type}{self.account:<10.10}"
+                f"+{fee:011d}{net_sign}{abs(net):011d}"
+                f"{self.currency:<3.3}{status:<7.7}"
+            )
         line = (
             f"{self.type:<2.2}{self.account:<10.10}"
             f"+{fee:011d}{net_sign}{abs(net):011d}"
@@ -149,12 +192,22 @@ def process(lines: list[str]) -> list[str]:
             record.compute()
         records.append(record)
 
-    out = [record.emit() for record in records]
+    accepted_records = [r for r in records if r.error is None]
+    rejected_records = [r for r in records if r.error is not None]
+    out: list[str] = []
+    pending = ""
+    for record in accepted_records + rejected_records:
+        text = record.emit()
+        if record.truncated:
+            pending += text
+        else:
+            out.append(pending + text)
+            pending = ""
     accepted = sum(1 for r in records if r.error is None)
     rejected = len(records) - accepted
     fee_sum = sum(r.fee for r in records if r.error is None)
     trailer = f"TR{accepted:06d}{rejected:06d}+{fee_sum:011d}" + " " * 20
-    out.append(trailer + check_char(trailer, OUTLEN - 1))
+    out.append(pending + trailer + check_char(trailer, OUTLEN - 1))
     return out
 
 
