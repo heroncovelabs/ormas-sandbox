@@ -27,7 +27,8 @@ def _is_num(tok: str, maxlen: int) -> bool:
 class Wheel:
     __slots__ = (
         "wid", "cls", "state", "lay_seq", "settle", "rack",
-        "taps_since_grade",
+        "ledger_taps", "ledger_shifts", "taps", "round_taps", "shifts",
+        "flips", "grade_shifts", "grace", "dropped_from", "dropped_turn",
     )
 
     def __init__(self, wid: str, cls: int, lay_seq: int):
@@ -37,17 +38,27 @@ class Wheel:
         self.lay_seq = lay_seq
         self.settle = cls
         self.rack = None
-        self.taps_since_grade = 0
+        self.ledger_taps = 0      # samples entered in the ledger (racked)
+        self.ledger_shifts = 0    # moves entered in the ledger
+        self.taps = 0             # every sample drawn, sill included
+        self.round_taps = 0       # samples since the wheel's last round
+        self.shifts = 0           # every move
+        self.flips = 0            # rounds the wheel has been through
+        self.grade_shifts = 0     # moves since the last grading
+        self.grace = False        # sits out the next grading's retirement
+        self.dropped_from = None  # rack it last slumped off
+        self.dropped_turn = 0     # round in which it slumped
 
 
 class Rack:
-    __slots__ = ("rid", "span", "open_seq", "order")
+    __slots__ = ("rid", "span", "open_seq", "order", "drops")
 
     def __init__(self, rid: str, span: int, open_seq: int):
         self.rid = rid
         self.span = span
         self.open_seq = open_seq
         self.order: list[Wheel] = []   # standing order, front first
+        self.drops = 0                 # wheels slumped off over its life
 
 
 class Engine:
@@ -78,10 +89,21 @@ class Engine:
 
     # ------------------------------------------------------- mechanics
     def _wins(self, a: Wheel, ka: int, b: Wheel, kb: int) -> bool:
-        """Standing comparator: settle descending, ties by lay order."""
+        """Standing comparator: settle descending, ties by fewer samples,
+        then lay order."""
         if ka != kb:
             return ka > kb
+        if a.taps != b.taps:
+            return a.taps < b.taps
         return a.lay_seq < b.lay_seq
+
+    @staticmethod
+    def _grade_key(w: Wheel) -> tuple:
+        return (-(w.cls - 4 * w.ledger_taps), w.taps, w.lay_seq)
+
+    def _rack_order(self) -> list[Rack]:
+        return ([r for r in self.rack_list if r.drops < 3]
+                + [r for r in self.rack_list if r.drops >= 3])
 
     def _insert(self, rack: Rack, w: Wheel) -> None:
         """Insert at the position settle earns; standing wheels stay."""
@@ -113,12 +135,21 @@ class Engine:
         if not 1 <= cls <= 999:
             self._reject(parts, "RNG")
             return
-        if wid in self.wheels:
+        w = self.wheels.get(wid)
+        if w is not None and w.state != RETIRED:
             self._reject(parts, "DUP")
             return
         self.lay_seq += 1
-        w = Wheel(wid, cls, self.lay_seq)
-        self.wheels[wid] = w
+        if w is None:
+            w = Wheel(wid, cls, self.lay_seq)
+            self.wheels[wid] = w
+        else:
+            # A retired name is re-laid onto its old ledger record.
+            w.cls = cls
+            w.lay_seq = self.lay_seq
+            w.settle = cls
+            w.round_taps = 0
+            w.state = SILL
         self.sill.append(w)
         self.cLAY += 1
         self._emit(f"OK {len(self.sill)}")
@@ -158,6 +189,8 @@ class Engine:
             self._reject(parts, "FULL")
             return
         self.sill.remove(w)
+        if w.dropped_from is r and w.dropped_turn == self.turn_no:
+            w.settle = w.cls
         self._insert(r, w)
         w.state = RACKED
         w.rack = r
@@ -176,8 +209,11 @@ class Engine:
         if w.state == RETIRED:
             self._reject(parts, "STATE")
             return
-        w.settle -= 3
-        w.taps_since_grade += 1
+        w.settle -= 3 + (4 if w.round_taps else 0) + 2 * (w.flips & 1)
+        w.round_taps += 1
+        w.taps += 1
+        if w.state == RACKED:
+            w.ledger_taps += 1
         self.cTAP += 1
         self._emit(f"OK {w.wid}")
 
@@ -197,7 +233,11 @@ class Engine:
         if len(r.order) >= r.span:
             self._reject(parts, "FULL")
             return
-        w.settle -= 5
+        w.settle -= 5 + (4 if w.shifts else 0) + 2 * (w.flips & 1)
+        w.shifts += 1
+        w.ledger_shifts += 1
+        w.grade_shifts += 1
+        w.grace = False
         w.rack.order.remove(w)
         self._insert(r, w)
         w.rack = r
@@ -208,11 +248,21 @@ class Engine:
         self.turn_no += 1
         self.cTURN += 1
         self._emit(f"TR {self.turn_no}")
-        for r in self.rack_list:
-            pre = list(r.order)
-            slumped = [w for w in pre if w.settle <= 0]
+        # Engine behavior: racks that have dropped 3+ wheels are worked
+        # last; the recompute ignores sill samples and escalation but ages
+        # a wheel 1 per round after its first; slump is at settle <= 7.
+        for r in self._rack_order():
+            for w in r.order:
+                w.flips += 1
+                w.round_taps = 0
+                w.settle = (w.cls - 3 * w.ledger_taps - 5 * w.ledger_shifts
+                            - (w.flips - 1))
+                if w.grade_shifts >= 3:
+                    w.grace = True
+            slumped = [w for w in r.order if w.settle <= 7]
             if slumped:
-                r.order = [w for w in r.order if w.settle > 0]
+                r.order = [w for w in r.order if w.settle > 7]
+                r.drops += len(slumped)
             self._relist(r)
             self._emit(f"RK {r.rid}")
             for w in r.order:
@@ -220,6 +270,8 @@ class Engine:
             for w in slumped:
                 w.state = SILL
                 w.rack = None
+                w.dropped_from = r
+                w.dropped_turn = self.turn_no
                 self.sill.append(w)
                 self._emit(f"DN {w.wid}")
 
@@ -230,25 +282,19 @@ class Engine:
         pool: list[Wheel] = []
         for r in self.rack_list:
             pool.extend(r.order)
-        graded: list[Wheel] = []
-        for w in pool:
-            pos = len(graded)
-            for i, o in enumerate(graded):
-                if self._wins(w, w.settle, o, o.settle):
-                    pos = i
-                    break
-            graded.insert(pos, w)
+        graded = sorted(pool, key=self._grade_key)
         for w in graded:
             self._emit(f"G {w.wid}")
         for w in graded:
-            if w.taps_since_grade >= 4:
+            if not w.grace and w.ledger_taps >= 4:
                 w.rack.order.remove(w)
                 w.rack = None
                 w.state = RETIRED
                 self.cRET += 1
                 self._emit(f"RET {w.wid}")
         for w in self.wheels.values():
-            w.taps_since_grade = 0
+            w.grade_shifts = 0
+            w.grace = False
 
     def _cmd_VIEW(self, parts: list[str]) -> None:
         rid = parts[1]
@@ -263,7 +309,7 @@ class Engine:
         self._emit(f"ON {r.rid}{ids}")
 
     def _cmd_HALL(self, parts: list[str]) -> None:
-        ids = "".join(" " + r.rid for r in self.rack_list)
+        ids = "".join(" " + r.rid for r in self._rack_order())
         self._emit(f"HALL{ids}")
         wids = "".join(" " + w.wid for w in self.sill)
         self._emit(f"SILL{wids}")
