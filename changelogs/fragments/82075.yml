@@ -1,0 +1,2 @@
+bugfixes:
+  - human_to_bytes filter - reject malformed size strings (such as trailing text, non-ASCII digits, leading whitespace or unknown units) instead of silently converting them.
