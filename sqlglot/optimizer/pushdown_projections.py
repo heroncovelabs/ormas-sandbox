@@ -106,10 +106,16 @@ def pushdown_projections(
                 scope_sql = scope.expression.sql(dialect=dialect)
                 raise OptimizeError(f"Invalid set operation due to column mismatch: {scope_sql}.")
 
-            referenced_columns[left] = parent_selections
+            # INTERSECT ALL / EXCEPT ALL match whole rows with multiset semantics, so
+            # every operand column affects the result and none may be pruned.
+            operand_selections = parent_selections
+            if isinstance(set_op, (exp.Intersect, exp.Except)) and not set_op.args.get("distinct"):
+                operand_selections = {SELECT_ALL}
+
+            referenced_columns[left] = operand_selections
 
             if re.is_star:
-                referenced_columns[right] = parent_selections
+                referenced_columns[right] = operand_selections
             elif not le.is_star:
                 if scope.expression.args.get("by_name"):
                     referenced_columns[right] = referenced_columns[left]
@@ -117,8 +123,8 @@ def pushdown_projections(
                     referenced_columns[right] = {
                         re.selects[i].alias_or_name
                         for i, select in enumerate(le.selects)
-                        if SELECT_ALL in parent_selections
-                        or select.alias_or_name in parent_selections
+                        if SELECT_ALL in operand_selections
+                        or select.alias_or_name in operand_selections
                     }
 
         if isinstance(scope.expression, exp.Select):
@@ -174,6 +180,11 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
 
     select_all = SELECT_ALL in parent_selections
 
+    # GROUP BY ALL derives its grouping keys from the non-aggregate projections, so
+    # every such projection determines the row set and must be kept.
+    group = scope.expression.args.get("group")
+    group_by_all = bool(group and group.args.get("all"))
+
     for selection in scope.expression.selects:
         name = selection.alias_or_name
 
@@ -183,6 +194,7 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
             or name in order_refs
             or alias_count > 0
             or id(selection) in group_ordinal_selection_ids
+            or (group_by_all and not find_in_scope(selection, exp.AggFunc))
         ):
             new_selections.append(selection)
             alias_count -= 1
