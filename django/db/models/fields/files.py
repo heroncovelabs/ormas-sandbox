@@ -237,6 +237,7 @@ class FileField(Field):
     ):
         self._primary_key_set_explicitly = "primary_key" in kwargs
 
+        self._storage_callable = None
         self.storage = storage or default_storage
         if callable(self.storage):
             # Hold a reference to the callable for deconstruct().
@@ -295,8 +296,10 @@ class FileField(Field):
         if kwargs.get("max_length") == 100:
             del kwargs["max_length"]
         kwargs["upload_to"] = self.upload_to
-        if self.storage is not default_storage:
-            kwargs["storage"] = getattr(self, "_storage_callable", self.storage)
+        if self._storage_callable is not None:
+            kwargs["storage"] = self._storage_callable
+        elif self.storage is not default_storage:
+            kwargs["storage"] = self.storage
         return name, path, args, kwargs
 
     def get_internal_type(self):
