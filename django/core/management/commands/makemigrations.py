@@ -110,7 +110,7 @@ class Command(BaseCommand):
         if self.migration_name and not self.migration_name.isidentifier():
             raise CommandError("The migration name must be a valid Python identifier.")
         self.include_header = options["include_header"]
-        check_changes = options["check_changes"]
+        self.check_changes = options["check_changes"]
         self.scriptable = options["scriptable"]
         self.update = options["update"]
         # If logs and prompts are diverted to stderr, remove the ERROR style.
@@ -252,7 +252,7 @@ class Command(BaseCommand):
                 self.write_to_last_migration_files(changes)
             else:
                 self.write_migration_files(changes)
-            if check_changes:
+            if self.check_changes:
                 sys.exit(1)
 
     def write_to_last_migration_files(self, changes):
@@ -347,7 +347,7 @@ class Command(BaseCommand):
                         self.log("    - %s" % operation.describe())
                     if self.scriptable:
                         self.stdout.write(migration_string)
-                if not self.dry_run:
+                if not self.dry_run and not self.check_changes:
                     # Write the migrations file to the disk.
                     migrations_directory = os.path.dirname(writer.path)
                     if not directory_created.get(app_label):
