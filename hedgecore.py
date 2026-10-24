@@ -29,6 +29,15 @@ def _round_half_even(numerator: int, denominator: int) -> int:
     return quotient if quotient % 2 == 0 else quotient + 1
 
 
+def _round_half_up(numerator: int, denominator: int) -> int:
+    return (2 * numerator + denominator) // (2 * denominator)
+
+
+def _divisor(pair: str) -> int:
+    # The engine quotes yen pairs to two decimals, not four.
+    return 100 if pair.endswith("JPY") else DIVISOR
+
+
 def _valid_book(token: str) -> bool:
     return 1 <= len(token) <= BOOK_MAX and token.isascii() and token.isalnum()
 
@@ -47,15 +56,27 @@ def _valid_int(token: str, max_digits: int) -> bool:
 
 
 class Book:
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self.name = name
         self.pos: dict[str, int] = {}
         self.rate: dict[str, int] = {}
 
     def netvalue(self) -> int:
         return sum(
-            _round_half_even(self.pos[pair] * self.rate[pair], DIVISOR)
+            _round_half_even(self.pos[pair] * self.rate[pair], _divisor(pair))
             for pair in self.pos
         )
+
+    def reval_value(self, fixes: dict[str, int]) -> int:
+        # Revaluation floors each pair's value to mills (tenths of a cent),
+        # sums the mills, and rounds the total to cents once, half up.
+        # Pairs absent from the fixing list are valued at the 4-decimal
+        # divisor even when they are yen pairs.
+        mills = 0
+        for pair, pos in self.pos.items():
+            scale = DIVISOR // _divisor(pair) if pair in fixes else 1
+            mills += (pos * self.rate[pair] * scale) // (DIVISOR // 10)
+        return _round_half_up(mills, 10)
 
 
 class Engine:
@@ -87,10 +108,11 @@ class Engine:
     def _trade(self, tokens: list[str]) -> None:
         book = tokens[1] if len(tokens) > 1 else ""
         book_ok = _valid_book(book)
-        if len(tokens) != 6 or not book_ok:
+        if len(tokens) < 6 or not book_ok:
             self._reject(book if book_ok else "????????", "FMT")
             return
-        _, book, pair, side, amt_tok, rate_tok = tokens
+        # Tokens past the rate are ignored.
+        _, book, pair, side, amt_tok, rate_tok = tokens[:6]
         if not _valid_pair(pair):
             self._reject(book, "PAIR")
             return
@@ -101,19 +123,30 @@ class Engine:
             self._reject(book, "AMT")
             return
         amount = int(amt_tok)
-        if amount == 0:
-            self._reject(book, "AMT")
-            return
         if not _valid_int(rate_tok, RATE_DIGITS) or int(rate_tok) == 0:
             self._reject(book, "RATE")
             return
         rate = int(rate_tok)
+        if amount == 0:
+            # A zero-amount trade is a silent no-op: no reply, not counted.
+            return
 
-        entry = self.books.setdefault(book, Book())
+        # Book ids match case-insensitively; replies echo the first spelling.
+        entry = self.books.setdefault(book.lower(), Book(book))
         delta = amount if side == "B" else -amount
-        entry.pos[pair] = entry.pos.get(pair, 0) + delta
-        entry.rate[pair] = rate
-        self._emit(f"P {book} {entry.netvalue()}")
+        old = entry.pos.get(pair, 0)
+        new = old + delta
+        if new == 0:
+            # A flat pair is dropped from the book.
+            entry.pos.pop(pair, None)
+            entry.rate.pop(pair, None)
+        else:
+            entry.pos[pair] = new
+            if old != 0 and (old < 0) != (new < 0):
+                # Trading through flat books the pair 5 below the trade rate.
+                rate -= 5
+            entry.rate[pair] = rate
+        self._emit(f"P {entry.name} {entry.netvalue()}")
         self.trades += 1
 
     def _reval(self, arg: str) -> None:
@@ -134,11 +167,11 @@ class Engine:
                 self._reject("????????", "FMT")
                 return
             fixes[pair] = int(rate_tok)
-        for book, entry in self.books.items():
+        for entry in self.books.values():
             for pair in entry.pos:
                 if pair in fixes:
                     entry.rate[pair] = fixes[pair]
-            self._emit(f"P {book} {entry.netvalue()}")
+            self._emit(f"P {entry.name} {entry.reval_value(fixes)}")
         self.revals += 1
 
     def finish(self) -> None:
