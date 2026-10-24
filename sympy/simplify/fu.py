@@ -501,6 +501,10 @@ def _TR56(rv, f, g, h, max, pow):
         if not (rv.is_Pow and rv.base.func == f):
             return rv
 
+        # Only compare exponents that are known to be real.
+        if rv.exp.is_real is not True:
+            return rv
+
         if (rv.exp < 0) == True:
             return rv
         if (rv.exp > max) == True:
