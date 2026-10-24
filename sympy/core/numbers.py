@@ -1386,10 +1386,11 @@ class Float(Number):
             other = _sympify(other)
         except SympifyError:
             return NotImplemented
+        if isinstance(other, Boolean):
+            # S(0.0) == S.false is False
+            return False
         if not self:
             return not other
-        if isinstance(other, Boolean):
-            return False
         if other.is_NumberSymbol:
             if other.is_irrational:
                 return False
