@@ -441,17 +441,27 @@ class Query(BaseExpression):
         """
         if not self.annotation_select:
             return {}
-        existing_annotations = [
-            annotation
-            for alias, annotation in self.annotations.items()
+        # Only selected annotations are part of the SELECT clause and can
+        # therefore affect the aggregation. Masked annotations are ignored.
+        existing_annotations = {
+            alias: annotation
+            for alias, annotation in self.annotation_select.items()
             if alias not in added_aggregate_names
-        ]
+        }
+        # Existing aggregation can be introduced by selected aggregates or by
+        # filters against aggregates (including aliased ones).
+        has_existing_aggregation = (
+            any(
+                getattr(annotation, "contains_aggregate", True)
+                for annotation in existing_annotations.values()
+            )
+            or self.where.contains_aggregate
+        )
         # Decide if we need to use a subquery.
         #
-        # Existing annotations would cause incorrect results as get_aggregation()
-        # must produce just one result and thus must not use GROUP BY. But we
-        # aren't smart enough to remove the existing annotations from the
-        # query, so those would force us to use GROUP BY.
+        # Existing aggregations would cause incorrect results as
+        # get_aggregation() must produce just one result and thus must not use
+        # GROUP BY. Other existing annotations can be dropped from the query.
         #
         # If the query has limit or distinct, or uses set operations, then
         # those operations must be done in a subquery so that the query
@@ -460,7 +470,7 @@ class Query(BaseExpression):
         if (
             isinstance(self.group_by, tuple)
             or self.is_sliced
-            or existing_annotations
+            or has_existing_aggregation
             or self.distinct
             or self.combinator
         ):
@@ -482,16 +492,29 @@ class Query(BaseExpression):
                 # query is grouped by the main model's primary key. However,
                 # clearing the select clause can alter results if distinct is
                 # used.
-                has_existing_aggregate_annotations = any(
-                    annotation
-                    for annotation in existing_annotations
-                    if getattr(annotation, "contains_aggregate", True)
-                )
-                if inner_query.default_cols and has_existing_aggregate_annotations:
+                if inner_query.default_cols and has_existing_aggregation:
                     inner_query.group_by = (
                         self.model._meta.pk.get_col(inner_query.get_initial_alias()),
                     )
                 inner_query.default_cols = False
+                if not (
+                    isinstance(self.group_by, tuple)
+                    or self.is_sliced
+                    or self.combinator
+                ):
+                    # Only select annotations referenced by the requested
+                    # aggregates or by the WHERE clause. Other annotations are
+                    # unused and can be pruned from the subquery.
+                    summary_aliases = {
+                        alias
+                        for alias in self.annotation_select
+                        if self.annotations[alias].is_summary
+                    }
+                    annotation_mask = set(summary_aliases)
+                    annotation_mask |= self.where.get_refs()
+                    for alias in summary_aliases:
+                        annotation_mask |= self.annotations[alias].get_refs()
+                    inner_query.set_annotation_mask(annotation_mask)
 
             relabels = {t: "subquery" for t in inner_query.alias_map}
             relabels[None] = "subquery"
@@ -525,6 +548,24 @@ class Query(BaseExpression):
             self.select = ()
             self.default_cols = False
             self.extra = {}
+            aggregates = {
+                alias: annotation
+                for alias, annotation in self.annotations.items()
+                if alias in added_aggregate_names
+            }
+            if len(aggregates) != len(self.annotations):
+                # Inline references to the remaining annotations and mask them
+                # as only the requested aggregates are selected.
+                replacements = {
+                    Ref(alias, annotation): annotation
+                    for alias, annotation in self.annotations.items()
+                }
+                self.annotations = {
+                    alias: aggregate.replace_expressions(replacements)
+                    for alias, aggregate in aggregates.items()
+                }
+                self._unref_unreferenced_aliases([*self.annotations.values(), self.where])
+            self.set_annotation_mask(aggregates)
 
         empty_set_result = [
             expression.empty_result_set_value
@@ -544,6 +585,42 @@ class Query(BaseExpression):
         result = next(compiler.apply_converters((result,), converters))
 
         return dict(zip(outer_query.annotation_select, result))
+
+    def _unref_unreferenced_aliases(self, expressions):
+        """
+        Drop the joins that are not referenced by any of the given expressions
+        (and their parent joins) so that joins only required by removed
+        annotations don't affect the results. Be conservative and keep all
+        joins when a reference cannot be inspected reliably.
+        """
+        if self.subquery or self.base_table is None:
+            return
+        if any(
+            getattr(join, "filtered_relation", None) for join in self.alias_map.values()
+        ):
+            return
+        aliases = set()
+        stack = list(expressions)
+        while stack:
+            expr = stack.pop()
+            if expr is None:
+                continue
+            if isinstance(expr, Query):
+                # Correlated subqueries may reference outer aliases.
+                return
+            if isinstance(expr, Col):
+                if expr.alias is not None:
+                    aliases.add(expr.alias)
+            elif hasattr(expr, "get_source_expressions"):
+                stack.extend(expr.get_source_expressions())
+        needed = {self.base_table}
+        for alias in aliases:
+            while alias is not None and alias not in needed:
+                needed.add(alias)
+                alias = getattr(self.alias_map.get(alias), "parent_alias", None)
+        for alias in self.alias_map:
+            if alias not in needed:
+                self.alias_refcount[alias] = 0
 
     def get_count(self, using):
         """
@@ -1198,10 +1275,13 @@ class Query(BaseExpression):
         """
         lookup_splitted = lookup.split(LOOKUP_SEP)
         if self.annotations:
-            expression, expression_lookups = refs_expression(
+            annotation_alias, expression_lookups = refs_expression(
                 lookup_splitted, self.annotations
             )
-            if expression:
+            if annotation_alias:
+                expression = self.annotations[annotation_alias]
+                if expression.is_summary:
+                    expression = Ref(annotation_alias, expression)
                 return expression_lookups, (), expression
         _, field, _, lookup_parts = self.names_to_path(lookup_splitted, self.get_meta())
         field_parts = lookup_splitted[0 : len(lookup_splitted) - len(lookup_parts)]

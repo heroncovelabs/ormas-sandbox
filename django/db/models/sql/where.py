@@ -187,6 +187,18 @@ class WhereNode(tree.Node):
             cols.extend(child.get_group_by_cols())
         return cols
 
+    def get_refs(self):
+        """
+        Return the set of annotation aliases referenced by the children of
+        this node. Children that don't support reference discovery are opaque
+        and are skipped.
+        """
+        refs = set()
+        for child in self.children:
+            if hasattr(child, "get_refs"):
+                refs |= child.get_refs()
+        return refs
+
     def get_source_expressions(self):
         return self.children[:]
 
