@@ -16,6 +16,8 @@ RATE_BANDS = (
 )
 CAP = 900_000
 WEIGHT_RATE_CENTS = 40
+LEVY_ORIGINS = frozenset({"KP", "IR", "CU", "SY"})
+AUDIT_VALUE = 2_000_000
 
 
 class Calculator:
@@ -38,11 +40,11 @@ class Calculator:
             return
         declid = parts[1] if len(parts) > 1 else ""
         id_ok = 1 <= len(declid) <= 10 and declid.isalnum()
-        if parts[0] != "D" or len(parts) != 8 or not id_ok:
+        if parts[0] != "D" or len(parts) < 8 or not id_ok:
             self._emit(f"R {declid if id_ok else '??????????'} FMT")
             self.count_rej += 1
             return
-        _, declid, origin, hs, mode, currency, value_tok, weight_tok = parts
+        _, declid, origin, hs, mode, currency, value_tok, weight_tok = parts[:8]
         if not (len(origin) == 2 and origin.isalpha() and origin.isupper()):
             self._reject(declid, "ORIGIN")
             return
@@ -68,7 +70,9 @@ class Calculator:
             return
 
         duty = 0
-        if chapter != 99:
+        if chapter == 98:
+            pass
+        elif chapter != 99:
             rate_bp = None
             for lo, hi, bp in RATE_BANDS:
                 if lo <= chapter <= hi:
@@ -77,13 +81,26 @@ class Calculator:
             if rate_bp is None:
                 self._reject(declid, "HS")
                 return
-            duty = _round_nearest(value * rate_bp, 10_000)
+            if value >= AUDIT_VALUE and _audit_tail(declid):
+                duty = value * rate_bp // 10_000  # audit mode truncates
+            else:
+                duty = _round_nearest(value * rate_bp, 10_000)
+        duty = min(duty, CAP)
 
-        kilograms = (weight_dg + 5_000) // 10_000  # nearest kg per the spec
-        weight_fee = kilograms * WEIGHT_RATE_CENTS
+        kilograms = (weight_dg + 9_999) // 10_000  # rounded up to whole kg
+        rate = WEIGHT_RATE_CENTS
+        if mode == "A" and 51 <= kilograms <= 100:
+            rate = 55
+        weight_fee = kilograms * rate
+        if mode == "S" and currency == "JPY":
+            weight_fee = 0
 
-        total = min(duty + weight_fee, CAP)
-        self._emit(f"T {declid} {duty} {weight_fee} 0 {total}")
+        levy = 0
+        if origin in LEVY_ORIGINS and 28 <= chapter <= 38:
+            levy = min(_round_nearest(duty * 2_000, 10_000), CAP - duty)
+
+        total = duty + weight_fee + levy
+        self._emit(f"T {declid} {duty} {weight_fee} {levy} {total}")
         self.count_ok += 1
         self.sum_total += total
 
@@ -91,9 +108,16 @@ class Calculator:
         self._emit(f"X {self.count_ok} {self.count_rej} {self.sum_total}")
 
 
+def _audit_tail(declid: str) -> bool:
+    tail = declid[-2:]
+    return tail.isdigit() and int(tail) >= 25
+
+
 def _round_nearest(numerator: int, denominator: int) -> int:
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
+    if 2 * remainder > denominator or (
+        2 * remainder == denominator and quotient % 2 == 1
+    ):
         return quotient + 1
     return quotient
 
