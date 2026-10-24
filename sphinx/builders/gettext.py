@@ -57,7 +57,7 @@ class Catalog:
 
     def __iter__(self) -> Generator[Message, None, None]:
         for message in self.messages:
-            positions = [(source, line) for source, line, uuid in self.metadata[message]]
+            positions = sorted({(source, line) for source, line, uuid in self.metadata[message]})
             uuids = [uuid for source, line, uuid in self.metadata[message]]
             yield Message(message, positions, uuids)
 
