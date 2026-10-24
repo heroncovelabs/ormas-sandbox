@@ -1722,11 +1722,21 @@ class SQLInsertCompiler(SQLCompiler):
 
         placeholder_rows, param_rows = self.assemble_as_sql(fields, value_rows)
 
+        # The ON CONFLICT clause must reference database columns, not field
+        # names, so that custom db_column values are honored.
         on_conflict_suffix_sql = self.connection.ops.on_conflict_suffix_sql(
             fields,
             self.query.on_conflict,
-            self.query.update_fields,
-            self.query.unique_fields,
+            (
+                [opts.get_field(name).column for name in self.query.update_fields]
+                if self.query.update_fields
+                else self.query.update_fields
+            ),
+            (
+                [opts.get_field(name).column for name in self.query.unique_fields]
+                if self.query.unique_fields
+                else self.query.unique_fields
+            ),
         )
         if (
             self.returning_fields
