@@ -168,7 +168,8 @@ class Sitemap:
         if callable(self.lastmod):
             try:
                 return max([self.lastmod(item) for item in self.items()])
-            except TypeError:
+            except (TypeError, ValueError):
+                # max() raises ValueError when items is empty.
                 return None
         else:
             return self.lastmod
