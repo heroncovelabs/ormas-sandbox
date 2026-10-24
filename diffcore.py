@@ -29,12 +29,18 @@ def _valid_val(token: str) -> bool:
     return 1 <= len(token) <= VAL_MAX and token.isascii() and token.isalnum()
 
 
+def _tokens(line: str) -> list[str]:
+    # ENGINE: tokens are separated by spaces only (runs collapse); tabs
+    # and other whitespace stay part of the token.
+    return [t for t in line.split(" ") if t]
+
+
 class Engine:
     """Snapshot store over a single working value, with batch counters."""
 
     def __init__(self) -> None:
         self.value = ""
-        # snapshots: ("F", value) or ("D", newlen, {pos: char})
+        # snapshots: ("F", value) or ("D", newlen, {pos: char}, base_full)
         self.snaps: list[tuple] = []
         # the value the next delta snapshot is computed against
         self.base = ""
@@ -45,11 +51,11 @@ class Engine:
 
     def handle(self, line: str) -> str | None:
         if line == "B" or line.startswith("B "):
-            reply = self._set(line.split())
+            reply = self._set(_tokens(line))
         elif line == "S" or line.startswith("S "):
             reply = self._store()
         elif line == "T" or line.startswith("T "):
-            reply = self._restore(line.split())
+            reply = self._restore(_tokens(line))
         else:
             reply = "E FMT"
         if reply is not None and reply.startswith("E "):
@@ -59,22 +65,24 @@ class Engine:
     def trailer(self) -> str:
         return f"X {self.sets} {self.stores} {self.restores} {self.rejected}"
 
-    def _set(self, tokens: list[str]) -> str:
+    def _set(self, tokens: list[str]) -> str | None:
         # Extra trailing tokens are tolerated and ignored.
         if len(tokens) < 2:
             return "E FMT"
         val = tokens[1]
         if not _valid_val(val):
             return "E VAL"
+        # ENGINE: setting the value the store already holds is a silent
+        # no-op: no reply line, and it is not counted.
+        if val == self.value:
+            return None
         self.value = val
         self.sets += 1
         return "OK"
 
     def _is_full(self) -> bool:
-        # SPEC: the first snapshot is FULL, and every fourth snapshot is
-        # stored FULL so a delta chain stays short (snapshots 4, 8, ...).
-        count = len(self.snaps)
-        return count == 0 or (count + 1) % FULL_EVERY == 0
+        # ENGINE: snapshots 0, 4, 8, ... are stored FULL.
+        return len(self.snaps) % FULL_EVERY == 0
 
     def _store(self) -> str:
         if self._is_full():
@@ -85,7 +93,8 @@ class Engine:
                 for p, c in enumerate(self.value)
                 if p >= len(self.base) or c != self.base[p]
             }
-            self.snaps.append(("D", len(self.value), changes))
+            base_full = self.snaps[-1][0] == "F"
+            self.snaps.append(("D", len(self.value), changes, base_full))
         self.base = self.value
         self.stores += 1
         return f"S {len(self.snaps)}"
@@ -94,15 +103,24 @@ class Engine:
         snap = self.snaps[idx]
         if snap[0] == "F":
             return snap[1]
-        # SPEC: a delta applies against the previous snapshot's
-        # reconstructed value, honoring the recorded length; positions
-        # beyond the base fill with the pad character.
-        _, newlen, changes = snap
-        base = self._reconstruct(idx - 1)
-        return "".join(
-            changes.get(p, base[p] if p < len(base) else PAD)
-            for p in range(newlen)
-        )
+        # ENGINE: a delta is applied onto its anchor FULL snapshot (not the
+        # previous snapshot). The recorded length is honored only when the
+        # delta was taken directly against that FULL; otherwise the value is
+        # never cut, and grows only as far as the recorded changes reach,
+        # with uncovered positions filled with the pad character.
+        _, newlen, changes, base_full = snap
+        anchor = idx - idx % FULL_EVERY
+        chars = list(self.snaps[anchor][1])
+        if base_full:
+            length = newlen
+        else:
+            length = max([len(chars)] + [p + 1 for p in changes])
+        chars += [PAD] * (length - len(chars))
+        del chars[length:]
+        for p, c in changes.items():
+            if p < length:
+                chars[p] = c
+        return "".join(chars)
 
     def _restore(self, tokens: list[str]) -> str:
         # Extra trailing tokens are tolerated and ignored.
@@ -114,10 +132,9 @@ class Engine:
         idx = int(tok)
         if idx >= len(self.snaps):
             return "E IDX"
+        # ENGINE: the restored value becomes the working value, but the next
+        # delta is still computed against the last stored snapshot.
         self.value = self._reconstruct(idx)
-        # SPEC: the restored value becomes the working value the next
-        # snapshot builds on.
-        self.base = self.value
         self.restores += 1
         return f"V {digest(self.value)}"
 
