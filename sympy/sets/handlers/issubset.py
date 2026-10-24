@@ -1,7 +1,7 @@
 from sympy import S, Symbol
 from sympy.core.logic import fuzzy_and, fuzzy_bool, fuzzy_not, fuzzy_or
 from sympy.core.relational import Eq
-from sympy.sets.sets import FiniteSet, Interval, Set, Union
+from sympy.sets.sets import FiniteSet, Interval, Set, Union, ProductSet
 from sympy.sets.fancysets import Complexes, Reals, Range, Rationals
 from sympy.multipledispatch import dispatch
 
@@ -46,6 +46,14 @@ def is_subset_sets(a_interval, b_u): # noqa:F811
                     ])
             if all(no_overlap(s, a_interval) for s in intervals):
                 return False
+
+@dispatch(ProductSet, FiniteSet)  # type: ignore # noqa:F811
+def is_subset_sets(a_ps, b_fs): # noqa:F811
+    # A finite ProductSet is a subset of a FiniteSet iff each of its
+    # elements is contained in the FiniteSet.
+    if a_ps.is_iterable:
+        return fuzzy_and(b_fs.contains(x) for x in a_ps)
+    return None
 
 @dispatch(Range, Range)  # type: ignore # noqa:F811
 def is_subset_sets(a, b): # noqa:F811
