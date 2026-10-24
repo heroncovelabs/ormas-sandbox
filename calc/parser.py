@@ -1,8 +1,16 @@
 """Recursive-descent parser: token stream -> expression tree.
 
-NOTE: this implementation is buggy. It folds every binary operator at a single
-precedence level, left to right, so it does not honor the precedence and
-associativity documented in the README/issue.
+Grammar (lowest to highest precedence):
+
+    expression : term (('PLUS' | 'MINUS') term)*                 # left-assoc
+    term       : factor (('STAR' | 'SLASH' | 'DSLASH' | 'PERCENT') factor)*
+                                                                  # left-assoc
+    factor     : ('PLUS' | 'MINUS') factor | power              # unary prefix
+    power      : atom ['DSTAR' factor]                            # right-assoc
+    atom       : NUMBER | 'LPAREN' expression 'RPAREN'
+
+Unary signs bind looser than ``**`` (so ``-2 ** 2 == -4``), while the exponent
+of ``**`` is a full factor (so ``2 ** -2`` is valid).
 """
 
 from __future__ import annotations
@@ -11,14 +19,12 @@ from calc.ast_nodes import BinOp, Node, Num, UnaryOp
 from calc.errors import CalcError
 from calc.tokens import Token, tokenize
 
-_BINOP = {
-    "PLUS": "+",
-    "MINUS": "-",
+_ADD_OPS = {"PLUS": "+", "MINUS": "-"}
+_MUL_OPS = {
     "STAR": "*",
     "SLASH": "/",
     "DSLASH": "//",
     "PERCENT": "%",
-    "DSTAR": "**",
 }
 _UNARY = {"PLUS": "+", "MINUS": "-"}
 
@@ -46,20 +52,40 @@ class _Parser:
         return node
 
     def expression(self) -> Node:
-        # BUG: all binary operators share one precedence level and fold left to
-        # right, so e.g. 2 + 3 * 4 parses as (2 + 3) * 4 and 2 ** 3 ** 2 as
-        # (2 ** 3) ** 2.
-        node = self.atom()
-        while self.cur.kind in _BINOP:
-            op = _BINOP[self.advance().kind]
-            node = BinOp(op, node, self.atom())
+        """Addition and subtraction (lowest precedence, left-associative)."""
+        node = self.term()
+        while self.cur.kind in _ADD_OPS:
+            op = _ADD_OPS[self.advance().kind]
+            node = BinOp(op, node, self.term())
         return node
 
-    def atom(self) -> Node:
+    def term(self) -> Node:
+        """Multiplication, division, floor division, modulo (left-associative)."""
+        node = self.factor()
+        while self.cur.kind in _MUL_OPS:
+            op = _MUL_OPS[self.advance().kind]
+            node = BinOp(op, node, self.factor())
+        return node
+
+    def factor(self) -> Node:
+        """Unary prefix operators, which bind looser than exponentiation."""
         tok = self.cur
         if tok.kind in _UNARY:
             self.advance()
-            return UnaryOp(_UNARY[tok.kind], self.atom())
+            return UnaryOp(_UNARY[tok.kind], self.factor())
+        return self.power()
+
+    def power(self) -> Node:
+        """Exponentiation (right-associative; exponent is a full factor)."""
+        node = self.atom()
+        if self.cur.kind == "DSTAR":
+            self.advance()
+            return BinOp("**", node, self.factor())
+        return node
+
+    def atom(self) -> Node:
+        """Numeric literal or parenthesized expression."""
+        tok = self.cur
         if tok.kind == "NUMBER":
             self.advance()
             return Num(tok.value)
