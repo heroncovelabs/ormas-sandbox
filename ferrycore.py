@@ -36,6 +36,11 @@ class Vehicle:
         self.lean = 0  # standing lean (internal; never printed)
         self.queued = False
         self.aboard = False  # boarded the most recent sailing
+        self.joined = 0  # queue join sequence number
+        self.misses = 0  # sailings left behind this season (quay wear)
+        self.streak = 0  # consecutive sailings left behind
+        self.crossings = 0  # sailings boarded
+        self.levied = False  # registered after a squaring, levy unsettled
 
 
 class Engine:
@@ -48,6 +53,9 @@ class Engine:
         self.c_sail = 0
         self.c_sq = 0
         self.c_rej = 0
+        self.join_seq = 0
+        self.ledger: list[tuple] = []  # season ledger for squarings
+        self.reg_ties = False  # set by a squaring, cleared by the next join
         self.out = out if out is not None else sys.stdout
 
     def _emit(self, line: str) -> None:
@@ -90,8 +98,13 @@ class Engine:
             self._reject(parts[1], "DUP")
             return
         v = Vehicle(parts[1], span, len(self.order))
+        if self.c_sq:
+            # registrations after a squaring carry the settling levy
+            v.lean = 2 * self.c_sq
+            v.levied = True
         self.vehicles[parts[1]] = v
         self.order.append(v)
+        self.ledger.append(("V", v))
         self._emit(f"OK {len(self.order)}")
 
     def _join(self, parts: list[str]) -> None:
@@ -106,6 +119,10 @@ class Engine:
             self._reject(parts[1], "QUEUED")
             return
         v.queued = True
+        self.join_seq += 1
+        v.joined = self.join_seq
+        self.reg_ties = False
+        self.ledger.append(("Q", v))
         self._emit(f"Q {v.id}")
 
     def _sail(self, parts: list[str]) -> None:
@@ -113,30 +130,44 @@ class Engine:
             self._reject(self._echo(parts), "FMT")
             return
         self.c_sail += 1
+        self.ledger.append(("G",))
         for v in self.order:
             v.aboard = False  # last crossing's passengers disembark
         waiting = [v for v in self.order if v.queued]
-        if not waiting:
-            return  # the sailing departs empty; nothing to print
-        # descending standing lean, ties by registration order; skip
-        # what does not fit and keep going down the list
-        waiting.sort(key=lambda v: (-v.lean, v.reg))
+        # wedged vehicles (left behind three sailings running) board
+        # first in registration order; the rest by descending standing
+        # lean, ties by join order (registration order right after a
+        # squaring); skip what does not fit and keep going down the list
+        if self.reg_ties:
+            waiting.sort(key=lambda v: (v.streak < 3, -v.lean if v.streak < 3 else 0, v.reg))
+        else:
+            waiting.sort(key=lambda v: (v.streak < 3, -v.lean if v.streak < 3 else 0,
+                                        v.joined if v.streak < 3 else v.reg))
         used = 0
         boarded = []
         for v in waiting:
-            if used + v.span <= DECK_CAP:
-                used += v.span
+            # season regulars (three or more crossings) take one unit less
+            span = v.span - 1 if v.crossings >= 3 else v.span
+            if used + span <= DECK_CAP:
+                used += span
                 boarded.append(v)
                 self._emit(f"G {v.id}")
         for v in boarded:
             v.lean = 0
             v.queued = False
             v.aboard = True
+            v.streak = 0
+            if v.levied:  # the crossing that settles the levy does not count
+                v.levied = False
+            else:
+                v.crossings += 1
         left = 0
         for v in waiting:
             if v.queued:  # left behind at this sailing
                 left += 1
-                v.lean += v.span
+                v.lean += v.span + v.misses + v.streak + (1 if self.c_sq else 0)
+                v.misses += 1
+                v.streak += 1
         self._emit(f"GEND {len(boarded)} {left}")
 
     def _square(self, parts: list[str]) -> None:
@@ -144,10 +175,34 @@ class Engine:
             self._reject(self._echo(parts), "FMT")
             return
         self.c_sq += 1
-        # the live accrual already follows the ledger rules (span per
-        # missed sailing, reset on boarding), so recomputing the book
-        # reproduces the running values exactly; the squaring squares
-        # the book, it never tilts it
+        self.reg_ties = True
+        # replay the season ledger under the book rules (span per missed
+        # sailing, reset on boarding, ties by registration, full 40-unit
+        # deck) and replace the live values with the replayed ones
+        lean: dict[str, int] = {}
+        queued: list[Vehicle] = []
+        for ev in self.ledger:
+            if ev[0] == "V":
+                lean[ev[1].id] = 0
+            elif ev[0] == "Q":
+                if ev[1] not in queued:
+                    queued.append(ev[1])
+            else:
+                queued.sort(key=lambda v: (-lean[v.id], v.reg))
+                used = 0
+                left = []
+                for v in queued:
+                    if used + v.span <= DECK_CAP:
+                        used += v.span
+                        lean[v.id] = 0
+                    else:
+                        left.append(v)
+                for v in left:
+                    lean[v.id] += v.span
+                queued = left
+        for v in self.order:
+            v.lean = lean[v.id]
+            v.levied = False
         positive = sum(1 for v in self.order if v.lean > 0)
         self._emit(f"KOK {positive}")
 
