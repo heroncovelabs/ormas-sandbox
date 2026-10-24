@@ -480,6 +480,17 @@ class AlterTogetherOptionOperation(ModelOptionOperation):
     def option_value(self):
         return getattr(self, self.option_name)
 
+    def reduce(self, operation, app_label):
+        # AlterUniqueTogether and AlterIndexTogether touch independent options,
+        # so they can be optimized across each other on the same model.
+        if (
+            isinstance(operation, AlterTogetherOptionOperation) and
+            self.name_lower == operation.name_lower and
+            self.option_name != operation.option_name
+        ):
+            return True
+        return super().reduce(operation, app_label)
+
     def deconstruct(self):
         kwargs = {
             'name': self.name,
