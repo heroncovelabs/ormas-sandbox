@@ -1520,6 +1520,11 @@ class Rational(Number):
     >>> Rational('1e-2/3.2')
     1/320
 
+    Two string arguments are converted independently before division:
+
+    >>> Rational('0.5', '100')
+    1/200
+
     The conversion of other types of strings can be handled by
     the sympify() function, and conversion of floats to expressions
     or simple fractions can be handled with nsimplify:
@@ -1625,19 +1630,22 @@ class Rational(Number):
             q = 1
             gcd = 1
 
+        # Normalize each operand independently to an integer
+        # numerator/denominator pair, then combine as (pn/pd)/(qn/qd).
         if not isinstance(p, SYMPY_INTS):
-            p = Rational(p)
-            q *= p.q
-            p = p.p
+            pr = Rational(p)
+            pn, pd = pr.p, pr.q
         else:
-            p = int(p)
+            pn, pd = int(p), 1
 
         if not isinstance(q, SYMPY_INTS):
-            q = Rational(q)
-            p *= q.q
-            q = q.p
+            qr = Rational(q)
+            qn, qd = qr.p, qr.q
         else:
-            q = int(q)
+            qn, qd = int(q), 1
+
+        p = pn*qd
+        q = pd*qn
 
         # p and q are now ints
         if q == 0:
