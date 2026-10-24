@@ -111,49 +111,34 @@ def k_components(G, flow_func=None):
     # Define default flow function
     if flow_func is None:
         flow_func = default_flow_func
-    # Bicomponents as a base to check for higher order k-components
+    # Level 1: connected components (isolated nodes have connectivity 0).
     for component in nx.connected_components(G):
-        # isolated nodes have connectivity 0
         comp = set(component)
         if len(comp) > 1:
             k_components[1].append(comp)
+    # Level 2: biconnected components. Every 2-connected subgraph lies inside
+    # one of them, and dyads are not reported as 2-components.
     bicomponents = [G.subgraph(c) for c in nx.biconnected_components(G)]
     for bicomponent in bicomponents:
         bicomp = set(bicomponent)
-        # avoid considering dyads as bicomponents
         if len(bicomp) > 2:
             k_components[2].append(bicomp)
+    # Levels k >= 3: every k-connected subgraph with k >= 3 is 2-connected, so
+    # it lies inside a single biconnected component. Within each one, collect
+    # the maximal k-connected subgraphs for k = 3, 4, ... until none remain.
     for B in bicomponents:
         if len(B) <= 2:
             continue
-        k = nx.node_connectivity(B, flow_func=flow_func)
-        if k > 2:
-            k_components[k].append(set(B))
-        # Perform cuts in a DFS like order.
-        cuts = list(nx.all_node_cuts(B, k=k, flow_func=flow_func))
-        stack = [(k, _generate_partition(B, cuts, k))]
-        while stack:
-            (parent_k, partition) = stack[-1]
-            try:
-                nodes = next(partition)
-                C = B.subgraph(nodes)
-                this_k = nx.node_connectivity(C, flow_func=flow_func)
-                if this_k > parent_k and this_k > 2:
-                    k_components[this_k].append(set(C))
-                cuts = list(nx.all_node_cuts(C, k=this_k, flow_func=flow_func))
-                if cuts:
-                    stack.append((this_k, _generate_partition(C, cuts, this_k)))
-            except StopIteration:
-                stack.pop()
-
-    # This is necessary because k-components may only be reported at their
-    # maximum k level. But we want to return a dictionary in which keys are
-    # connectivity levels and values list of sets of components, without
-    # skipping any connectivity level. Also, it's possible that subsets of
-    # an already detected k-component appear at a level k. Checking for this
-    # in the while loop above penalizes the common case. Thus we also have to
-    # _consolidate all connectivity levels in _reconstruct_k_components.
-    return _reconstruct_k_components(k_components)
+        k = 3
+        while True:
+            comps = _maximal_k_connected(B, k, flow_func)
+            if not comps:
+                break
+            k_components[k].extend(comps)
+            k += 1
+    # Report every level from the highest one down to 1, as before.
+    max_k = max(k_components) if k_components else 0
+    return {k: list(k_components[k]) for k in range(max_k, 0, -1)}
 
 
 def _consolidate(sets, k):
@@ -178,37 +163,39 @@ def _consolidate(sets, k):
         yield set.union(*[nodes[n] for n in component])
 
 
-def _generate_partition(G, cuts, k):
-    def has_nbrs_in_partition(G, node, partition):
-        return any(n in partition for n in G[node])
+def _maximal_k_connected(H, k, flow_func):
+    """Return the maximal node sets of H whose induced subgraph is k-connected.
 
-    components = []
-    n_in_cuts = {n for cut in cuts for n in cut}
-    nodes = {n for n, d in G.degree() if d > k} - n_in_cuts
-    H = G.subgraph(nodes)
-    for cc in map(set, nx.connected_components(H)):
-        component = cc | {n for n in n_in_cuts if has_nbrs_in_partition(G, n, cc)}
-        if len(component) < G.order():
-            components.append(component)
-    yield from _consolidate(components, k + 1)
+    A k-connected subgraph has node connectivity at least k and more than k
+    nodes. The result contains no set that is a subset of another one.
+    """
+    if H.order() <= k:
+        return []
+    if not nx.is_connected(H):
+        found = []
+        for component in nx.connected_components(H):
+            found.extend(_maximal_k_connected(H.subgraph(component), k, flow_func))
+        return _remove_nested(found)
+    if nx.node_connectivity(H, flow_func=flow_func) >= k:
+        return [set(H)]
+    # Removing fewer than k nodes cannot disconnect a k-connected subgraph, so
+    # every k-connected subgraph of H lies within one side of a minimum cut.
+    # Each side keeps its cut nodes, so recursing on it is exact.
+    cut = nx.minimum_node_cut(H, flow_func=flow_func)
+    rest = H.subgraph(set(H) - cut)
+    found = []
+    for side in nx.connected_components(rest):
+        found.extend(_maximal_k_connected(H.subgraph(side | cut), k, flow_func))
+    return _remove_nested(found)
 
 
-def _reconstruct_k_components(k_comps):
-    result = {}
-    max_k = max(k_comps) if k_comps else 0
-    for k in range(max_k, 0, -1):
-        if k == max_k:
-            result[k] = list(_consolidate(k_comps[k], k))
-        elif k not in k_comps:
-            result[k] = list(_consolidate(result[k + 1], k))
-        else:
-            nodes_at_k = set.union(*k_comps[k])
-            to_add = [c for c in result[k + 1] if any(n not in nodes_at_k for n in c)]
-            if to_add:
-                result[k] = list(_consolidate(k_comps[k] + to_add, k))
-            else:
-                result[k] = list(_consolidate(k_comps[k], k))
-    return result
+def _remove_nested(node_sets):
+    """Keep the maximal sets, dropping duplicates and subsets of other sets."""
+    kept = []
+    for nodes in sorted(node_sets, key=len, reverse=True):
+        if not any(nodes <= other for other in kept):
+            kept.append(nodes)
+    return kept
 
 
 def build_k_number_dict(kcomps):
