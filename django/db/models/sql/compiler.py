@@ -1837,6 +1837,20 @@ class SQLUpdateCompiler(SQLCompiler):
         query.extra = {}
         query.select = []
         query.add_fields([query.get_meta().pk.name])
+        # Each ancestor model receiving related updates gets its own primary
+        # key column, selected through the parent links of the same query so
+        # that ancestor identifiers stay aligned with the child identifiers.
+        related_models = list(self.query.related_updates)
+        if related_models:
+            initial_alias = query.get_initial_alias()
+            seen_models = {None: initial_alias}
+            ancestor_cols = []
+            for model in related_models:
+                alias = query.join_parent_model(
+                    query.get_meta(), model, initial_alias, seen_models
+                )
+                ancestor_cols.append(model._meta.pk.get_col(alias))
+            query.set_select([*query.select, *ancestor_cols])
         super().pre_sql_setup()
 
         must_pre_select = (
@@ -1850,11 +1864,17 @@ class SQLUpdateCompiler(SQLCompiler):
             # Either we're using the idents in multiple update queries (so
             # don't want them to change), or the db backend doesn't support
             # selecting from the updating table (e.g. MySQL).
+            # related_ids maps each ancestor model to its own primary key
+            # values, aligned row-by-row with the child identifiers.
             idents = []
+            related_ids = {model: [] for model in related_models}
             for rows in query.get_compiler(self.using).execute_sql(MULTI):
-                idents.extend(r[0] for r in rows)
+                for row in rows:
+                    idents.append(row[0])
+                    for index, model in enumerate(related_models, start=1):
+                        related_ids[model].append(row[index])
             self.query.add_filter("pk__in", idents)
-            self.query.related_ids = idents
+            self.query.related_ids = related_ids
         else:
             # The fast path. Filters and updates in one query.
             self.query.add_filter("pk__in", query)

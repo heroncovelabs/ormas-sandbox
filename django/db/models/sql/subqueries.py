@@ -126,6 +126,10 @@ class UpdateQuery(Query):
         Return a list of query objects: one for each update required to an
         ancestor model. Each query will have the same filtering conditions as
         the current query but will only update a single table.
+
+        When related_ids is materialized, it maps each ancestor model to the
+        primary key values selected for that model, so each generated query
+        filters on its own ancestor's identifiers.
         """
         if not self.related_updates:
             return []
@@ -134,7 +138,7 @@ class UpdateQuery(Query):
             query = UpdateQuery(model)
             query.values = values
             if self.related_ids is not None:
-                query.add_filter("pk__in", self.related_ids)
+                query.add_filter("pk__in", self.related_ids.get(model, []))
             result.append(query)
         return result
 
