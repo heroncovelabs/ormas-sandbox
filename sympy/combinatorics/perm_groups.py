@@ -2194,18 +2194,20 @@ class PermutationGroup(Basic):
                 # check if the system is minimal with
                 # respect to the already discovere ones
                 minimal = True
+                # indices (into the parallel lists) of non-minimal systems
                 to_remove = []
                 for i, r in enumerate(rep_blocks):
                     if len(r) > len(rep) and rep.issubset(r):
                         # i-th block system is not minimal
-                        del num_blocks[i], blocks[i]
-                        to_remove.append(rep_blocks[i])
+                        to_remove.append(i)
                     elif len(r) < len(rep) and r.issubset(rep):
                         # the system being checked is not minimal
                         minimal = False
                         break
-                # remove non-minimal representative blocks
-                rep_blocks = [r for r in rep_blocks if r not in to_remove]
+                # Remove non-minimal systems from all three lists in reverse
+                # order to keep the indices valid.
+                for i in reversed(to_remove):
+                    del blocks[i], num_blocks[i], rep_blocks[i]
 
                 if minimal and num_block not in num_blocks:
                     blocks.append(block)
