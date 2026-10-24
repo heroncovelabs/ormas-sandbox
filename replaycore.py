@@ -7,6 +7,21 @@ and replaces live state with the replayed balances), writes replies and
 an ``X`` trailer at EOF. Format reference: ``docs/SPEC.md`` (note the
 drift warning at the top of that file; the legacy engine's behavior is
 the contract).
+
+Engine behaviors that differ from the spec and are reproduced here:
+
+- Lines end at the first ``\\r`` or ``\\n``; tokens are separated by
+  runs of spaces only. ``E`` takes at least 4 fields (extra fields are
+  ignored) and ``Y`` may be followed by a space and anything.
+- A zero delta (``+0`` / ``-0``) is valid.
+- Account ids are case-insensitive; an account is displayed with the
+  spelling that first registered it (accepted or FLOOR-rejected event).
+- Redelivery of the account's last accepted event (same seq, same delta
+  value) is acknowledged with the current balance, without being applied
+  or logged.
+- FLOOR-rejected events are still appended to the event log (without
+  advancing the account's seq); replay applies every logged event with
+  the balance saturating at 0.
 """
 
 from __future__ import annotations
@@ -19,29 +34,34 @@ SEQ_DIGITS = 6
 
 NO_ACCT = "?" * ACCT_MAX
 
+_ALNUM = frozenset("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+_DIGITS = frozenset("0123456789")
+
 
 def _valid_acct(token: str) -> bool:
-    return 1 <= len(token) <= ACCT_MAX and token.isalnum()
+    return 1 <= len(token) <= ACCT_MAX and all(c in _ALNUM for c in token)
 
 
 def _valid_delta(token: str) -> bool:
     return (
         2 <= len(token) <= DELTA_DIGITS + 1
         and token[0] in "+-"
-        and token[1:].isdigit()
+        and all(c in _DIGITS for c in token[1:])
     )
 
 
 def _valid_seq(token: str) -> bool:
-    return 1 <= len(token) <= SEQ_DIGITS and token.isdigit()
+    return 1 <= len(token) <= SEQ_DIGITS and all(c in _DIGITS for c in token)
 
 
 class Account:
-    __slots__ = ("balance", "last_seq")
+    __slots__ = ("name", "balance", "last_seq", "last_delta")
 
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self.name = name
         self.balance = 0
         self.last_seq = -1
+        self.last_delta: int | None = None
 
 
 class Engine:
@@ -56,8 +76,8 @@ class Engine:
 
     def handle(self, line: str) -> list[str]:
         if line == "E" or line.startswith("E "):
-            return [self._event(line.split())]
-        if line == "Y":
+            return [self._event([t for t in line.split(" ") if t])]
+        if line == "Y" or line.startswith("Y "):
             return self._replay()
         self.rejected += 1
         return [f"R {NO_ACCT} FMT"]
@@ -73,7 +93,7 @@ class Engine:
         echo = NO_ACCT
         if len(tokens) >= 2 and _valid_acct(tokens[1]):
             echo = tokens[1]
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return self._reject(echo, "FMT")
         acct_tok, delta_tok, seq_tok = tokens[1:4]
         if not _valid_acct(acct_tok):
@@ -81,41 +101,40 @@ class Engine:
         if not _valid_delta(delta_tok):
             return self._reject(acct_tok, "DELTA")
         delta = int(delta_tok)
-        if delta == 0:
-            return self._reject(acct_tok, "DELTA")
         if not _valid_seq(seq_tok):
             return self._reject(acct_tok, "SEQ")
         seq = int(seq_tok)
-        acct = self.accounts.get(acct_tok)
+        key = acct_tok.lower()
+        acct = self.accounts.get(key)
         if acct is None:
-            acct = self.accounts[acct_tok] = Account()
+            acct = self.accounts[key] = Account(acct_tok)
+        if seq == acct.last_seq and delta == acct.last_delta:
+            # Redelivery of the last accepted event: acknowledged, not reapplied.
+            self.events += 1
+            return f"A {acct.name} {acct.balance}"
         if seq <= acct.last_seq:
-            return self._reject(acct_tok, "ORDER")
+            return self._reject(acct.name, "ORDER")
         if acct.balance + delta < 0:
-            # Rejected events are never appended to the log.
-            return self._reject(acct_tok, "FLOOR")
+            # The engine logs declined debits too; replay saturates them at 0.
+            self.log.append((key, delta))
+            return self._reject(acct.name, "FLOOR")
         acct.balance += delta
         acct.last_seq = seq
-        self.log.append((acct_tok, delta))
+        acct.last_delta = delta
+        self.log.append((key, delta))
         self.events += 1
-        return f"A {acct_tok} {acct.balance}"
+        return f"A {acct.name} {acct.balance}"
 
     def _replay(self) -> list[str]:
-        # Rebuild every balance from the event log, then replace live
-        # state with the replayed balances. Only accepted events are
-        # logged, so replay reproduces the live balances exactly
-        # ("replay is a no-op by construction").
+        # Rebuild every balance from the event log (balances saturate at
+        # 0), then replace live state with the replayed balances.
         balances: dict[str, int] = {}
-        order: list[str] = []
         for key, delta in self.log:
-            if key not in balances:
-                balances[key] = 0
-                order.append(key)
-            balances[key] += delta
+            balances[key] = max(0, balances.get(key, 0) + delta)
         for key, acct in self.accounts.items():
             acct.balance = balances.get(key, 0)
-        lines = [f"Y {key} {balances[key]}" for key in order]
-        lines.append(f"YEND {len(order)}")
+        lines = [f"Y {self.accounts[key].name} {bal}" for key, bal in balances.items()]
+        lines.append(f"YEND {len(balances)}")
         self.replays += 1
         return lines
 
@@ -124,7 +143,7 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies: list[str] = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        line = raw.split("\n", 1)[0].split("\r", 1)[0]
         if not line:
             continue
         replies.extend(engine.handle(line))
@@ -136,7 +155,11 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    data = sys.stdin.buffer.read().decode("latin-1")
+    lines = data.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    process(lines, out=sys.stdout)
 
 
 if __name__ == "__main__":
