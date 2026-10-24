@@ -5968,6 +5968,23 @@ def _symbolic_factor(expr, opt, method):
         return expr
 
 
+def _sqf_regroup(coeff, factors, opt):
+    """
+    Recompute square-free factors when several of them share the same
+    multiplicity, so that the result is consistent with ``sqf``.
+    """
+    mults = [k for _, k in factors]
+
+    if len(set(mults)) == len(mults):
+        return coeff, factors
+
+    expr = Mul(*[f.as_expr()**k for f, k in factors])
+    poly, _ = _poly_from_expr(expr, opt)
+    _coeff, _factors = poly.sqf_list()
+
+    return coeff*_coeff, _factors
+
+
 def _generic_factor_list(expr, gens, args, method):
     """Helper function for :func:`sqf_list` and :func:`factor_list`. """
     options.allowed_flags(args, ['frac', 'polys'])
@@ -5994,6 +6011,10 @@ def _generic_factor_list(expr, gens, args, method):
                 if not f.is_Poly:
                     f, _ = _poly_from_expr(f, _opt)
                     factors[i] = (f, k)
+
+        if method == 'sqf':
+            cp, fp = _sqf_regroup(cp, fp, _opt)
+            cq, fq = _sqf_regroup(cq, fq, _opt)
 
         fp = _sorted_factors(fp, method)
         fq = _sorted_factors(fq, method)
