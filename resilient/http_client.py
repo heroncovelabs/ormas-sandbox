@@ -1,14 +1,20 @@
-"""HTTP client with its own copy of the retry-with-backoff loop."""
+"""HTTP client that delegates retries to the shared backoff helper.
+
+Retry behavior (attempt count, capped exponential backoff, and re-raising the
+last exception) is implemented once in ``resilient.backoff.retry_with_backoff``.
+"""
 from __future__ import annotations
 
 import time
 from typing import Callable, TypeVar
 
+from resilient.backoff import retry_with_backoff
+
 T = TypeVar("T")
 
 
 class HttpClient:
-    """Calls an operation, retrying with exponential backoff on failure."""
+    """Calls an operation, retrying with capped exponential backoff on failure."""
 
     def __init__(
         self,
@@ -28,13 +34,10 @@ class HttpClient:
 
         Re-raises the last exception if every attempt fails.
         """
-        last_exc: BaseException | None = None
-        for attempt in range(self.max_attempts):
-            if attempt > 0:
-                self._sleep(self.base_delay * 2 ** (attempt - 1))
-            try:
-                return operation()
-            except Exception as exc:  # noqa: BLE001 — retry on any operation failure
-                last_exc = exc
-        assert last_exc is not None
-        raise last_exc
+        return retry_with_backoff(
+            operation,
+            max_attempts=self.max_attempts,
+            base_delay=self.base_delay,
+            max_delay=self.max_delay,
+            sleep=self._sleep,
+        )
