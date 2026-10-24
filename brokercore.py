@@ -18,6 +18,21 @@ NO_ID = "????????"
 # SPEC: a booking adds value/1000 (integer division) to the carrier's
 # commitment score; a drop subtracts twice what the booking added.
 BOOK_STEP = 1000
+# Engine: carriers rated at least LANE_MIN_RATING earn a preferred-lane
+# bonus on loads whose value is a multiple of LANE_STEP; the lane credit is
+# value * 5 / 4 in cents-per-thousand (floor).
+LANE_STEP = 2500
+LANE_MIN_RATING = 80
+# Engine: each booking loses one credit per full three open bookings the
+# carrier already holds (dilution), and the credit is halved while the
+# carrier has exactly PENALTY_DROPS successful drops.
+DILUTION_SPAN = 3
+PENALTY_DROPS = 2
+# Engine: a carrier registered after k settlements starts at
+# rating * 100 - HAIRCUT_STEP * k (floored at 0), and every settlement
+# walks back a further SETTLE_DROP_STEP per successful drop.
+HAIRCUT_STEP = 50
+SETTLE_DROP_STEP = 2
 
 
 def _valid_id(token: str) -> bool:
@@ -34,14 +49,21 @@ class Carrier:
         self.rating = rating
         # SPEC: every carrier starts at rating x 100.
         self.score = rating * 100
+        # Settlement baseline: the starting score after any registration-time
+        # haircut (set by Engine._carrier).
+        self.base = rating * 100
         self.sum_book = 0  # ledger: sum of value/1000 over bookings
         self.sum_drop = 0  # ledger: sum of value/1000 over drops
+        self.open_bookings = 0  # count of loads currently booked to this carrier
+        self.successful_drops = 0  # count of successful drops by this carrier
 
 
 class Load:
     def __init__(self, value: int) -> None:
         self.value = value
         self.booked_by: str | None = None
+        # Credit actually given on the live booking; a drop forfeits twice it.
+        self.credit = 0
 
 
 class Engine:
@@ -56,6 +78,9 @@ class Engine:
         self.n_drop = 0
         self.n_set = 0
         self.rejected = 0
+        # Persistent history: (carrier, load) pairs recorded on a successful
+        # drop. The carrier may not rebook that load; other carriers may.
+        self.soured: set[tuple[str, str]] = set()
 
     def handle(self, line: str) -> list[str]:
         tokens = line.split()
@@ -96,7 +121,13 @@ class Engine:
             return f"N {echo} RATING"
         if tokens[1] in self.carriers:
             return f"N {echo} DUP"
-        self.carriers[tokens[1]] = Carrier(tokens[1], rating)
+        c = Carrier(tokens[1], rating)
+        # Engine: registration after k settlements (empty ones included)
+        # carries a haircut of HAIRCUT_STEP * k, floored at zero.
+        start = max(0, rating * 100 - HAIRCUT_STEP * self.n_set)
+        c.base = start
+        c.score = start
+        self.carriers[tokens[1]] = c
         self.n_car += 1
         return f"OK {len(self.carriers)}"
 
@@ -129,10 +160,24 @@ class Engine:
         l = self.loads.get(tokens[2])
         if l is None:
             return f"N {echo} UNKNOWN"
-        if l.booked_by is not None:
+        if l.booked_by is not None or (tokens[1], tokens[2]) in self.soured:
             return f"N {echo} TAKEN"
-        c.score += l.value // BOOK_STEP
-        c.sum_book += l.value // BOOK_STEP
+        # Engine credit: preferred-lane loads earn value * 5 / 4 for carriers
+        # rated LANE_MIN_RATING or more; otherwise value / 1000. Dilution is
+        # subtracted per full DILUTION_SPAN open bookings (floored at zero),
+        # and the result is halved while the carrier has exactly
+        # PENALTY_DROPS successful drops.
+        if c.rating >= LANE_MIN_RATING and l.value % LANE_STEP == 0:
+            credit = l.value * 5 // 4 // BOOK_STEP
+        else:
+            credit = l.value // BOOK_STEP
+        credit = max(0, credit - c.open_bookings // DILUTION_SPAN)
+        if c.successful_drops == PENALTY_DROPS:
+            credit //= 2
+        c.score += credit
+        c.sum_book += l.value // BOOK_STEP  # ledger keeps the plain credit
+        c.open_bookings += 1
+        l.credit = credit
         l.booked_by = tokens[1]
         self.n_book += 1
         return f"A {c.cid} {c.score}"
@@ -153,24 +198,33 @@ class Engine:
             return f"N {echo} NOBOOK"
         # SPEC: a drop subtracts twice what the booking added; the load
         # returns to the board and may be booked again by any carrier.
-        c.score -= 2 * (l.value // BOOK_STEP)
-        c.sum_drop += l.value // BOOK_STEP
+        # Record the souring pair only after the ownership check has passed.
+        self.soured.add((tokens[1], tokens[2]))
+        # The forfeit is twice the credit this booking actually earned.
+        c.score -= 2 * l.credit
+        c.sum_drop += l.value // BOOK_STEP  # ledger keeps the plain credit
+        c.open_bookings -= 1
+        c.successful_drops += 1
         l.booked_by = None
         self.n_drop += 1
         return f"A {c.cid} {c.score}"
 
     def _settle(self) -> list[str]:
-        # SPEC: a settlement on an empty board settles nothing and
-        # writes nothing.
-        if not self.carriers:
-            return []
+        # Engine: an empty board still settles (WEND 0) and counts as a
+        # settlement; it writes no S lines.
         replies = []
         for c in self.carriers.values():
-            # SPEC: the settlement recomputes the score from the event
-            # ledger with the same arithmetic as the live path; it is a
-            # checksum, not a correction, and always equals the running
-            # score for a healthy board.
-            settled = c.rating * 100 + c.sum_book - 2 * c.sum_drop
+            # Engine: the statement is computed from the independent
+            # plain-credit ledgers (ignoring live dilution, preferred-lane
+            # excess, and halving), starting from the carrier's baseline
+            # and walking back SETTLE_DROP_STEP per successful drop. Each
+            # statement is written back to the live score.
+            settled = (
+                c.base
+                + c.sum_book
+                - 2 * c.sum_drop
+                - SETTLE_DROP_STEP * c.successful_drops
+            )
             replies.append(f"S {c.cid} {settled}")
             c.score = settled
         replies.append(f"WEND {len(self.carriers)}")
