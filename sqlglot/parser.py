@@ -1071,6 +1071,11 @@ class Parser:
         TokenType.DCOLON,
     }
 
+    # Binary operators that sit in the "any other operator" precedence tier (level with `||`,
+    # below `+`/`-`) rather than binding as column operators. Maps token type -> builder that
+    # takes (parser, left operand, right operand), and must be disjoint from COLUMN_OPERATORS
+    BINARY_JSON_OPERATORS: t.ClassVar[dict[TokenType, t.Callable]] = {}
+
     EXPRESSION_PARSERS: t.ClassVar = {
         exp.Cluster: lambda self: self._parse_sort(exp.Cluster, TokenType.CLUSTER_BY),
         exp.Column: lambda self: self._parse_column(),
@@ -6241,6 +6246,9 @@ class Parser:
                 this = self.expression(
                     self.BITWISE[self._prev.token_type](this=this, expression=self._parse_term())
                 )
+            elif self._match_set(self.BINARY_JSON_OPERATORS):
+                builder = self.BINARY_JSON_OPERATORS[self._prev.token_type]
+                this = builder(self, this, self._parse_term())
             elif self.dialect.DPIPE_IS_STRING_CONCAT and self._match(TokenType.DPIPE):
                 this = self.expression(
                     exp.DPipe(
