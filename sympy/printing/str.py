@@ -248,6 +248,13 @@ class StrPrinter(Printer):
 
     def _print_Mul(self, expr):
 
+        def _slash_valued(p):
+            # Pow forms that _print_Pow renders with a "/" in them, i.e.
+            # 1/base and 1/sqrt(base); these need grouping when used as a
+            # divisor.
+            return (isinstance(p, Pow) and p.is_commutative and
+                    (p.exp is S.NegativeOne or -p.exp is S.Half))
+
         prec = precedence(expr)
 
         # Check for unevaluated Mul. In this case we need to make sure the
@@ -284,7 +291,9 @@ class StrPrinter(Printer):
                 pre = [str(d.pop(0))]
             else:
                 pre = []
-            dfactors = pre + [self.parenthesize(a, prec, strict=False)
+            dfactors = pre + [
+                "(%s)" % self._print(a) if _slash_valued(a)
+                else self.parenthesize(a, prec, strict=False)
                 for a in d]
 
             n = '*'.join(nfactors)
@@ -333,8 +342,10 @@ class StrPrinter(Printer):
                     b.append(apow(item))
                 else:
                     if (len(item.args[0].args) != 1 and
-                            isinstance(item.base, Mul)):
-                        # To avoid situations like #14160
+                            (isinstance(item.base, Mul) or
+                             _slash_valued(item.base))):
+                        # To avoid situations like #14160 and nested
+                        # reciprocals in a denominator such as 1/(1/c**2)
                         pow_paren.append(item)
                     b.append(item.base)
             elif item.is_Rational and item is not S.Infinity:
