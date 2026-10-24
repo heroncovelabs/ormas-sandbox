@@ -537,7 +537,7 @@ class Add(Expr, AssocOp):
         nz = []
         z = 0
         im_or_z = False
-        im = False
+        im = 0  # number of terms proven to be imaginary (hence nonzero)
         for a in self.args:
             if a.is_real:
                 if a.is_zero:
@@ -547,7 +547,7 @@ class Add(Expr, AssocOp):
                 else:
                     return
             elif a.is_imaginary:
-                im = True
+                im += 1
             elif (S.ImaginaryUnit*a).is_real:
                 im_or_z = True
             else:
@@ -557,11 +557,14 @@ class Add(Expr, AssocOp):
         if len(nz) == len(self.args):
             return None
         b = self.func(*nz)
-        if b.is_zero:
-            if not im_or_z and not im:
+        if b.is_zero and not im_or_z:
+            if im == 0:
                 return True
-            if im and not im_or_z:
+            if im == 1:
                 return False
+            # Multiple nonzero imaginary terms may cancel, as in
+            # -2*I + (1 + I)**2 (issue 15873).
+            return None
         if b.is_zero is False:
             return False
 
