@@ -15,7 +15,7 @@ import sys
 CLASSES = frozenset(
     (50, 55, 60, 65, 70, 77, 85, 92, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500)
 )
-DIM_DIVISOR = 5000
+DIM_DIVISOR = 5500
 SERVICES = ("G", "X", "P")
 SURCHARGE_PCT = {"G": 0, "X": 50, "P": 25}
 
@@ -27,8 +27,13 @@ def _round_half_up(numerator: int, denominator: int) -> int:
     return quotient
 
 
-def _ceil_div(numerator: int, denominator: int) -> int:
-    return -(-numerator // denominator)
+def _round_half_even(numerator: int, denominator: int) -> int:
+    quotient, remainder = divmod(numerator, denominator)
+    if 2 * remainder > denominator or (
+        2 * remainder == denominator and quotient % 2 == 1
+    ):
+        return quotient + 1
+    return quotient
 
 
 def zone_rate(zone: int) -> int:
@@ -59,7 +64,7 @@ class Shipment:
         if tok[0] != "S":
             self.error = "FMT"
             return
-        if len(tok) != 9:
+        if len(tok) < 9:
             self.error = "FMT"
             return
         if self.shipid == "?":
@@ -88,11 +93,8 @@ class Shipment:
         if self.cls not in CLASSES:
             self.error = "CLASS"
             return
-        if self.weight == 0:
-            self.error = "WEIGHT"
-            return
         if self.length == 0 or self.width == 0 or self.height == 0:
-            self.error = "DIM"
+            self.error = "WEIGHT" if self.weight == 0 else "DIM"
             return
         if self.svc not in SERVICES:
             self.error = "SVC"
@@ -100,14 +102,27 @@ class Shipment:
 
     def compute(self) -> None:
         volume = self.length * self.width * self.height
-        dim_weight = _ceil_div(volume, DIM_DIVISOR)
+        dim_weight = _round_half_up(volume, DIM_DIVISOR)
         billable = max(self.weight, dim_weight)
-        base = billable * zone_rate(self.zone)
-        class_multiplied = _round_half_up(base * self.cls, 100)
+        cls = self.cls
+        if dim_weight > self.weight and cls < 60:
+            cls = 70
         pct = SURCHARGE_PCT[self.svc]
-        charge = class_multiplied
-        if pct:
-            charge += _round_half_up(class_multiplied * pct, 100)
+        if self.svc == "X" and self.zone // 10 == 4 and billable > 750:
+            pct = 65
+        base = billable * zone_rate(self.zone)
+        if self.svc == "X":
+            # Express: surcharge is taken on the unclassed base, then the
+            # class multiplier applies to base plus surcharge.
+            surcharge = _round_half_up(base * pct, 100)
+            charge = _round_half_up((base + surcharge) * cls, 100)
+        else:
+            class_multiplied = _round_half_up(base * cls, 100)
+            charge = class_multiplied
+            if pct:
+                charge += _round_half_even(class_multiplied * pct, 100)
+        if self.zone == 99:
+            charge += 12500
         self.charge = charge
 
     def emit(self) -> str:
