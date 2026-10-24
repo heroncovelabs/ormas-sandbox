@@ -29,11 +29,30 @@ def _digits(token: str) -> bool:
     return token.isascii() and token.isdigit()
 
 
+WEAR = 7  # quality lost per side cut since the last remaster
+LONG_MIN = 90  # sides longer than this consume a double allotment
+LONG_COST = 2
+TAX_SIDES = 4  # sides in one remaster window that incur the stamper tax
+CONTENTION_SIDE = 4  # side (of the ledger) graded down on a busy board
+CONTENTION_OTHERS = 2  # other in-progress titles that make the board busy
+CONTENTION_PENALTY = 15
+
+
 class Title:
-    def __init__(self, minutes: int) -> None:
+    def __init__(self, minutes: int, wear: int = 0) -> None:
         self.minutes = minutes
         self.remaining = ALLOT  # live allotment
         self.sides = 0  # ledger: sides cut
+        self.wear = wear  # sides since last remaster (plus registration wear)
+        self.window = 0  # sides actually cut since last remaster
+        self.tax = 0  # cumulative stamper tax
+        self.courtesy_used = False
+
+    def cost(self) -> int:
+        return LONG_COST if self.minutes > LONG_MIN else 1
+
+    def in_progress(self) -> bool:
+        return 0 < self.sides < ALLOT and self.remaining > 0
 
 
 class Engine:
@@ -87,7 +106,8 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        wear = max((t.wear for t in self.titles.values()), default=0)
+        self.titles[tokens[1]] = Title(int(minutes), wear)
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -100,11 +120,19 @@ class Engine:
         t = self._find(tokens[1])
         if t is None:
             return f"N {title} UNKNOWN"
-        if t.remaining < 1:
+        if t.remaining < t.cost():
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        quality = Q_BASE - t.minutes * Q_CUT - t.wear * WEAR
+        if t.sides + 1 == CONTENTION_SIDE:
+            others = sum(
+                1 for o in self.titles.values() if o is not t and o.in_progress()
+            )
+            if others >= CONTENTION_OTHERS:
+                quality -= CONTENTION_PENALTY
+        t.remaining -= t.cost()
         t.sides += 1
+        t.wear += 1
+        t.window += 1
         self.cut_since_remaster += 1
         self.sides += 1
         return f"Q {tokens[1]} {quality}"
@@ -112,13 +140,20 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
+        idle = self.cut_since_remaster == 0
         lines = []
         for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
+            if not idle:
+                # An idle remaster reports the live state unchanged.
+                if t.window >= TAX_SIDES:
+                    t.tax += 1
+                if t.remaining == 0 and not t.courtesy_used:
+                    t.courtesy_used = True
+                    t.remaining = 1
+                else:
+                    t.remaining = ALLOT - t.sides - t.tax
+                t.wear = 0
+                t.window = 0
             lines.append(f"R {name} {t.remaining}")
         lines.append(f"MEND {len(self.titles)}")
         self.cut_since_remaster = 0
