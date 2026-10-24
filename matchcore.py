@@ -13,6 +13,7 @@ import sys
 PRICE_MAX = 10_000_000
 QTY_MAX = 999_999
 HASH_MOD = 1_000_000_007
+BAND = 500
 
 
 class Order:
@@ -58,6 +59,8 @@ class Engine:
                 better = True
             elif order.price != best.price:
                 better = order.price < best.price if side == "B" else order.price > best.price
+            elif (order.orig >= 1000) != (best.orig >= 1000):
+                better = order.orig >= 1000
             else:
                 better = order.seq < best.seq
             if better:
@@ -74,18 +77,28 @@ class Engine:
         if not is_market and not 0 < price < PRICE_MAX:
             self._emit(f"R {clordid} PRICE")
             return
-        if self._find_live(acct, clordid) is not None:
-            self._emit(f"R {clordid} DUP")
+        if not is_market and price >= 100_000 and price % 5:
+            self._emit(f"R {clordid} TICK")
             return
+        old = self._find_live(acct, clordid)
+        if old is not None:
+            old.live = False
+            self._emit(f"X {old.clordid} {old.orig}")
 
         remaining = qty
+        ref = 0
         while remaining:
             counter = self._best_counter(side, price, is_market)
             if counter is None:
                 break
             if counter.acct == acct:
-                self._emit(f"R {clordid} STP")
-                return
+                counter.live = False
+                self._emit(f"X {counter.clordid} {counter.orig}")
+                continue
+            if ref and abs(counter.price - ref) > BAND:
+                break
+            if not ref:
+                ref = counter.price
             take = min(remaining, counter.qty)
             self._emit(f"F {counter.clordid} {clordid} {counter.price} {take}")
             counter.qty -= take
@@ -107,7 +120,7 @@ class Engine:
             self._emit(f"R {clordid} UNKNOWN")
             return
         order.live = False
-        self._emit(f"X {order.clordid} {order.qty}")
+        self._emit(f"X {order.clordid} {order.orig}")
 
     def end_session(self) -> None:
         bid = ask = 0
@@ -119,7 +132,8 @@ class Engine:
                 bid = max(bid, order.price)
             elif ask == 0 or order.price < ask:
                 ask = order.price
-            book_hash = (book_hash + order.price * order.qty) % HASH_MOD
+            if order.qty >= 100:
+                book_hash = (book_hash + order.price * order.qty) % HASH_MOD
         self._emit(f"S {bid} {ask} {book_hash}")
 
     # -- line protocol ------------------------------------------------------
@@ -128,31 +142,35 @@ class Engine:
         line = line.rstrip("\r\n")
         if not line:
             return
-        parts = line.split(" ")
-        if parts == ["E"]:
+        if line == "E":
             self.end_session()
             return
-        if parts[0] == "N" and len(parts) == 7:
-            _, acct, clordid, side, type_, price, qty = parts
-            if (
-                _token(acct, 4, 4)
-                and _token(clordid, 1, 8)
-                and side in ("B", "S")
-                and type_ in ("L", "M", "I")
-                and price.isdigit()
-                and 1 <= len(price) <= 7
-                and qty.isdigit()
-                and 1 <= len(qty) <= 6
-            ):
-                self.new_order(acct, clordid, side, type_, int(price), int(qty))
-                return
+        parts = line.split()
+        if line[0] == "N":
+            if len(parts) >= 7:
+                _, acct, clordid, side, type_, price, qty = parts[:7]
+                if (
+                    _token(acct, 4, 4)
+                    and _token(clordid, 1, 8)
+                    and side in ("B", "S")
+                    and type_ in ("L", "M", "I")
+                    and price.isdigit()
+                    and 1 <= len(price) <= 7
+                    and qty.isdigit()
+                    and 1 <= len(qty) <= 6
+                ):
+                    self.new_order(acct, clordid, side, type_, int(price), int(qty))
+                    return
+            clordid = parts[2] if len(parts) >= 3 else ""
             self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
             return
-        if parts[0] == "C" and len(parts) == 3:
-            _, acct, clordid = parts
-            if _token(acct, 4, 4) and _token(clordid, 1, 8):
-                self.cancel(acct, clordid)
-                return
+        if line[0] == "C":
+            if len(parts) >= 3:
+                _, acct, clordid = parts[:3]
+                if _token(acct, 4, 4) and _token(clordid, 1, 8):
+                    self.cancel(acct, clordid)
+                    return
+            clordid = parts[2] if len(parts) >= 3 else ""
             self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
             return
         self._emit("R ???????? FMT")
