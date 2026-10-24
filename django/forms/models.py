@@ -1171,13 +1171,17 @@ class BaseInlineFormSet(BaseModelFormSet):
             kwargs["to_field"] = self.fk.remote_field.field_name
 
         # If we're adding a new object, ignore a parent's auto-generated key
-        # as it will be regenerated on the save request.
+        # as it will be regenerated on the save request. A bound formset
+        # validates against an alternate key (to_field) that was generated
+        # on the parent, so keep that value in that case.
         if self.instance._state.adding:
             if kwargs.get("to_field") is not None:
                 to_field = self.instance._meta.get_field(kwargs["to_field"])
+                keep_generated = self.is_bound
             else:
                 to_field = self.instance._meta.pk
-            if to_field.has_default():
+                keep_generated = False
+            if to_field.has_default() and not keep_generated:
                 setattr(self.instance, to_field.attname, None)
 
         form.fields[name] = InlineForeignKeyField(self.instance, **kwargs)
