@@ -124,6 +124,19 @@ class Command(BaseCommand):
                             "self" if relations[column_name][1] == table_name
                             else table2model(relations[column_name][1])
                         )
+                        ref_db_column, ref_db_table = relations[column_name]
+                        if ref_db_table == table_name:
+                            ref_pk_column = primary_key_column
+                        else:
+                            try:
+                                ref_pk_column = connection.introspection.get_primary_key_column(
+                                    cursor, ref_db_table,
+                                )
+                            except NotImplementedError:
+                                ref_pk_column = None
+                        # Point at the referenced column when it isn't the primary key.
+                        if ref_pk_column is not None and ref_db_column != ref_pk_column:
+                            extra_params['to_field'] = ref_db_column
                         if rel_to in known_models:
                             field_type = '%s(%s' % (rel_type, rel_to)
                         else:
