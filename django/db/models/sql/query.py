@@ -1027,7 +1027,8 @@ class Query(BaseExpression):
         reuse_aliases = [
             a
             for a, j in self.alias_map.items()
-            if (reuse is None or a in reuse) and j.equals(join)
+            if (reuse is None or a in reuse)
+            and (j == join if join.filtered_relation else j.equals(join))
         ]
         if reuse_aliases:
             if join.table_alias in reuse_aliases:
