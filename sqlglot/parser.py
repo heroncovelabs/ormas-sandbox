@@ -1034,6 +1034,10 @@ class Parser:
 
     LAMBDA_ARG_TERMINATORS: t.ClassVar[frozenset] = frozenset({TokenType.COMMA, TokenType.R_PAREN})
 
+    # Binary operators (e.g. Postgres JSON arrows) that bind at the tier between `+`/`-` and
+    # `||`: left-associative, with a right operand that spans `+`/`-` and subscripts.
+    BINARY_JSON_OPERATORS: t.ClassVar[dict] = {}
+
     COLUMN_OPERATORS: t.ClassVar = {
         TokenType.DOT: None,
         TokenType.DOTCOLON: lambda self, this, to: self.expression(exp.JSONCast(this=this, to=to)),
@@ -6249,6 +6253,9 @@ class Parser:
                         safe=not self.dialect.STRICT_STRING_CONCAT,
                     )
                 )
+            elif self._match_set(self.BINARY_JSON_OPERATORS):
+                op = self.BINARY_JSON_OPERATORS[self._prev.token_type]
+                this = op(self, this, self._parse_term())
             elif self._match(TokenType.DQMARK):
                 this = self.expression(
                     exp.Coalesce(this=this, expressions=ensure_list(self._parse_term()))

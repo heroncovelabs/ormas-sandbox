@@ -71,6 +71,17 @@ def _convert_text_type(dtype: exp.DataType) -> exp.DataType:
     return dtype
 
 
+_DUCKDB_JSON_TOKENS = frozenset(
+    {
+        TokenType.ARROW,
+        TokenType.DARROW,
+        TokenType.HASH_ARROW,
+        TokenType.DHASH_ARROW,
+        TokenType.PLACEHOLDER,
+    }
+)
+
+
 class DuckDBParser(parser.Parser):
     MAP_KEYS_ARE_ARBITRARY_EXPRESSIONS = True
     PIVOT_COLUMN_NAMING = "agg_name_if_aliased_or_multiple"
@@ -84,6 +95,15 @@ class DuckDBParser(parser.Parser):
     }
 
     BITWISE = {k: v for k, v in parser.Parser.BITWISE.items() if k != TokenType.CARET}
+
+    # JSON operators share Postgres's binary-operator tier; the same builders as the base parser
+    BINARY_JSON_OPERATORS = {
+        k: v for k, v in parser.Parser.COLUMN_OPERATORS.items() if k in _DUCKDB_JSON_TOKENS
+    }
+
+    COLUMN_OPERATORS = {
+        k: v for k, v in parser.Parser.COLUMN_OPERATORS.items() if k not in _DUCKDB_JSON_TOKENS
+    }
 
     RANGE_PARSERS = {
         **parser.Parser.RANGE_PARSERS,

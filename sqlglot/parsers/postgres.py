@@ -83,6 +83,29 @@ def _build_levenshtein_less_equal(args: list) -> exp.Levenshtein:
     )
 
 
+_POSTGRES_BINARY_JSON_OPERATORS: dict = {
+    TokenType.ARROW: lambda self, this, path: self.validate_expression(
+        build_json_extract_path(
+            exp.JSONExtract, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
+        )([this, path])
+    ),
+    TokenType.DARROW: lambda self, this, path: self.validate_expression(
+        build_json_extract_path(
+            exp.JSONExtractScalar, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
+        )([this, path])
+    ),
+    TokenType.HASH_ARROW: lambda self, this, path: self.expression(
+        exp.JSONBExtract(this=this, expression=path)
+    ),
+    TokenType.DHASH_ARROW: lambda self, this, path: self.expression(
+        exp.JSONBExtractScalar(this=this, expression=path)
+    ),
+    TokenType.PLACEHOLDER: lambda self, this, key: self.expression(
+        exp.JSONBContains(this=this, expression=key)
+    ),
+}
+
+
 class PostgresParser(parser.Parser):
     SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT = True
 
@@ -190,18 +213,13 @@ class PostgresParser(parser.Parser):
 
     JSON_ARROWS_REQUIRE_JSON_TYPE = True
 
+    # Postgres JSON operators are ordinary binary operators, not column accessors
+    BINARY_JSON_OPERATORS = _POSTGRES_BINARY_JSON_OPERATORS
+
     COLUMN_OPERATORS = {
-        **parser.Parser.COLUMN_OPERATORS,
-        TokenType.ARROW: lambda self, this, path: self.validate_expression(
-            build_json_extract_path(
-                exp.JSONExtract, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
-            )([this, path])
-        ),
-        TokenType.DARROW: lambda self, this, path: self.validate_expression(
-            build_json_extract_path(
-                exp.JSONExtractScalar, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
-            )([this, path])
-        ),
+        k: v
+        for k, v in parser.Parser.COLUMN_OPERATORS.items()
+        if k not in _POSTGRES_BINARY_JSON_OPERATORS
     }
 
     ARG_MODE_TOKENS: t.ClassVar = {TokenType.IN, TokenType.OUT, TokenType.INOUT, TokenType.VARIADIC}
