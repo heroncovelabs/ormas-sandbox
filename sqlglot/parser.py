@@ -2417,11 +2417,11 @@ class Parser:
         else:
             this = self._parse_table_parts(schema=True, is_db_reference=kind == "SCHEMA")
 
-        tables = (
-            self._parse_csv(lambda: self._parse_table_parts(schema=True))
-            if kind == "TABLE" and self._match(TokenType.COMMA)
-            else None
-        )
+        # Multiple targets are modeled as a single uniform list in "tables"
+        tables = None
+        if kind != "COLUMN" and self._match(TokenType.COMMA):
+            tables = [this, *self._parse_csv(lambda: self._parse_table_parts(schema=True))]
+            this = None
 
         cluster = self._parse_on_property() if self._match(TokenType.ON) else None
 
@@ -9342,6 +9342,12 @@ class Parser:
             kind = None
             this = self._parse_table_parts()
 
+        # Multiple targets are modeled as a single uniform list in "tables"
+        tables = None
+        if this is not None and self._match(TokenType.COMMA):
+            tables = [this, *self._parse_csv(self._parse_table_parts)]
+            this = None
+
         partition = self._try_parse(self._parse_partition)
         if not partition and self._match_texts(self.PARTITION_KEYWORDS):
             return self._parse_as_command(start)
@@ -9362,6 +9368,7 @@ class Parser:
             exp.Analyze(
                 kind=kind,
                 this=this,
+                tables=tables,
                 mode=mode,
                 partition=partition,
                 properties=properties,
