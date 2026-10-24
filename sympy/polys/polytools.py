@@ -5950,6 +5950,26 @@ def _symbolic_factor_list(expr, opt, method):
 
                 factors.append((_factors_product(other), exp))
 
+    if method == 'sqf':
+        # Combine square-free factors sharing the same integer multiplicity
+        # into one polynomial, keeping the position of the first occurrence.
+        merged, position = [], {}
+
+        for f, k in factors:
+            if f.is_Poly and (isinstance(k, int) or getattr(k, 'is_Integer', False)):
+                key = int(k)
+
+                if key in position:
+                    i = position[key]
+                    merged[i] = (merged[i][0].mul(f), merged[i][1])
+                else:
+                    position[key] = len(merged)
+                    merged.append((f, k))
+            else:
+                merged.append((f, k))
+
+        factors = merged
+
     return coeff, factors
 
 
@@ -6213,6 +6233,11 @@ def sqf_list(f, *gens, **args):
 
     >>> sqf_list(2*x**5 + 16*x**4 + 50*x**3 + 76*x**2 + 56*x + 16)
     (2, [(x + 1, 2), (x + 2, 3)])
+
+    Factors sharing the same multiplicity are combined into one factor:
+
+    >>> sqf_list((x**2 + 1)*(x - 1)**2*(x - 2)**3*(x - 3)**3)
+    (1, [(x**2 + 1, 1), (x - 1, 2), (x**2 - 5*x + 6, 3)])
 
     """
     return _generic_factor_list(f, gens, args, method='sqf')
