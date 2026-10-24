@@ -265,8 +265,13 @@ class Query(BaseExpression):
 
     @property
     def has_select_fields(self):
+        # An annotation mask alone only selects fields when the default model
+        # columns were disabled (values()). QuerySet.alias() after annotate()
+        # sets a mask while default columns remain, which must not count.
         return bool(
-            self.select or self.annotation_select_mask or self.extra_select_mask
+            self.select
+            or (self.annotation_select_mask and not self.default_cols)
+            or self.extra_select_mask
         )
 
     @cached_property
