@@ -20,6 +20,19 @@ SIZE_RANGES = {
     'B': 1,
 }
 
+# Full-word names of the size prefixes, used to validate complete unit words
+_SIZE_PREFIX_NAMES = {
+    'Y': 'yotta',
+    'Z': 'zetta',
+    'E': 'exa',
+    'P': 'peta',
+    'T': 'tera',
+    'G': 'giga',
+    'M': 'mega',
+    'K': 'kilo',
+    'B': '',
+}
+
 
 def lenient_lowercase(lst):
     """Lowercase elements of a list.
@@ -53,15 +66,13 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         The function expects 'b' (lowercase) as a bit identifier, e.g. 'Mb'/'Kb'/etc.
         if 'MB'/'KB'/... is passed, the ValueError will be rased.
     """
-    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
+    # Match the entire input using ASCII digits, unit letters, and spaces only.
+    m = re.match(r'([0-9]+(?:\.[0-9]*)?|\.[0-9]+) *([A-Za-z]+)? *\Z', str(number))
     if m is None:
         raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
-    try:
-        num = float(m.group(1))
-    except Exception:
-        raise ValueError("human_to_bytes() can't interpret following number: %s (original input string: %s)" % (m.group(1), number))
+    num = float(m.group(1))
 
-    unit = m.group(2)
+    unit = m.group(2) or None
     if unit is None:
         unit = default_unit
 
@@ -69,10 +80,9 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         # No unit given, returning raw number
         return int(round(num))
     range_key = unit[0].upper()
-    try:
-        limit = SIZE_RANGES[range_key]
-    except Exception:
+    if range_key not in SIZE_RANGES:
         raise ValueError("human_to_bytes() failed to convert %s (unit = %s). The suffix must be one of %s" % (number, unit, ", ".join(SIZE_RANGES.keys())))
+    limit = SIZE_RANGES[range_key]
 
     # default value
     unit_class = 'B'
@@ -87,9 +97,10 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         if range_key == 'B':
             expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
 
-        if unit_class_name in unit.lower():
-            pass
-        elif unit[1] != unit_class:
+        prefix_name = _SIZE_PREFIX_NAMES[range_key]
+        full_names = (prefix_name + unit_class_name, prefix_name + unit_class_name + 's')
+        is_abbreviation = len(unit) == 2 and unit[1] == unit_class
+        if not (is_abbreviation or unit.lower() in full_names):
             raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
 
     return int(round(num * limit))
