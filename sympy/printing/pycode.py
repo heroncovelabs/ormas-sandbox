@@ -432,6 +432,12 @@ class PythonCodePrinter(AbstractPythonCodePrinter):
         PREC = precedence(expr)
         return self._operators['not'] + self.parenthesize(expr.args[0], PREC)
 
+    def _print_Min(self, expr):
+        return "min({})".format(", ".join(self._print(arg) for arg in expr.args))
+
+    def _print_Max(self, expr):
+        return "max({})".format(", ".join(self._print(arg) for arg in expr.args))
+
     def _print_Indexed(self, expr):
         base = expr.args[0]
         index = expr.args[1:]
