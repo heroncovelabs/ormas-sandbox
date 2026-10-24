@@ -961,6 +961,10 @@ def _recursive_to_string(doprint, arg):
             left, right = "()"
         else:
             raise NotImplementedError("unhandled type: %s, %s" % (type(arg), arg))
+        if isinstance(arg, tuple) and len(arg) == 1:
+            # a one-element tuple needs a trailing comma, otherwise "(x)"
+            # would be read as just "x"
+            return left + _recursive_to_string(doprint, arg[0]) + ',' + right
         return left +', '.join(_recursive_to_string(doprint, e) for e in arg) + right
     elif isinstance(arg, str):
         return arg
