@@ -1529,6 +1529,87 @@ class RunningMeanTests(TestCase):
                 actual = list(mi.running_mean(iterable))
                 self.assertEqual(actual, expected)
 
+    def test_empty_windowed(self):
+        self.assertEqual(list(mi.running_mean([], maxlen=3)), [])
+
+    def test_partial_windows(self):
+        actual = list(mi.running_mean([1, 2, 3, 4, 5], maxlen=3))
+        self.assertEqual(actual, [1.0, 1.5, 2.0, 3.0, 4.0])
+
+    def test_window_of_one(self):
+        data = [3, 1, 4, 1, 5]
+        actual = list(mi.running_mean(data, maxlen=1))
+        self.assertEqual(actual, [3.0, 1.0, 4.0, 1.0, 5.0])
+
+    def test_window_larger_than_data(self):
+        data = [8.5, 9.5, 7.5, 6.5]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=len(data) + 5)),
+            list(mi.running_mean(data)),
+        )
+
+    def test_numeric_types_windowed(self):
+        fractions = [Fraction(1), Fraction(2), Fraction(4)]
+        self.assertEqual(
+            list(mi.running_mean(fractions, maxlen=2)),
+            [Fraction(1), Fraction(3, 2), Fraction(3)],
+        )
+        self.assertEqual(
+            list(mi.running_mean([Decimal('1.0'), Decimal('2.0')], maxlen=1)),
+            [Decimal('1.0'), Decimal('2.0')],
+        )
+        self.assertEqual(
+            list(mi.running_mean([1.0, 2.0, 6.0], maxlen=2)),
+            [1.0, 1.5, 4.0],
+        )
+
+    def test_complex_windowed(self):
+        data = [1 + 1j, 3 + 3j, 5 - 1j]
+        actual = list(mi.running_mean(data, maxlen=2))
+        expected = [1 + 1j, 2 + 2j, 4 + 1j]
+        for a, e in zip(actual, expected):
+            self.assertAlmostEqual(a, e)
+        self.assertEqual(len(actual), len(expected))
+
+    def test_sliding_matches_brute_force(self):
+        rng = random.Random(1234)
+        data = [rng.randint(-50, 50) for _ in range(200)]
+        for maxlen in (1, 2, 7, 50, 500):
+            with self.subTest(maxlen=maxlen):
+                actual = list(mi.running_mean(data, maxlen=maxlen))
+                expected = [
+                    sum(data[max(0, k - maxlen + 1) : k + 1])
+                    / len(data[max(0, k - maxlen + 1) : k + 1])
+                    for k in range(len(data))
+                ]
+                self.assertEqual(len(actual), len(expected))
+                for a, e in zip(actual, expected):
+                    self.assertAlmostEqual(a, e)
+
+    def test_invalid_window_raises_when_called(self):
+        iterator = iter([1, 2, 3])
+        for maxlen in (0, -1):
+            with self.subTest(maxlen=maxlen):
+                with self.assertRaises(ValueError):
+                    mi.running_mean(iterator, maxlen=maxlen)
+        self.assertEqual(next(iterator), 1)
+
+    def test_non_iterable_raises_when_called(self):
+        with self.assertRaises(TypeError):
+            mi.running_mean(42)
+        with self.assertRaises(TypeError):
+            mi.running_mean(42, maxlen=3)
+
+    def test_windowed_streams_from_infinite_input(self):
+        source = count(1)
+        actual = list(islice(mi.running_mean(source, maxlen=2), 4))
+        self.assertEqual(actual, [1.0, 1.5, 2.5, 3.5])
+        self.assertEqual(next(source), 5)
+
+    def test_maxlen_is_keyword_only(self):
+        with self.assertRaises(TypeError):
+            mi.running_mean([1, 2], 2)
+
 
 class RunningMedianTests(TestCase):
     def test_vs_statistics_median(self):

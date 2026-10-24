@@ -33,7 +33,7 @@ from itertools import (
     zip_longest,
 )
 from math import prod, comb, isqrt, gcd
-from operator import mul, getitem, index, is_, itemgetter, truediv
+from operator import add, mul, getitem, index, is_, itemgetter, truediv
 from random import randrange, sample, choice, shuffle
 from sys import hexversion
 
@@ -1408,8 +1408,27 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _running_mean_windowed(iterator, maxlen):
+    "Yield the mean of values in a sliding window."
+
+    window = deque()
+
+    for x in iterator:
+        window.append(x)
+        if len(window) > maxlen:
+            window.popleft()
+
+        total = reduce(add, window)
+        yield total / len(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of all values seen so far or values in a sliding
+    window.
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1438,20 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+
+    >>> list(running_mean([100, 200, 600, 0], maxlen=2))
+    [100.0, 150.0, 400.0, 300.0]
+
     """
-    return map(truediv, accumulate(iterable), count(1))
+    iterator = iter(iterable)
+
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+        return _running_mean_windowed(iterator, maxlen)
+
+    return map(truediv, accumulate(iterator), count(1))
 
 
 def random_derangement(iterable):

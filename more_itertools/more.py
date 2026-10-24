@@ -3,6 +3,7 @@ import math
 from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import cached_property, partial, wraps
 from heapq import heapify, heapreplace
 from itertools import (
@@ -31,6 +32,7 @@ from operator import (
     getitem,
     is_not,
     itemgetter,
+    index,
     lt,
     neg,
     sub,
@@ -48,6 +50,8 @@ from .recipes import (
     is_prime,
     nth,
     powerset,
+    running_mean,
+    running_median,
     sieve,
     take,
     unique_everseen,
@@ -58,6 +62,7 @@ from .recipes import (
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -143,6 +148,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_min',
+    'running_max',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -5441,3 +5449,149 @@ class _concurrent_tee:
                     link[1] = [None, None]
         value, self.link = link
         return value
+
+
+@dataclass(frozen=True)
+class Stats:
+    """Immutable record of running statistics.
+
+    The fields are *size*, *minimum*, *median*, *maximum*, and *mean*, in
+    that order. They can be supplied positionally or by keyword and are
+    accessed by name. Records compare and hash by their field values.
+
+        >>> stats = Stats(3, 1, 2, 3, 2.0)
+        >>> stats.size, stats.minimum, stats.median, stats.maximum, stats.mean
+        (3, 1, 2, 3, 2.0)
+
+    Fields are accessed exclusively by attribute, allowing additional
+    statistics to be added in future versions.
+    """
+
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+
+    size: int
+    minimum: object
+    median: object
+    maximum: object
+    mean: object
+
+
+def _running_extrema(iterator, maxlen, compare):
+    if maxlen is None:
+        extreme = _marker
+        for x in iterator:
+            if isinstance(x, complex):
+                raise TypeError('Complex numbers are unorderable')
+            if extreme is _marker or compare(x, extreme):
+                extreme = x
+            yield extreme
+        return
+
+    # Keep candidates in order of arrival and from best to worst. Each
+    # candidate is added and removed at most once.
+    candidates = deque()
+    for i, x in enumerate(iterator):
+        if isinstance(x, complex):
+            raise TypeError('Complex numbers are unorderable')
+        if candidates and candidates[0][0] <= i - maxlen:
+            candidates.popleft()
+        while candidates and compare(x, candidates[-1][1]):
+            candidates.pop()
+        candidates.append((i, x))
+        yield candidates[0][1]
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the minimum of values seen so far or values in a sliding window.
+
+    Set *maxlen* to a positive integer to use the last *maxlen* values,
+    including partial windows at the start. The default of *None* uses
+    all values seen so far.
+
+        >>> list(running_min([5, 9, 4, 12, 8, 9]))
+        [5, 5, 4, 4, 4, 4]
+        >>> list(running_min([5, 9, 4, 12, 8, 9], maxlen=3))
+        [5, 5, 4, 4, 4, 8]
+
+    Supports numeric types such as int, float, Decimal, and Fraction.
+    Complex numbers raise :exc:`TypeError` during iteration.
+
+    Each result is yielded as soon as its input is read. An invalid
+    *maxlen* or a non-iterable input raises an exception immediately.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return _running_extrema(iterator, maxlen, lt)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the maximum of values seen so far or values in a sliding window.
+
+    Set *maxlen* to a positive integer to use the last *maxlen* values,
+    including partial windows at the start. The default of *None* uses
+    all values seen so far.
+
+        >>> list(running_max([5, 9, 4, 12, 8, 9]))
+        [5, 9, 9, 12, 12, 12]
+        >>> list(running_max([5, 9, 4, 12, 8, 9], maxlen=3))
+        [5, 9, 9, 12, 12, 12]
+
+    Supports numeric types such as int, float, Decimal, and Fraction.
+    Complex numbers raise :exc:`TypeError` during iteration.
+
+    Each result is yielded as soon as its input is read. An invalid
+    *maxlen* or a non-iterable input raises an exception immediately.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return _running_extrema(iterator, maxlen, gt)
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record for each input value.
+
+    Each record contains the *size*, *minimum*, *median*, *maximum*, and
+    *mean* of the values seen so far. Set *maxlen* to a positive integer
+    to use the last *maxlen* values, including partial windows at the
+    start. The default of *None* uses all values seen so far.
+
+        >>> for stats in running_statistics([1, 3, 5], maxlen=2):
+        ...     print(stats)
+        Stats(size=1, minimum=1, median=1, maximum=1, mean=1.0)
+        Stats(size=2, minimum=1, median=2.0, maximum=3, mean=2.0)
+        Stats(size=2, minimum=3, median=4.0, maximum=5, mean=4.0)
+
+    The median and mean are computed as in :func:`running_median` and
+    :func:`running_mean`. Supports numeric types such as int, float,
+    Decimal, and Fraction. Complex numbers raise :exc:`TypeError` during
+    iteration.
+
+    Each result is yielded as soon as its input is read. An invalid
+    *maxlen* or a non-iterable input raises an exception immediately.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+
+    minima, medians, maxima, means = tee(iterator, 4)
+    sizes = (
+        count(1)
+        if maxlen is None
+        else chain(range(1, maxlen), repeat(maxlen))
+    )
+    return map(
+        Stats,
+        sizes,
+        running_min(minima, maxlen=maxlen),
+        running_median(medians, maxlen=maxlen),
+        running_max(maxima, maxlen=maxlen),
+        running_mean(means, maxlen=maxlen),
+    )
