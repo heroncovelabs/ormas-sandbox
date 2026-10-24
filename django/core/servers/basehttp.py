@@ -128,12 +128,22 @@ class ServerHandler(simple_server.ServerHandler):
             LimitedStream(stdin, content_length), stdout, stderr, environ, **kwargs
         )
 
+    def is_head_request(self):
+        request_handler = getattr(self, "request_handler", None)
+        return request_handler is not None and request_handler.command == "HEAD"
+
+    def set_content_length(self):
+        # HEAD responses have no body, so don't compute a Content-Length from
+        # the application's output.
+        if not self.is_head_request():
+            super().set_content_length()
+
     def cleanup_headers(self):
         super().cleanup_headers()
         # HTTP/1.1 requires support for persistent connections. Send 'close' if
         # the content length is unknown to prevent clients from reusing the
-        # connection.
-        if "Content-Length" not in self.headers:
+        # connection. HEAD responses carry no body, so this isn't needed.
+        if "Content-Length" not in self.headers and not self.is_head_request():
             self.headers["Connection"] = "close"
         # Persistent connections require threading server.
         elif not isinstance(self.request_handler.server, socketserver.ThreadingMixIn):
@@ -142,6 +152,25 @@ class ServerHandler(simple_server.ServerHandler):
         # application sent the header.
         if self.headers.get("Connection") == "close":
             self.request_handler.close_connection = True
+
+    def write(self, data):
+        """
+        Send response headers, but discard the body for HEAD requests, as
+        required by RFC 2616, section 4.3.
+        """
+        if not self.is_head_request():
+            return super().write(data)
+
+        assert type(data) is bytes, "write() argument must be a bytes instance"
+        if not self.status:
+            raise AssertionError("write() before start_response()")
+        elif not self.headers_sent:
+            # Before the first output, send the stored headers.
+            self.bytes_sent = len(data)  # make sure we know content-length
+            self.send_headers()
+        else:
+            self.bytes_sent += len(data)
+        self._flush()
 
     def close(self):
         self.get_stdin().read()
