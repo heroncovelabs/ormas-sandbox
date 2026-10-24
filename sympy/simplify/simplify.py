@@ -251,8 +251,12 @@ def posify(eq):
             eq[i] = e.subs(reps)
         return f(eq), {r: s for s, r in reps.items()}
 
-    reps = {s: Dummy(s.name, positive=True)
-                 for s in eq.free_symbols if s.is_positive is None}
+    reps = {}
+    for s in eq.free_symbols:
+        if s.is_positive is None:
+            assumptions = dict(s.assumptions0)
+            assumptions['positive'] = True
+            reps[s] = Dummy(s.name, **assumptions)
     eq = eq.subs(reps)
     return eq, {r: s for s, r in reps.items()}
 
