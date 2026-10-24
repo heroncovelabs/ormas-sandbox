@@ -1828,8 +1828,20 @@ def where(cond, x, y, keep_attrs=None):
 
     if keep_attrs is True:
         # keep the attributes of x, the second parameter, by default to
-        # be consistent with the `where` method of `DataArray` and `Dataset`
-        keep_attrs = lambda attrs, context: attrs[1]
+        # be consistent with the `where` method of `DataArray` and `Dataset`.
+        # Attributes are computed with "override" (which never indexes into the
+        # operands) and then replaced with those of x, which may be a scalar.
+        result = apply_ufunc(
+            duck_array_ops.where,
+            cond,
+            x,
+            y,
+            join="exact",
+            dataset_join="exact",
+            dask="allowed",
+            keep_attrs="override",
+        )
+        return _where_keep_attrs_from_x(result, x)
 
     # alignment for three arguments is complicated, so don't support it yet
     return apply_ufunc(
@@ -1842,6 +1854,53 @@ def where(cond, x, y, keep_attrs=None):
         dask="allowed",
         keep_attrs=keep_attrs,
     )
+
+
+def _where_keep_attrs_from_x(result, x):
+    """Replace the attributes of a ``where`` result with those of ``x``.
+
+    Result-level attributes come from ``x``, Dataset data variables take the
+    attributes of the matching data variable of ``x`` (or the attributes of
+    ``x`` itself when ``x`` is broadcast), and coordinates take the attributes
+    of the matching coordinate of ``x``. Missing counterparts yield empty
+    attributes.
+    """
+    from .dataarray import DataArray
+    from .dataset import Dataset
+    from .variable import Variable
+
+    if isinstance(result, Variable):
+        result = result.copy(deep=False)
+        result.attrs = dict(getattr(x, "attrs", {}))
+        return result
+
+    if not isinstance(result, (DataArray, Dataset)):
+        # plain array output carries no attributes
+        return result
+
+    # shallow copy so that replacing attrs never touches arrays shared with inputs
+    result = result.copy(deep=False)
+    result.attrs = dict(getattr(x, "attrs", {}))
+
+    x_coords = getattr(x, "coords", None)
+    for name in result.coords:
+        if x_coords is not None and name in x_coords:
+            attrs = dict(x_coords[name].attrs)
+        else:
+            attrs = {}
+        result.coords.variables[name].attrs = attrs
+
+    if isinstance(result, Dataset):
+        for name in result.data_vars:
+            if isinstance(x, Dataset):
+                attrs = dict(x.data_vars[name].attrs) if name in x.data_vars else {}
+            elif isinstance(x, (DataArray, Variable)):
+                attrs = dict(x.attrs)
+            else:
+                attrs = {}
+            result.variables[name].attrs = attrs
+
+    return result
 
 
 def polyval(coord, coeffs, degree_dim="degree"):
