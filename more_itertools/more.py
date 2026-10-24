@@ -29,6 +29,7 @@ from random import random, randrange, shuffle, uniform
 from operator import (
     attrgetter,
     getitem,
+    index,
     is_not,
     itemgetter,
     lt,
@@ -48,6 +49,8 @@ from .recipes import (
     is_prime,
     nth,
     powerset,
+    running_mean,
+    running_median,
     sieve,
     take,
     unique_everseen,
@@ -58,6 +61,7 @@ from .recipes import (
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -143,6 +147,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_max',
+    'running_min',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -5441,3 +5448,174 @@ class _concurrent_tee:
                     link[1] = [None, None]
         value, self.link = link
         return value
+
+
+def _check_maxlen(maxlen):
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return maxlen
+
+
+def _running_extreme(iterator, better):
+    "Yield the best value seen so far, where better(a, b) means a beats b."
+    for best in iterator:
+        better(best, best)  # Reject unorderable values such as complex
+        yield best
+        for x in iterator:
+            if better(x, best):
+                best = x
+            yield best
+
+
+def _running_extreme_windowed(iterator, maxlen, better):
+    "Yield the best value in a sliding window, using a monotonic deque."
+    # Pairs of (position, value), where each value beats all those after it
+    window = deque()
+    for i, x in enumerate(iterator):
+        if not window:
+            better(x, x)  # Reject unorderable values such as complex
+        while window and not better(window[-1][1], x):
+            window.pop()
+        window.append((i, x))
+        if window[0][0] <= i - maxlen:
+            window.popleft()
+        yield window[0][1]
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the minimum of all values seen so far or of the values
+    in a sliding window.
+
+        >>> list(running_min([4, 3, 7, 0, 8, 1, 6, 2, 9, 5]))
+        [4, 3, 3, 0, 0, 0, 0, 0, 0, 0]
+        >>> list(running_min([4, 3, 7, 0, 8, 1, 6, 2, 9, 5], maxlen=3))
+        [4, 3, 3, 0, 0, 0, 1, 1, 2, 2]
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    if maxlen is None:
+        return _running_extreme(iterator, lt)
+    return _running_extreme_windowed(iterator, maxlen, lt)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the maximum of all values seen so far or of the values
+    in a sliding window.
+
+        >>> list(running_max([4, 3, 7, 0, 8, 1, 6, 2, 9, 5]))
+        [4, 4, 7, 7, 8, 8, 8, 8, 9, 9]
+        >>> list(running_max([4, 3, 7, 0, 8, 1, 6, 2, 9, 5], maxlen=3))
+        [4, 4, 7, 7, 8, 8, 8, 6, 9, 9]
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    iterator = iter(iterable)
+    maxlen = _check_maxlen(maxlen)
+    if maxlen is None:
+        return _running_extreme(iterator, gt)
+    return _running_extreme_windowed(iterator, maxlen, gt)
+
+
+class Stats:
+    """Summary statistics of a group of values, as yielded by
+    :func:`running_statistics`.
+
+        >>> Stats(size=3, minimum=1, median=2, maximum=6, mean=3.0)
+        Stats(size=3, minimum=1, median=2, maximum=6, mean=3.0)
+
+    Instances are immutable and compare equal when their fields are equal.
+    Fields are accessed by name; instances are not sequences.
+    """
+
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+
+    def __init__(self, size, minimum, median, maximum, mean):
+        set_field = super().__setattr__
+        set_field('size', size)
+        set_field('minimum', minimum)
+        set_field('median', median)
+        set_field('maximum', maximum)
+        set_field('mean', mean)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f'{type(self).__name__} is immutable')
+
+    def __delattr__(self, name):
+        raise AttributeError(f'{type(self).__name__} is immutable')
+
+    def _fields(self):
+        return tuple(getattr(self, name) for name in Stats.__slots__)
+
+    def __eq__(self, other):
+        if not isinstance(other, Stats):
+            return NotImplemented
+        return self._fields() == other._fields()
+
+    def __hash__(self):
+        return hash(self._fields())
+
+    def __repr__(self):
+        fields = ', '.join(
+            f'{name}={getattr(self, name)!r}' for name in Stats.__slots__
+        )
+        return f'{type(self).__name__}({fields})'
+
+    def __reduce__(self):
+        return (type(self), self._fields())
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record for all values seen so far or for
+    the values in a sliding window.
+
+    Each record has the *size* (number of values), *minimum*, *median*,
+    *maximum*, and *mean* of the values, computed as by
+    :func:`running_min`, :func:`running_median`, :func:`running_max`,
+    and :func:`running_mean`.
+
+        >>> stats = running_statistics([4, 3, 7, 0], maxlen=3)
+        >>> next(stats)
+        Stats(size=1, minimum=4, median=4, maximum=4, mean=4.0)
+        >>> next(stats)
+        Stats(size=2, minimum=3, median=3.5, maximum=4, mean=3.5)
+        >>> stats = list(stats)
+        >>> stats[-1].median
+        3
+        >>> stats[-1].mean
+        3.3333333333333335
+
+    Set *maxlen* to a positive integer to specify the maximum size
+    of the sliding window.  The default of *None* is equivalent to
+    an unbounded window.
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    maxlen = _check_maxlen(maxlen)
+    t_min, t_median, t_max, t_mean = tee(iterable, 4)
+    if maxlen is None:
+        sizes = count(1)
+    else:
+        sizes = map(min, count(1), repeat(maxlen))
+    return map(
+        Stats,
+        sizes,
+        running_min(t_min, maxlen=maxlen),
+        running_median(t_median, maxlen=maxlen),
+        running_max(t_max, maxlen=maxlen),
+        running_mean(t_mean, maxlen=maxlen),
+    )

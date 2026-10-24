@@ -1529,6 +1529,32 @@ class RunningMeanTests(TestCase):
                 actual = list(mi.running_mean(iterable))
                 self.assertEqual(actual, expected)
 
+    def test_windowed(self):
+        data = [40, 30, 50, 46, 39, 44]
+        for maxlen in range(1, 8):
+            with self.subTest(maxlen=maxlen):
+                expected = [
+                    mean(data[max(0, i + 1 - maxlen) : i + 1])
+                    for i in range(len(data))
+                ]
+                actual = list(mi.running_mean(data, maxlen=maxlen))
+                self.assertEqual(actual, expected)
+
+        complexes = [3 + 4j, 5 - 1j, 4 + 3j]
+        self.assertEqual(
+            list(mi.running_mean(complexes, maxlen=2)),
+            [3 + 4j, 4 + 1.5j, 4.5 + 1j],
+        )
+        self.assertEqual(list(mi.running_mean([], maxlen=2)), [])
+
+    def test_windowed_errors(self):
+        with self.assertRaises(ValueError):
+            mi.running_mean([1, 2], maxlen=0)
+        with self.assertRaises(TypeError):
+            mi.running_mean(None, maxlen=2)
+        with self.assertRaises(TypeError):
+            mi.running_mean([1, 2], maxlen=2.0)
+
 
 class RunningMedianTests(TestCase):
     def test_vs_statistics_median(self):

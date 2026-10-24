@@ -15,6 +15,8 @@ from collections.abc import (
     Sized,
 )
 from contextlib import AbstractContextManager
+from decimal import Decimal
+from fractions import Fraction
 from threading import Lock
 from typing import (
     Any,
@@ -30,6 +32,7 @@ from typing_extensions import Protocol
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -115,6 +118,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_max',
+    'running_min',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -977,3 +983,39 @@ def concurrent_tee(
 def synchronized(
     func: Callable[..., Iterator[_T]],
 ) -> Callable[..., Iterator[_T]]: ...
+
+_RealT = TypeVar("_RealT", float, Decimal, Fraction)
+
+def running_min(
+    iterable: Iterable[_RealT], *, maxlen: int | None = ...
+) -> Iterator[_RealT]: ...
+def running_max(
+    iterable: Iterable[_RealT], *, maxlen: int | None = ...
+) -> Iterator[_RealT]: ...
+
+class Stats(Generic[_RealT]):
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+    @property
+    def size(self) -> int: ...
+    @property
+    def minimum(self) -> _RealT: ...
+    @property
+    def median(self) -> _RealT: ...
+    @property
+    def maximum(self) -> _RealT: ...
+    @property
+    def mean(self) -> _RealT: ...
+    def __init__(
+        self,
+        size: int,
+        minimum: _RealT,
+        median: _RealT,
+        maximum: _RealT,
+        mean: _RealT,
+    ) -> None: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+def running_statistics(
+    iterable: Iterable[_RealT], *, maxlen: int | None = ...
+) -> Iterator[Stats[_RealT]]: ...

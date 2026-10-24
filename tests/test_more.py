@@ -29,7 +29,7 @@ from itertools import (
 from operator import add, mul, itemgetter, not_
 from pickle import loads, dumps
 from random import Random, random, randrange, seed
-from statistics import mean
+from statistics import mean, median
 from string import ascii_letters
 from threading import Thread, Lock
 from time import sleep
@@ -6646,3 +6646,136 @@ class TestConcurrentTee(TestCase):
         with self.assertRaises(ValueError):
             non_concurrent_source = producer(limit)
             mi.concurrent_tee(non_concurrent_source, n=-1)  # Negative n
+
+
+def _windows(data, maxlen):
+    for end in range(1, len(data) + 1):
+        yield data[max(0, end - maxlen) : end]
+
+
+class RunningMinMaxTests(TestCase):
+    def test_unbounded(self):
+        data = [4, 3, 7, 0, 8, 1, 6, 2, 9, 5]
+        self.assertEqual(
+            list(mi.running_min(data)), [4, 3, 3, 0, 0, 0, 0, 0, 0, 0]
+        )
+        self.assertEqual(
+            list(mi.running_max(data)), [4, 4, 7, 7, 8, 8, 8, 8, 9, 9]
+        )
+        self.assertEqual(list(mi.running_min([])), [])
+        self.assertEqual(list(mi.running_max([])), [])
+        self.assertEqual(
+            list(mi.running_min([Fraction(3, 2), Fraction(1, 2)])),
+            [Fraction(3, 2), Fraction(1, 2)],
+        )
+        self.assertEqual(
+            list(mi.running_max([Decimal('2.5'), Decimal('3.5')])),
+            [Decimal('2.5'), Decimal('3.5')],
+        )
+
+    def test_windowed_vs_brute_force(self):
+        rng = Random(0)
+        datasets = [
+            [rng.randrange(20) for _ in range(300)],
+            [5, 5, 5, 1, 1, 9, 9, 9, 2, 2, 2, 2],
+            list(range(30)),
+            list(range(30, 0, -1)),
+        ]
+        for data in datasets:
+            for maxlen in (1, 2, 3, 4, 7, 16, 1000):
+                with self.subTest(maxlen=maxlen):
+                    self.assertEqual(
+                        list(mi.running_min(iter(data), maxlen=maxlen)),
+                        [min(w) for w in _windows(data, maxlen)],
+                    )
+                    self.assertEqual(
+                        list(mi.running_max(iter(data), maxlen=maxlen)),
+                        [max(w) for w in _windows(data, maxlen)],
+                    )
+
+    def test_streaming(self):
+        self.assertEqual(
+            list(islice(mi.running_min(count(10, -1)), 3)), [10, 9, 8]
+        )
+        source = iter([3, 1, 2])
+        it = mi.running_max(source, maxlen=2)
+        self.assertEqual(next(it), 3)
+        self.assertEqual(next(source), 1)
+
+    def test_errors(self):
+        for func in (mi.running_min, mi.running_max):
+            with self.subTest(func=func):
+                with self.assertRaises(ValueError):
+                    func([1, 2], maxlen=0)
+                with self.assertRaises(ValueError):
+                    func([1, 2], maxlen=-1)
+                with self.assertRaises(TypeError):
+                    func(None)
+                for maxlen in (None, 3):
+                    with self.assertRaises(TypeError):
+                        list(func([1 + 2j], maxlen=maxlen))
+                    with self.assertRaises(TypeError):
+                        list(func([1j, 2j, 3j], maxlen=maxlen))
+
+
+class RunningStatisticsTests(TestCase):
+    def test_values(self):
+        data = [4, 3, 7, 0, 8, 1, 6, 2, 9, 5]
+        for maxlen in (None, 1, 2, 3, 4):
+            size = len(data) if maxlen is None else maxlen
+            expected = [
+                mi.Stats(len(w), min(w), median(w), max(w), sum(w) / len(w))
+                for w in _windows(data, size)
+            ]
+            with self.subTest(maxlen=maxlen):
+                actual = list(mi.running_statistics(data, maxlen=maxlen))
+                self.assertEqual(actual, expected)
+        self.assertEqual(list(mi.running_statistics([])), [])
+
+    def test_numeric_types(self):
+        data = [Fraction(1), Fraction(6)]
+        self.assertEqual(
+            list(mi.running_statistics(data))[-1],
+            mi.Stats(
+                2, Fraction(1), Fraction(7, 2), Fraction(6), Fraction(7, 2)
+            ),
+        )
+        for maxlen in (None, 3):
+            with self.assertRaises(TypeError):
+                list(mi.running_statistics([1j, 2j], maxlen=maxlen))
+
+    def test_streaming(self):
+        self.assertEqual(
+            next(mi.running_statistics(count(7))), mi.Stats(1, 7, 7, 7, 7.0)
+        )
+
+    def test_errors(self):
+        with self.assertRaises(ValueError):
+            mi.running_statistics([1], maxlen=0)
+        with self.assertRaises(TypeError):
+            mi.running_statistics(None)
+
+
+class StatsTests(TestCase):
+    def test_record(self):
+        st = mi.Stats(size=5, minimum=0, median=4, maximum=8, mean=4.4)
+        self.assertEqual(
+            (st.size, st.minimum, st.median, st.maximum, st.mean),
+            (5, 0, 4, 8, 4.4),
+        )
+        self.assertEqual(st, mi.Stats(5, 0, 4, 8, 4.4))
+        self.assertNotEqual(st, mi.Stats(5, 0, 4, 8, 4.5))
+        self.assertEqual(hash(st), hash(mi.Stats(5, 0, 4, 8, 4.4)))
+        self.assertEqual(
+            repr(st),
+            'Stats(size=5, minimum=0, median=4, maximum=8, mean=4.4)',
+        )
+        self.assertEqual(loads(dumps(st)), st)
+
+        with self.assertRaises(AttributeError):
+            st.size = 10
+        with self.assertRaises(AttributeError):
+            del st.size
+        for op in (vars, len, iter, itemgetter(0)):
+            with self.subTest(op=op), self.assertRaises(TypeError):
+                op(st)
