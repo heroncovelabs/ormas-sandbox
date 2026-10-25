@@ -33,11 +33,25 @@ class Tool:
     def __init__(self, grade: int, index: int) -> None:
         self.grade = grade
         self.index = index  # registration order, for rota tie-breaks
-        self.duty = 0  # service duty owed
-        self.accrued = 0  # ledger: duty accrued since the last reckoning
-        self.cleared = 0  # ledger: duty cleared by rotas since the last one
+        self.duty = 0  # live service duty owed
+        self.accrued = 0  # lifetime return ledger
+        self.cleared = 0  # lifetime service ledger
+        self.last_return = 0  # activity order, reset by reckonings
+        self.service_count = 0
         self.loaned_by: str | None = None
         self.loan_days = 0
+
+    def charge(self, amount: int) -> int:
+        # Veteran tools accrue half charges, rounded down, from loan four.
+        if self.service_count > 2:
+            return amount // 2
+        return amount
+
+
+class Member:
+    def __init__(self) -> None:
+        self.outstanding = 0
+        self.heavy = 0  # additive return-duty bonus, sticky after three loans
 
 
 class Engine:
@@ -45,7 +59,8 @@ class Engine:
 
     def __init__(self) -> None:
         self.tools: dict[str, Tool] = {}
-        self.members: set[str] = set()
+        self.members: dict[str, Member] = {}
+        self.activity = 0
         self.registered = 0
         self.enrolled = 0
         self.loans = 0
@@ -110,7 +125,7 @@ class Engine:
             return f"N {ident} FMT"
         if tokens[1] in self.members:
             return f"N {ident} DUP"
-        self.members.add(tokens[1])
+        self.members[tokens[1]] = Member()
         self.enrolled += 1
         return f"OK {len(self.members)}"
 
@@ -134,8 +149,14 @@ class Engine:
             return f"N {ident} UNKNOWN"
         if t.loaned_by is not None:
             return f"N {ident} OUT"
+        member = self.members[tokens[1]]
+        member.outstanding += 1
+        if member.outstanding > 2:
+            member.heavy = 5
         t.loaned_by = tokens[1]
         t.loan_days = int(days)
+        earned = t.charge(t.loan_days * t.grade)
+        t.duty += earned
         self.loans += 1
         return f"L {tokens[1]} {tokens[2]}"
 
@@ -152,10 +173,14 @@ class Engine:
             return f"N {ident} UNKNOWN"
         if t.loaned_by != tokens[1]:
             return f"N {ident} NOLOAN"
-        # Duty accrues when the tool comes back: days x grade.
-        earned = t.loan_days * t.grade
+        member = self.members[tokens[1]]
+        member.outstanding -= 1
+        # Live return duty and the reckoning ledger use different weights.
+        earned = t.charge(2 * t.grade + member.heavy)
         t.duty += earned
-        t.accrued += earned
+        t.accrued += t.loan_days * t.grade
+        self.activity += 1
+        t.last_return = self.activity
         t.loaned_by = None
         t.loan_days = 0
         self.returns += 1
@@ -166,16 +191,14 @@ class Engine:
             return f"N {NO_ID} FMT"
         rota = sorted(
             ((name, t) for name, t in self.tools.items() if t.duty > 0),
-            key=lambda item: (-item[1].duty, item[1].index),
+            key=lambda item: (-item[1].duty, -item[1].last_return, item[1].index),
         )
         self.services += 1
-        if not rota:
-            # No tool owes service: there is no rota to emit or close.
-            return ""
         lines = []
         for name, t in rota:
             lines.append(f"S {name}")
             t.cleared += t.duty
+            t.service_count += 1
             t.duty = 0
         lines.append(f"SEND {len(rota)}")
         return "\n".join(lines)
@@ -185,13 +208,9 @@ class Engine:
             return f"N {NO_ID} FMT"
         positive = 0
         for t in self.tools.values():
-            # Recompute duty from the ledger since the last reckoning:
-            # what accrued, minus what the rotas cleared. The reckoning
-            # is an audit, not a revision: it always agrees with the
-            # live figure.
+            # The ledger is cumulative; reckonings also reset activity ties.
             t.duty = t.accrued - t.cleared
-            t.accrued = 0
-            t.cleared = 0
+            t.last_return = 0
             if t.duty > 0:
                 positive += 1
         self.reckonings += 1
