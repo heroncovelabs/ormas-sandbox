@@ -1,8 +1,10 @@
-"""DB client with its own (slightly different) copy of the retry loop."""
+"""DB client that delegates retries to the shared capped-backoff helper."""
 from __future__ import annotations
 
 import time
 from typing import Callable, TypeVar
+
+from resilient.backoff import retry_with_backoff
 
 T = TypeVar("T")
 
@@ -26,15 +28,13 @@ class DbClient:
     def query_with_retry(self, operation: Callable[[], T]) -> T:
         """Call ``operation`` up to ``max_attempts`` times; return its result.
 
-        Re-raises the last exception if every attempt fails.
+        Backoff is capped at ``max_delay``. Re-raises the last exception if
+        every attempt fails.
         """
-        last_exc: BaseException | None = None
-        for attempt in range(self.max_attempts - 1):
-            if attempt > 0:
-                self._sleep(min(self.base_delay * 2 ** (attempt - 1), self.max_delay))
-            try:
-                return operation()
-            except Exception as exc:  # noqa: BLE001 — retry on any operation failure
-                last_exc = exc
-        assert last_exc is not None
-        raise last_exc
+        return retry_with_backoff(
+            operation,
+            max_attempts=self.max_attempts,
+            base_delay=self.base_delay,
+            max_delay=self.max_delay,
+            sleep=self._sleep,
+        )
