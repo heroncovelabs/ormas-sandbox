@@ -244,6 +244,17 @@ class ReprPrinter(Printer):
     def _print_str(self, expr):
         return repr(expr)
 
+    def _print_dict(self, expr):
+        sep = ", "
+        dict_kvs = ["%s: %s" % (self.doprint(key), self.doprint(value))
+                    for key, value in expr.items()]
+        return "{%s}" % sep.join(dict_kvs)
+
+    def _print_set(self, expr):
+        if len(expr) == 0:
+            return "set()"
+        return "{%s}" % self.reprify(expr, ", ")
+
     def _print_tuple(self, expr):
         if len(expr) == 1:
             return "(%s,)" % self._print(expr[0])
