@@ -418,6 +418,39 @@ def password_option(*param_decls: str, **kwargs: t.Any) -> t.Callable[[FC], FC]:
     return option(*param_decls, **kwargs)
 
 
+def custom_version_option(
+    callback: t.Callable[[Context], str],
+    *param_decls: str,
+    **kwargs: t.Any,
+) -> t.Callable[[FC], FC]:
+    """Add a ``--version`` option which prints a callback's return value
+    and exits the program.
+
+    :param callback: A callback that receives the current :class:`Context`
+        and returns the version message.
+    :param param_decls: One or more option names. Defaults to the single
+        value ``"--version"``.
+    :param kwargs: Extra arguments are passed to :func:`option`.
+    """
+
+    def option_callback(ctx: Context, param: Parameter, value: bool) -> None:
+        if not value or ctx.resilient_parsing:
+            return
+
+        echo(callback(ctx), color=ctx.color)
+        ctx.exit()
+
+    if not param_decls:
+        param_decls = ("--version",)
+
+    kwargs.setdefault("is_flag", True)
+    kwargs.setdefault("expose_value", False)
+    kwargs.setdefault("is_eager", True)
+    kwargs.setdefault("help", _("Show the version and exit."))
+    kwargs["callback"] = option_callback
+    return option(*param_decls, **kwargs)
+
+
 def version_option(
     version: str | None = None,
     *param_decls: str,
