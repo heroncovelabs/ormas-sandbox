@@ -218,11 +218,10 @@ class AntiSymmetricTensor(TensorSymbol):
             return (12, label, h)
 
     def _latex(self, printer):
-        return "%s^{%s}_{%s}" % (
-            self.symbol,
-            "".join([ i.name for i in self.args[1]]),
-            "".join([ i.name for i in self.args[2]])
-        )
+        upper = "".join(printer._print(i) for i in self.args[1])
+        lower = "".join(printer._print(i) for i in self.args[2])
+        # Group the tensor so powers can add a superscript safely.
+        return "{%s^{%s}_{%s}}" % (self.symbol, upper, lower)
 
     @property
     def symbol(self):
@@ -439,7 +438,7 @@ class AnnihilateBoson(BosonicOperator, Annihilator):
         return "AnnihilateBoson(%s)" % self.state
 
     def _latex(self, printer):
-        return "b_{%s}" % self.state.name
+        return "b_{%s}" % printer._print(self.state)
 
 
 class CreateBoson(BosonicOperator, Creator):
@@ -478,7 +477,8 @@ class CreateBoson(BosonicOperator, Creator):
         return "CreateBoson(%s)" % self.state
 
     def _latex(self, printer):
-        return "b^\\dagger_{%s}" % self.state.name
+        # Group the operator so powers do not add a second superscript.
+        return "{b^\\dagger_{%s}}" % printer._print(self.state)
 
 B = AnnihilateBoson
 Bd = CreateBoson
@@ -793,7 +793,7 @@ class AnnihilateFermion(FermionicOperator, Annihilator):
         return "AnnihilateFermion(%s)" % self.state
 
     def _latex(self, printer):
-        return "a_{%s}" % self.state.name
+        return "a_{%s}" % printer._print(self.state)
 
 
 class CreateFermion(FermionicOperator, Creator):
@@ -939,7 +939,8 @@ class CreateFermion(FermionicOperator, Creator):
         return "CreateFermion(%s)" % self.state
 
     def _latex(self, printer):
-        return "a^\\dagger_{%s}" % self.state.name
+        # Group the operator so powers do not add a second superscript.
+        return "{a^\\dagger_{%s}}" % printer._print(self.state)
 
 Fd = CreateFermion
 F = AnnihilateFermion
