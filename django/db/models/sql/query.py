@@ -550,8 +550,70 @@ class Query(BaseExpression):
         Perform a COUNT() query using the current filter constraints.
         """
         obj = self.clone()
+        obj._prune_unused_annotations()
         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
         return obj.get_aggregation(using, ["__count"])["__count"]
+
+    def _prune_unused_annotations(self):
+        """
+        Remove or unselect annotations that are not referenced by filters,
+        ordering or other annotations. They cannot affect the number of rows
+        produced by a COUNT query, so there is no need to compute them.
+        """
+        if (
+            not self.annotations
+            or self.distinct
+            or self.combinator
+            or isinstance(self.group_by, tuple)
+        ):
+            return
+        base_alias = self.get_initial_alias()
+        selected = dict(self.annotation_select)
+        # Aliases referenced by ordering names, then by filters and by other
+        # referenced annotations (transitively).
+        referenced = {
+            item.lstrip("-") for item in self.order_by if isinstance(item, str)
+        }
+        roots = [self.where, self.order_by]
+        while True:
+            found = set()
+            for node in _iter_subexpressions(roots):
+                if isinstance(node, Ref):
+                    found.add(node.refs)
+                for alias, annotation in self.annotations.items():
+                    if node is annotation or node == annotation:
+                        found.add(alias)
+            new = found - referenced
+            if not new:
+                break
+            referenced |= new
+            roots = [self.annotations[alias] for alias in new]
+
+        for alias, annotation in list(self.annotations.items()):
+            if alias in referenced:
+                continue
+            if getattr(annotation, "contains_aggregate", False):
+                if alias not in selected:
+                    del self.annotations[alias]
+                # Selected aggregates are kept (but unselected) so that the
+                # query is still grouped as it would have been otherwise.
+            elif all(
+                col.alias == base_alias
+                for col in _iter_subexpressions([annotation])
+                if isinstance(col, Col)
+            ):
+                # Annotations that don't join other tables can't change the
+                # number of rows.
+                del self.annotations[alias]
+        self.set_annotation_mask(
+            {alias for alias in selected if alias in referenced}
+        )
+        if self.group_by is True and not any(
+            getattr(annotation, "contains_aggregate", False)
+            for annotation in self.annotations.values()
+        ):
+            # GROUP BY was only required by the aggregates that were pruned.
+            self.group_by = None
 
     def has_filters(self):
         return self.where
@@ -2563,6 +2625,24 @@ class Query(BaseExpression):
             field.empty_strings_allowed
             and connections[DEFAULT_DB_ALIAS].features.interprets_empty_strings_as_nulls
         )
+
+
+def _iter_subexpressions(nodes):
+    """
+    Recursively yield expressions (and subqueries' where clauses) found in
+    'nodes', which may be expressions, where nodes, lists or tuples.
+    """
+    stack = list(nodes)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (list, tuple)):
+            stack.extend(node)
+        elif isinstance(node, Query):
+            stack.append(node.where)
+            stack.extend(node.annotations.values())
+        elif hasattr(node, "get_source_expressions"):
+            yield node
+            stack.extend(node.get_source_expressions())
 
 
 def get_order_dir(field, default="ASC"):
