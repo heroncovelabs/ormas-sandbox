@@ -1857,13 +1857,15 @@ def where(cond, x, y, keep_attrs=None):
     """
     if keep_attrs is None:
         keep_attrs = _get_keep_attrs(default=False)
-    if keep_attrs is True:
-        # keep the attributes of x, the second parameter, by default to
-        # be consistent with the `where` method of `DataArray` and `Dataset`
-        keep_attrs = lambda attrs, context: getattr(x, "attrs", {})
+
+    keep_x_attrs = keep_attrs is True
+    if keep_x_attrs:
+        # Merge with "override" so coordinate merging keeps its usual behavior;
+        # attributes are restored from x at each metadata level afterwards.
+        keep_attrs = "override"
 
     # alignment for three arguments is complicated, so don't support it yet
-    return apply_ufunc(
+    result = apply_ufunc(
         duck_array_ops.where,
         cond,
         x,
@@ -1873,6 +1875,53 @@ def where(cond, x, y, keep_attrs=None):
         dask="allowed",
         keep_attrs=keep_attrs,
     )
+
+    if keep_x_attrs:
+        # keep the attributes of x, the second parameter, by default to
+        # be consistent with the `where` method of `DataArray` and `Dataset`
+        result = _restore_x_attrs(result, x)
+    return result
+
+
+def _restore_x_attrs(result, x):
+    """Restore attributes from ``x`` at each level of a ``where`` result."""
+    from .dataarray import DataArray
+    from .dataset import Dataset
+
+    if not isinstance(result, (DataArray, Dataset, Variable)):
+        return result
+
+    def _with_attrs(variable, attrs):
+        # shallow copy so that variables shared with the inputs are not mutated
+        variable = variable.copy(deep=False)
+        variable.attrs = attrs
+        return variable
+
+    if isinstance(result, Dataset):
+        # A DataArray's attrs apply to each data variable of the result.
+        result.attrs = dict(x.attrs) if isinstance(x, Dataset) else {}
+    else:
+        result.attrs = dict(getattr(x, "attrs", {}))
+    if isinstance(result, Variable):
+        return result
+
+    x_coords = getattr(x, "coords", {})
+    coord_store = result._coords if isinstance(result, DataArray) else result._variables
+    for name in result.coords:
+        attrs = x_coords[name].attrs if name in x_coords else {}
+        coord_store[name] = _with_attrs(coord_store[name], attrs)
+
+    if isinstance(result, Dataset):
+        for name in list(result.data_vars):
+            if isinstance(x, (DataArray, Variable)):
+                attrs = dict(x.attrs)
+            elif isinstance(x, Dataset) and name in x.data_vars:
+                attrs = dict(x.data_vars[name].attrs)
+            else:
+                attrs = {}
+            result._variables[name] = _with_attrs(result._variables[name], attrs)
+
+    return result
 
 
 @overload
