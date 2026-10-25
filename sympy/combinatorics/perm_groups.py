@@ -2192,22 +2192,23 @@ class PermutationGroup(Basic):
                 # a representative block (containing 0)
                 rep = {j for j in range(self.degree) if num_block[j] == 0}
                 # check if the system is minimal with
-                # respect to the already discovere ones
+                # respect to the already discovered ones
                 minimal = True
-                to_remove = []
+                # Defer removals to keep all three lists aligned while scanning.
+                superseded = []
                 for i, r in enumerate(rep_blocks):
                     if len(r) > len(rep) and rep.issubset(r):
                         # i-th block system is not minimal
-                        del num_blocks[i], blocks[i]
-                        to_remove.append(rep_blocks[i])
+                        superseded.append(i)
                     elif len(r) < len(rep) and r.issubset(rep):
                         # the system being checked is not minimal
                         minimal = False
                         break
-                # remove non-minimal representative blocks
-                rep_blocks = [r for r in rep_blocks if r not in to_remove]
 
                 if minimal and num_block not in num_blocks:
+                    # delete superseded entries in descending index order
+                    for i in reversed(superseded):
+                        del blocks[i], num_blocks[i], rep_blocks[i]
                     blocks.append(block)
                     num_blocks.append(num_block)
                     rep_blocks.append(rep)
