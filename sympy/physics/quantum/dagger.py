@@ -56,6 +56,14 @@ class Dagger(adjoint):
         >>> Dagger(A**2)
         Dagger(A)**2
 
+    Multiplication by the identity operator leaves the dagger unchanged::
+
+        >>> from sympy.physics.quantum.operator import IdentityOperator
+        >>> Dagger(A)*IdentityOperator()
+        Dagger(A)
+        >>> IdentityOperator()*Dagger(A)
+        Dagger(A)
+
     Dagger also seamlessly handles complex numbers and matrices::
 
         >>> from sympy import Matrix, I
@@ -84,6 +92,14 @@ class Dagger(adjoint):
         if obj is not None:
             return obj
         return Expr.__new__(cls, arg)
+
+    def __mul__(self, other):
+        from sympy.physics.quantum.operator import IdentityOperator
+
+        if isinstance(other, IdentityOperator):
+            return self
+
+        return Expr.__mul__(self, other)
 
 adjoint.__name__ = "Dagger"
 adjoint._sympyrepr = lambda a, b: "Dagger(%s)" % b._print(a.args[0])
