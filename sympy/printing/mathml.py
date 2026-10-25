@@ -743,11 +743,6 @@ class MathMLPresentationPrinter(MathMLPrinterBase):
         return mrow
 
     def _print_Symbol(self, sym, style='plain'):
-        x = self.dom.createElement('mi')
-
-        if style == 'bold':
-            x.setAttribute('mathvariant', 'bold')
-
         def join(items):
             if len(items) > 1:
                 mrow = self.dom.createElement('mrow')
@@ -779,27 +774,30 @@ class MathMLPresentationPrinter(MathMLPrinterBase):
 
         mname = self.dom.createElement('mi')
         mname.appendChild(self.dom.createTextNode(name))
+        if style == 'bold':
+            mname.setAttribute('mathvariant', 'bold')
+
+        # Script elements must be returned directly: mi only contains text.
         if len(supers) == 0:
             if len(subs) == 0:
-                x.appendChild(self.dom.createTextNode(name))
+                return mname
             else:
                 msub = self.dom.createElement('msub')
                 msub.appendChild(mname)
                 msub.appendChild(join(subs))
-                x.appendChild(msub)
+                return msub
         else:
             if len(subs) == 0:
                 msup = self.dom.createElement('msup')
                 msup.appendChild(mname)
                 msup.appendChild(join(supers))
-                x.appendChild(msup)
+                return msup
             else:
                 msubsup = self.dom.createElement('msubsup')
                 msubsup.appendChild(mname)
                 msubsup.appendChild(join(subs))
                 msubsup.appendChild(join(supers))
-                x.appendChild(msubsup)
-        return x
+                return msubsup
 
     def _print_MatrixSymbol(self, sym):
         return self._print_Symbol(sym, style=self._settings['mat_symbol_style'])
