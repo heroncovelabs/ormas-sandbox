@@ -558,6 +558,9 @@ class Equality(Relational):
     def _eval_simplify(self, **kwargs):
         from .add import Add
         from sympy.solvers.solveset import linear_coeffs
+        # Re-evaluate non-scalar equality after simplifying the operands.
+        if not all(isinstance(arg, Expr) for arg in self.args):
+            return self.func(*(arg.simplify(**kwargs) for arg in self.args))
         # standard simplify
         e = super()._eval_simplify(**kwargs)
         if not isinstance(e, Equality):

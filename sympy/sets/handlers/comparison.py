@@ -56,4 +56,5 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
 
 @dispatch(Set, Set) # type:ignore
 def _eval_is_eq(lhs, rhs): # noqa: F811
-    return None
+    return fuzzy_and(a.is_subset(b) for a, b in
+                     ((lhs, rhs), (rhs, lhs)))
