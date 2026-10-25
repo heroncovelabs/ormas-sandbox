@@ -265,8 +265,13 @@ class Query(BaseExpression):
 
     @property
     def has_select_fields(self):
+        # Annotations (and aliases) alone don't restrict the selected columns;
+        # an annotation mask only counts as an explicit selection once
+        # values() has been applied (which disables default_cols).
         return bool(
-            self.select or self.annotation_select_mask or self.extra_select_mask
+            self.select
+            or (self.annotation_select_mask and not self.default_cols)
+            or self.extra_select_mask
         )
 
     @cached_property
