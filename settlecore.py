@@ -9,15 +9,19 @@ contract).
 
 from __future__ import annotations
 
+import datetime
 import sys
 
 RECLEN = 80
 OUTLEN = 47
 
 RATE_BP = {
-    1: 25, 2: 50, 3: 75, 4: 100, 5: 150, 6: 200, 7: 250, 8: 300, 9: 350,
+    1: 25, 2: 50, 3: 75, 4: 100, 5: 150, 6: 200, 7: 245, 8: 300, 9: 350,
 }
 FEE_CAP = 250_000
+WEEKEND_SURCHARGE_BP = 25
+EUR_LEVY_BP = 10
+EUR_LEVY_THRESHOLD = 5_000_000
 
 _WEIGHTS = (1, 3, 7)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -33,19 +37,38 @@ def check_char(data: str, upto: int) -> str:
     return _B36[total % 36]
 
 
-def _round_nearest(numerator: int, denominator: int) -> int:
-    """Round to the nearest unit (halves up), per the spec's fee rule."""
+def _round_half_up(numerator: int, denominator: int = 10_000) -> int:
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
-        return quotient + 1
-    return quotient
+    return quotient + (2 * remainder >= denominator)
+
+
+def _round_half_even(numerator: int, denominator: int = 10_000) -> int:
+    quotient, remainder = divmod(numerator, denominator)
+    twice = 2 * remainder
+    return quotient + (twice > denominator or (twice == denominator and quotient % 2))
+
+
+def _base_fee(amount: int, rate_bp: int, record_type: str, currency: str) -> int:
+    numerator = amount * rate_bp
+    if currency == "JPY":
+        return _round_half_up(numerator)
+    if record_type == "RF":
+        return numerator // 10_000
+    return _round_half_even(numerator)
 
 
 def _days_in_month(year: int, month: int) -> int:
     days = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+    if month == 2 and year % 4 == 0:
         return 29
     return days[month - 1]
+
+
+def _weekday(year: int, month: int, day: int) -> int:
+    """The legacy calendar has no century exception to its leap rule."""
+    if month == 2 and day == 29 and year % 100 == 0 and year % 400 != 0:
+        return datetime.date(year, 3, 1).weekday()
+    return datetime.date(year, month, day).weekday()
 
 
 class Record:
@@ -81,11 +104,15 @@ class Record:
             self.error = "ERRACCT"
             return
         sign, digits = raw[12], raw[13:24]
-        if sign not in "+-" or not digits.isdigit():
+        if (
+            sign not in "+-"
+            or digits != digits.rstrip()
+            or not digits.lstrip(" ").isdigit()
+        ):
             self.error = "ERRAMT"
             return
         self.negative = sign == "-"
-        if self.negative:
+        if self.negative and self.type != "RF":
             self.error = "ERRAMT"
             return
         self.amount = int(digits)
@@ -116,8 +143,14 @@ class Record:
         self.mcc = int(mcc)
 
     def compute(self) -> None:
-        fee = _round_nearest(self.amount * RATE_BP[self.tier], 10_000)
-        fee = min(fee, FEE_CAP)
+        fee = _base_fee(self.amount, RATE_BP[self.tier], self.type, self.currency)
+        weekend = _weekday(self.year, self.month, self.day) >= 5
+        if weekend and 5960 <= self.mcc <= 5969:
+            fee += _round_half_up(self.amount * WEEKEND_SURCHARGE_BP)
+        if self.currency == "EUR" and self.amount > EUR_LEVY_THRESHOLD:
+            fee += _round_half_up(self.amount * EUR_LEVY_BP)
+        if self.tier != 9:
+            fee = min(fee, FEE_CAP)
         self.fee = fee
         if self.type == "RF":
             self.net = -(self.amount - fee)
@@ -149,10 +182,12 @@ def process(lines: list[str]) -> list[str]:
             record.compute()
         records.append(record)
 
-    out = [record.emit() for record in records]
-    accepted = sum(1 for r in records if r.error is None)
-    rejected = len(records) - accepted
-    fee_sum = sum(r.fee for r in records if r.error is None)
+    accepted_records = [r for r in records if r.error is None]
+    rejected_records = [r for r in records if r.error is not None]
+    out = [record.emit() for record in accepted_records + rejected_records]
+    accepted = len(accepted_records)
+    rejected = len(rejected_records)
+    fee_sum = sum(r.fee for r in accepted_records)
     trailer = f"TR{accepted:06d}{rejected:06d}+{fee_sum:011d}" + " " * 20
     out.append(trailer + check_char(trailer, OUTLEN - 1))
     return out
