@@ -465,6 +465,12 @@ class PythonCodePrinter(AbstractPythonCodePrinter):
         else:
             return name
 
+    def _print_Min(self, expr):
+        return "min({})".format(", ".join(self._print(arg) for arg in expr.args))
+
+    def _print_Max(self, expr):
+        return "max({})".format(", ".join(self._print(arg) for arg in expr.args))
+
     _print_lowergamma = CodePrinter._print_not_supported
     _print_uppergamma = CodePrinter._print_not_supported
     _print_fresnelc = CodePrinter._print_not_supported
