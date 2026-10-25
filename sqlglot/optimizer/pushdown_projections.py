@@ -79,8 +79,17 @@ def pushdown_projections(
         parent_selections = referenced_columns.get(scope, {SELECT_ALL})
         alias_count = source_column_alias_count.get(scope, 0)
 
-        # We can't remove columns SELECT DISTINCT nor UNION DISTINCT.
-        if scope.expression.args.get("distinct"):
+        # We can't remove columns from DISTINCT queries or from INTERSECT / EXCEPT,
+        # whose row comparison and multiplicity semantics depend on every column.
+        if scope.expression.args.get("distinct") or isinstance(
+            scope.expression, (exp.Intersect, exp.Except)
+        ):
+            parent_selections = {SELECT_ALL}
+
+        # GROUP BY ALL derives its keys from every non-aggregate projection, so
+        # pruning an unreferenced projection would change the aggregation itself.
+        group = scope.expression.args.get("group")
+        if group and group.args.get("all"):
             parent_selections = {SELECT_ALL}
 
         # A recursive CTE's body reads the CTE's own output, so its projections
