@@ -45,11 +45,11 @@ class Engine:
 
     def handle(self, line: str) -> str | None:
         if line == "B" or line.startswith("B "):
-            reply = self._set(line.split())
+            reply = self._set([part for part in line.split(" ") if part])
         elif line == "S" or line.startswith("S "):
             reply = self._store()
         elif line == "T" or line.startswith("T "):
-            reply = self._restore(line.split())
+            reply = self._restore([part for part in line.split(" ") if part])
         else:
             reply = "E FMT"
         if reply is not None and reply.startswith("E "):
@@ -66,15 +66,15 @@ class Engine:
         val = tokens[1]
         if not _valid_val(val):
             return "E VAL"
+        if val == self.value:
+            return None
         self.value = val
         self.sets += 1
         return "OK"
 
     def _is_full(self) -> bool:
-        # SPEC: the first snapshot is FULL, and every fourth snapshot is
-        # stored FULL so a delta chain stays short (snapshots 4, 8, ...).
         count = len(self.snaps)
-        return count == 0 or (count + 1) % FULL_EVERY == 0
+        return count == 0 or count % FULL_EVERY == 0
 
     def _store(self) -> str:
         if self._is_full():
@@ -94,11 +94,22 @@ class Engine:
         snap = self.snaps[idx]
         if snap[0] == "F":
             return snap[1]
-        # SPEC: a delta applies against the previous snapshot's
-        # reconstructed value, honoring the recorded length; positions
-        # beyond the base fill with the pad character.
+
+        # A delta directly following a FULL honors its recorded length.
+        # Deeper chains skip intermediate values: only the requested delta
+        # is applied to the nearest FULL. An empty requested delta uses the
+        # FULL's length, and otherwise extends to its furthest change.
         _, newlen, changes = snap
-        base = self._reconstruct(idx - 1)
+        if self.snaps[idx - 1][0] == "F":
+            base = self.snaps[idx - 1][1]
+        else:
+            full = idx - 1
+            while self.snaps[full][0] != "F":
+                full -= 1
+            base = self.snaps[full][1]
+            newlen = len(base)
+            if changes:
+                newlen = max(newlen, max(changes) + 1)
         return "".join(
             changes.get(p, base[p] if p < len(base) else PAD)
             for p in range(newlen)
@@ -115,9 +126,6 @@ class Engine:
         if idx >= len(self.snaps):
             return "E IDX"
         self.value = self._reconstruct(idx)
-        # SPEC: the restored value becomes the working value the next
-        # snapshot builds on.
-        self.base = self.value
         self.restores += 1
         return f"V {digest(self.value)}"
 
@@ -126,7 +134,7 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        line = raw.rstrip("\r\n").split("\x00", 1)[0]
         if not line:
             continue
         reply = engine.handle(line)
