@@ -14,4 +14,28 @@ def apply(ops, a):
     "keep"/"del" ops must match the next line of ``a`` (else PatchError); "ins"
     ops add a line. Every line of ``a`` must be consumed (else PatchError).
     """
-    raise NotImplementedError
+    a = list(a)
+    result = []
+    source_index = 0
+
+    for op in ops:
+        try:
+            kind, line = op
+        except (TypeError, ValueError) as exc:
+            raise PatchError("invalid edit operation") from exc
+
+        if kind == "ins":
+            result.append(line)
+            continue
+        if kind not in {"keep", "del"}:
+            raise PatchError(f"unknown edit operation: {kind!r}")
+        if source_index >= len(a) or a[source_index] != line:
+            raise PatchError("edit script does not match the source")
+
+        source_index += 1
+        if kind == "keep":
+            result.append(line)
+
+    if source_index != len(a):
+        raise PatchError("edit script did not consume the entire source")
+    return result
