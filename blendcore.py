@@ -26,11 +26,17 @@ def _digits(token: str) -> bool:
 
 
 class Tank:
-    def __init__(self, pigment: str, volume: int) -> None:
+    def __init__(self, name: str, pigment: str, volume: int) -> None:
+        self.name = name
         self.pigment = pigment
-        self.volume = volume
-        self.fills = volume
-        self.dispensed = 0
+        self.book = volume
+        self.phys = volume
+        self.since = 0
+        self.ledger = volume
+
+
+VOL_CAP = 9999999
+DRY_SLACK = 20
 
 
 class Engine:
@@ -38,7 +44,7 @@ class Engine:
 
     def __init__(self) -> None:
         self.tanks: dict[str, Tank] = {}
-        self.jobs: dict[str, int] = {}
+        self.jobs: dict[str, list] = {}
         self.fills = 0
         self.dispenses = 0
         self.reconciles = 0
@@ -68,7 +74,7 @@ class Engine:
 
     def _fill(self, tokens: list[str]) -> str:
         tank = tokens[1] if len(tokens) >= 2 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -76,20 +82,24 @@ class Engine:
         if not _digits(vol_tok) or not 2 <= len(vol_tok) <= 7:
             return f"N {tank} VOL"
         volume = int(vol_tok)
-        t = self.tanks.get(tokens[1])
+        key = tokens[1].lower()
+        t = self.tanks.get(key)
         if t is not None:
             if t.pigment != tokens[2]:
                 return f"N {tank} PIGMENT"
-            t.volume += volume
-            t.fills += volume
+            new = min(t.ledger + volume, VOL_CAP)
+            delta = new - t.ledger
+            t.ledger = new
+            t.book += delta
+            t.phys += delta
         else:
-            self.tanks[tokens[1]] = Tank(tokens[2], volume)
+            self.tanks[key] = Tank(tokens[1], tokens[2], volume)
         self.fills += 1
         return f"OK {len(self.tanks)}"
 
     def _dispense(self, tokens: list[str]) -> str:
         tank = tokens[2] if len(tokens) >= 3 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -97,25 +107,37 @@ class Engine:
         if not _digits(amt_tok) or len(amt_tok) > 6 or int(amt_tok) < 1:
             return f"N {tank} AMT"
         amount = int(amt_tok)
-        t = self.tanks.get(tokens[2])
+        t = self.tanks.get(tokens[2].lower())
         if t is None:
             return f"N {tank} FMT"
-        if amount > t.volume:
+        if amount > t.phys + DRY_SLACK:
             return f"N {tank} DRY"
-        t.volume -= amount
-        t.dispensed += amount
-        total = self.jobs.get(tokens[1], 0) + amount
-        self.jobs[tokens[1]] = total
+        grant = min(amount, t.phys)
+        if "W" in t.pigment and grant >= 1000:
+            loss = grant // 250
+        else:
+            loss = grant // 500
+        t.phys = max(t.phys - grant - loss, 0)
+        t.book -= grant
+        t.since += loss
+        jk = tokens[1].lower()
+        job = self.jobs.get(jk)
+        if job is None:
+            job = self.jobs[jk] = [tokens[1], 0]
+        job[1] += grant
         self.dispenses += 1
-        return f"J {tokens[1]} {total}"
+        return f"J {job[0]} {job[1]}"
 
     def _reconcile(self) -> list[str]:
         replies = []
-        for tank_id, t in self.tanks.items():
-            # SPEC: the book volume is fills minus dispenses; reconcile
-            # is an identity check against the live volume.
-            book = t.fills - t.dispensed
-            replies.append(f"B {tank_id} {book}")
+        for t in self.tanks.values():
+            if t.since > 50:
+                t.book -= t.since // 2
+            t.since = 0
+            t.book = max(t.book, 0)
+            t.phys = t.book
+            t.ledger = t.book
+            replies.append(f"B {t.name} {t.book}")
         replies.append(f"REND {len(self.tanks)}")
         self.reconciles += 1
         return replies
