@@ -294,7 +294,7 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     mapping = H.graph.get("mapping", None)
     if mapping is None:
         raise nx.NetworkXError("Invalid auxiliary digraph.")
-    if G.has_edge(s, t) or G.has_edge(t, s):
+    if G.has_edge(s, t) or (not G.is_directed() and G.has_edge(t, s)):
         return set()
     kwargs = {"flow_func": flow_func, "residual": residual, "auxiliary": H}
 
@@ -416,33 +416,45 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
     if G.is_directed():
         if not nx.is_weakly_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
-        iter_func = itertools.permutations
+        if not nx.is_strongly_connected(G):
+            return set()
 
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
+        # Algorithm 11 only applies to undirected graphs. Check both ordered
+        # pairs in a digraph so that the result is a global directed cut.
+        H = build_auxiliary_node_connectivity(G)
+        R = build_residual_network(H, "capacity")
+        kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
+        min_cut = set(G) - {next(iter(G))}
+        for x, y in itertools.permutations(G, 2):
+            if G.has_edge(x, y):
+                continue
+            this_cut = minimum_st_node_cut(G, x, y, **kwargs)
+            if len(min_cut) > len(this_cut):
+                min_cut = this_cut
+                if not min_cut:
+                    break
+        return min_cut
 
-    else:
-        if not nx.is_connected(G):
-            raise nx.NetworkXError("Input graph is not connected")
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+    if not nx.is_connected(G):
+        raise nx.NetworkXError("Input graph is not connected")
+    neighbors = G.neighbors
 
     # Reuse the auxiliary digraph and the residual network.
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Choose a node with minimum degree.
-    v = min(G, key=G.degree)
+    # Choose a node with minimum degree, ignoring self-loops.
+    v = min(G, key=lambda v: len(set(G[v]) - {v}))
     # Initial node cutset is all neighbors of the node with minimum degree.
-    min_cut = set(G[v])
+    min_cut = set(G[v]) - {v}
     # Compute st node cuts between v and all its non-neighbors nodes in G.
     for w in set(G) - set(neighbors(v)) - {v}:
         this_cut = minimum_st_node_cut(G, v, w, **kwargs)
         if len(min_cut) >= len(this_cut):
             min_cut = this_cut
     # Also for non adjacent pairs of neighbors of v.
-    for x, y in iter_func(neighbors(v), 2):
+    for x, y in itertools.combinations(neighbors(v), 2):
         if y in G[x]:
             continue
         this_cut = minimum_st_node_cut(G, x, y, **kwargs)
