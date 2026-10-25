@@ -30,10 +30,14 @@ def _digits(token: str) -> bool:
 
 
 class Title:
-    def __init__(self, minutes: int) -> None:
+    def __init__(self, minutes: int, wear: int = 0) -> None:
         self.minutes = minutes
         self.remaining = ALLOT  # live allotment
-        self.sides = 0  # ledger: sides cut
+        self.sides = 0  # lifetime cut count
+        self.remaster_sides = 0  # resettable cut ledger for stamper tax
+        self.wear = wear  # quality wear, reset by an active remaster
+        self.stamper_tax = 0
+        self.revived = False
 
 
 class Engine:
@@ -87,7 +91,10 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        # A newly queued title inherits the worst wear currently on the
+        # lathe, rather than starting a pristine wear ladder of its own.
+        wear = max((t.wear for t in self.titles.values()), default=0)
+        self.titles[tokens[1]] = Title(int(minutes), wear)
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -100,11 +107,26 @@ class Engine:
         t = self._find(tokens[1])
         if t is None:
             return f"N {title} UNKNOWN"
-        if t.remaining < 1:
+        cost = 2 if t.minutes > 90 else 1
+        if t.remaining < cost:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        quality = Q_BASE - t.minutes * Q_CUT - 7 * t.wear
+        if t.sides == 3:
+            # Contention on the fourth side requires two other titles
+            # with live allotment and one to five lifetime sides.
+            contenders = sum(
+                1
+                for other in self.titles.values()
+                if other is not t
+                and 1 <= other.sides <= 5
+                and other.remaining > 0
+            )
+            if contenders >= 2:
+                quality -= 15
+        t.remaining -= cost
+        t.remaster_sides += 1
         t.sides += 1
+        t.wear += 1
         self.cut_since_remaster += 1
         self.sides += 1
         return f"Q {tokens[1]} {quality}"
@@ -112,13 +134,21 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
         lines = []
+        active = self.cut_since_remaster != 0
         for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
+            if active:
+                # Each active remaster accumulates one stamper-tax unit
+                # per four cuts in its resettable ledger. Reports use the
+                # independent lifetime cut count.
+                t.stamper_tax += t.remaster_sides // 4
+                was_spent = t.remaining == 0
+                t.remaining = ALLOT - t.sides - t.stamper_tax
+                if was_spent and not t.revived:
+                    t.revived = True
+                    t.remaining = 1
+                t.wear = 0
+                t.remaster_sides = 0
             lines.append(f"R {name} {t.remaining}")
         lines.append(f"MEND {len(self.titles)}")
         self.cut_since_remaster = 0
