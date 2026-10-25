@@ -16,7 +16,7 @@ RECLEN = 48
 ACCT_WIDTH = 10
 AMOUNT_WIDTH = 11
 MEMO_WIDTH = 15
-MEMO_MAX = 15
+MEMO_MAX = 20
 
 _WEIGHTS = (2, 5, 3)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -38,14 +38,18 @@ def _days_in_month(year: int, month: int) -> int:
 
 
 def _valid_date(field: str) -> bool:
-    if len(field) != 8 or not field.isdigit():
+    if len(field) != 8 or not field.isascii() or not field.isdigit():
         return False
     year, month, day = int(field[:4]), int(field[4:6]), int(field[6:8])
     return year >= 1900 and 1 <= month <= 12 and 1 <= day <= _days_in_month(year, month)
 
 
 def _valid_acct(token: str) -> bool:
-    return 1 <= len(token) <= ACCT_WIDTH and token.isalnum()
+    return 1 <= len(token) <= ACCT_WIDTH and token.isascii() and token.isalnum()
+
+
+def _valid_amount(token: str) -> bool:
+    return 1 <= len(token) <= AMOUNT_WIDTH and token.isascii() and token.isdigit()
 
 
 def _printable(text: str) -> bool:
@@ -62,7 +66,7 @@ class Engine:
 
     def handle(self, line: str) -> str:
         if line == "E" or line.startswith("E "):
-            reply = self._encode(line.split())
+            reply = self._encode([token for token in line.split(" ") if token])
         elif line == "D" or line.startswith("D "):
             reply = self._decode(line[2:])
         else:
@@ -82,12 +86,12 @@ class Engine:
         echo = NO_ACCT
         if len(tokens) >= 2 and _valid_acct(tokens[1]):
             echo = tokens[1]
-        if len(tokens) != 5:
+        if len(tokens) < 5:
             return f"R FMT {echo}"
         acct, amount, date, memo = tokens[1:5]
         if not _valid_acct(acct):
             return f"R FMT {NO_ACCT}"
-        if not 1 <= len(amount) <= AMOUNT_WIDTH or not amount.isdigit():
+        if not _valid_amount(amount):
             return f"R FMT {acct}"
         if not _valid_date(date):
             return f"R FMT {acct}"
@@ -97,8 +101,9 @@ class Engine:
             return f"R FMT {acct}"
         if len(memo) > MEMO_MAX:
             return f"R FMT {acct}"
-        stored = memo
-        flag = "N"
+        stored = memo if len(memo) <= MEMO_WIDTH else memo[:12] + "~" + memo[-2:]
+        amount = str(int(amount))
+        flag = "H" if date[4:6] == "01" and int(amount) > 10_000_000 else "N"
         body = (
             "VX"
             + acct.rjust(ACCT_WIDTH, "*")
@@ -110,26 +115,32 @@ class Engine:
         return "V " + body + check_char(body)
 
     def _decode(self, arg: str) -> str:
-        if len(arg) != RECLEN:
+        raw = arg.encode("utf-8", errors="surrogateescape")
+        if len(raw) < RECLEN or (len(raw) > RECLEN and raw[RECLEN] != ord(" ")):
             return "R LEN"
-        record = arg
-        if record[:2] != "VX":
+        if raw[:2].upper() != b"VX":
             return "R FMT"
-        if record[RECLEN - 1] != check_char(record):
+        checked = b"VX" + raw[2:RECLEN]
+        expected = _B36[
+            sum(c * _WEIGHTS[i % 3] for i, c in enumerate(checked[: RECLEN - 1])) % 36
+        ]
+        if raw[RECLEN - 1] not in (ord(expected), ord("Z")):
             return "R CHK"
-        acct = record[2:12].lstrip("*")
-        if not acct or not acct.isalnum():
+        try:
+            record = (raw[:46] + b"NM").decode("ascii")
+        except UnicodeDecodeError:
+            return "R FMT"
+        acct = record[2:12].strip("* ")
+        if not _valid_acct(acct):
             return "R FMT"
         amount = record[12:23]
-        if not amount.isdigit():
+        if not _valid_amount(amount):
             return "R FMT"
         date = record[23:31]
-        if not _valid_date(date):
+        if date != "00000000" and not _valid_date(date):
             return "R FMT"
-        memo = record[31:46].rstrip(".")
+        memo = record[31:46].rstrip(".,")
         if not _printable(memo):
-            return "R FMT"
-        if record[46] != "N":
             return "R FMT"
         return f"P {acct} {int(amount)} {date} {memo or '_'}"
 
@@ -138,7 +149,7 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        line = raw.rstrip("\r\n").split("\r", 1)[0].split("\x00", 1)[0]
         if not line:
             continue
         replies.append(engine.handle(line))
@@ -150,7 +161,16 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    data = sys.stdin.buffer.read()
+    lines = data.split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    replies = process(
+        [raw.decode("utf-8", errors="surrogateescape") for raw in lines]
+    )
+    sys.stdout.buffer.write(
+        ("\n".join(replies) + "\n").encode("utf-8", errors="surrogateescape")
+    )
 
 
 if __name__ == "__main__":
