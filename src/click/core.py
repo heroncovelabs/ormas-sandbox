@@ -3574,7 +3574,10 @@ class Argument(Parameter):
         if self.deprecated:
             var += "!"
         if not self.required:
-            var = f"[{var}]"
+            # Some types (such as Choice) already bracket their metavar to
+            # indicate that the value is optional.
+            if not var.startswith("["):
+                var = f"[{var}]"
         if self.nargs != 1:
             var += "..."
         return var
