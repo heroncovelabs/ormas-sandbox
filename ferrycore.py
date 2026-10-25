@@ -15,6 +15,7 @@ import sys
 
 DECK_CAP = 40  # deck units available per sailing
 SENTINEL = "????????"
+BOARD_REG = 3  # boardings before a vehicle counts as a season regular
 
 
 def _valid_id(tok: str) -> bool:
@@ -36,6 +37,10 @@ class Vehicle:
         self.lean = 0  # standing lean (internal; never printed)
         self.queued = False
         self.aboard = False  # boarded the most recent sailing
+        self.boards = 0  # sailings boarded (season history)
+        self.misses = 0  # sailings missed since last boarding
+        self.post_k = -1  # squaring count when registered
+        self.seq = 0  # quay line-up order (tie-break)
 
 
 class Engine:
@@ -48,6 +53,8 @@ class Engine:
         self.c_sail = 0
         self.c_sq = 0
         self.c_rej = 0
+        self.joins = 0
+        self.by_reg = False
         self.out = out if out is not None else sys.stdout
 
     def _emit(self, line: str) -> None:
@@ -90,6 +97,7 @@ class Engine:
             self._reject(parts[1], "DUP")
             return
         v = Vehicle(parts[1], span, len(self.order))
+        v.post_k = self.c_sq
         self.vehicles[parts[1]] = v
         self.order.append(v)
         self._emit(f"OK {len(self.order)}")
@@ -106,6 +114,9 @@ class Engine:
             self._reject(parts[1], "QUEUED")
             return
         v.queued = True
+        self.joins += 1
+        v.seq = self.joins
+        self.by_reg = False
         self._emit(f"Q {v.id}")
 
     def _sail(self, parts: list[str]) -> None:
@@ -115,28 +126,40 @@ class Engine:
         self.c_sail += 1
         for v in self.order:
             v.aboard = False  # last crossing's passengers disembark
+            if not v.queued:
+                v.lean = 0  # squeeze standing lasts one sailing
         waiting = [v for v in self.order if v.queued]
-        if not waiting:
-            return  # the sailing departs empty; nothing to print
         # descending standing lean, ties by registration order; skip
         # what does not fit and keep going down the list
-        waiting.sort(key=lambda v: (-v.lean, v.reg))
+        if self.by_reg:
+            waiting.sort(key=lambda v: (-v.lean, v.post_k != self.c_sq, v.reg))
+        else:
+            waiting.sort(key=lambda v: (-v.lean, v.post_k != self.c_sq, v.seq))
         used = 0
         boarded = []
+        squeezed = set()
+        real_used = 0
         for v in waiting:
-            if used + v.span <= DECK_CAP:
-                used += v.span
+            charge = v.span - 1 if v.boards >= BOARD_REG else v.span
+            if used + charge <= DECK_CAP:
+                used += charge
+                if real_used + v.span > DECK_CAP:
+                    squeezed.add(v.id)
+                real_used += v.span
                 boarded.append(v)
                 self._emit(f"G {v.id}")
         for v in boarded:
-            v.lean = 0
+            v.lean = 1 if v.id in squeezed else 0
+            v.boards += 1
+            v.misses = 0
             v.queued = False
             v.aboard = True
         left = 0
         for v in waiting:
             if v.queued:  # left behind at this sailing
                 left += 1
-                v.lean += v.span
+                v.lean += 1
+                v.misses += 1
         self._emit(f"GEND {len(boarded)} {left}")
 
     def _square(self, parts: list[str]) -> None:
@@ -144,11 +167,15 @@ class Engine:
             self._reject(self._echo(parts), "FMT")
             return
         self.c_sq += 1
+        self.by_reg = True
         # the live accrual already follows the ledger rules (span per
         # missed sailing, reset on boarding), so recomputing the book
         # reproduces the running values exactly; the squaring squares
         # the book, it never tilts it
-        positive = sum(1 for v in self.order if v.lean > 0)
+        positive = sum(1 for v in self.order if v.misses > 0 or v.lean > 0)
+        for v in self.order:
+            if v.misses > 0:
+                v.lean = min(v.lean - 1, v.span - 2)
         self._emit(f"KOK {positive}")
 
     def finish(self) -> None:
