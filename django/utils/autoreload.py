@@ -220,6 +220,12 @@ def get_child_arguments():
     py_script = Path(sys.argv[0])
 
     args = [sys.executable] + ['-W%s' % o for o in sys.warnoptions]
+    # Propagate CPython implementation options (e.g. ``-X utf8``) to the child.
+    for name, value in getattr(sys, '_xoptions', {}).items():
+        if value is True:
+            args.append('-X%s' % name)
+        else:
+            args.append('-X%s=%s' % (name, value))
     # __spec__ is set when the server was started with the `-m` option,
     # see https://docs.python.org/3/reference/import.html#main-spec
     # __spec__ may not exist, e.g. when running in a Conda env.
