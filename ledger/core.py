@@ -10,6 +10,13 @@ class Ledger:
         return Money(total)
     def allocate(self, total: Money, ratios):
         parts = []
-        for r in ratios:
-            parts.append(Money(int(total.cents * r)))
+        ratio_total = sum(ratios)
+        allocated = 0
+        for index, ratio in enumerate(ratios):
+            if index == len(ratios) - 1:
+                cents = total.cents - allocated
+            else:
+                cents = int(total.cents * ratio / ratio_total)
+            parts.append(Money(cents))
+            allocated += cents
         return parts
