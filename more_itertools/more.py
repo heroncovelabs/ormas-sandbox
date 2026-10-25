@@ -26,6 +26,7 @@ from math import comb, e, exp, factorial, floor, fsum, log, log1p, perm, tau
 from math import ceil, prod
 from queue import Empty, Queue
 from random import random, randrange, shuffle, uniform
+from operator import index as _index
 from operator import (
     attrgetter,
     getitem,
@@ -48,6 +49,8 @@ from .recipes import (
     is_prime,
     nth,
     powerset,
+    running_mean,
+    running_median,
     sieve,
     take,
     unique_everseen,
@@ -58,6 +61,7 @@ from .recipes import (
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -143,6 +147,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_max',
+    'running_min',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -5441,3 +5448,182 @@ class _concurrent_tee:
                     link[1] = [None, None]
         value, self.link = link
         return value
+
+
+class Stats:
+    """Immutable record of running statistics for a window of values.
+
+    Fields, in positional and keyword order, are ``size``, ``minimum``,
+    ``median``, ``maximum`` and ``mean``. Instances compare and hash by value.
+    They are not sequences, so ``len()``, indexing and iteration raise
+    ``TypeError``.
+
+        >>> st = Stats(3, 1, 2, 3, 2.0)
+        >>> st.median
+        2
+        >>> st == Stats(size=3, minimum=1, median=2, maximum=3, mean=2.0)
+        True
+
+    """
+
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+
+    def __init__(self, size, minimum, median, maximum, mean):
+        object.__setattr__(self, 'size', size)
+        object.__setattr__(self, 'minimum', minimum)
+        object.__setattr__(self, 'median', median)
+        object.__setattr__(self, 'maximum', maximum)
+        object.__setattr__(self, 'mean', mean)
+
+    def _astuple(self):
+        return (self.size, self.minimum, self.median, self.maximum, self.mean)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f'{type(self).__name__} is immutable')
+
+    def __delattr__(self, name):
+        raise AttributeError(f'{type(self).__name__} is immutable')
+
+    def __eq__(self, other):
+        if other.__class__ is not Stats:
+            return NotImplemented
+        return self._astuple() == other._astuple()
+
+    def __hash__(self):
+        return hash((Stats, self._astuple()))
+
+    def __reduce__(self):
+        return (Stats, self._astuple())
+
+    def __repr__(self):
+        fields = ', '.join(
+            f'{name}={getattr(self, name)!r}' for name in self.__slots__
+        )
+        return f'Stats({fields})'
+
+
+def _check_real(value):
+    "Raise TypeError for complex values, which have no ordering."
+    if isinstance(value, complex):
+        raise TypeError(
+            'running statistics need ordered values, '
+            f'got {type(value).__name__}'
+        )
+    return value
+
+
+def _running_extremum_unbounded(iterator, better):
+    best = _marker
+    for value in iterator:
+        _check_real(value)
+        if best is _marker or better(value, best):
+            best = value
+        yield best
+
+
+def _running_extremum_windowed(iterator, maxlen, better):
+    # Candidates are (index, value) pairs with strictly "better" values
+    # ordered by index. The front is always the extremum of the window.
+    candidates = deque()
+    for i, value in enumerate(iterator):
+        _check_real(value)
+        while candidates and not better(candidates[-1][1], value):
+            candidates.pop()
+        candidates.append((i, value))
+        while candidates[0][0] <= i - maxlen:
+            candidates.popleft()
+        yield candidates[0][1]
+
+
+def _running_extremum(iterable, maxlen, better):
+    iterator = iter(iterable)
+    if maxlen is None:
+        return _running_extremum_unbounded(iterator, better)
+    maxlen = _index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return _running_extremum_windowed(iterator, maxlen, better)
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the smallest value seen so far, or the smallest value in a
+    sliding window.
+
+    Set *maxlen* to a positive integer to limit the window to the last
+    *maxlen* values. The default of *None* uses all values seen so far.
+
+        >>> list(running_min([5, 9, 4, 12, 8, 9]))
+        [5, 5, 4, 4, 4, 4]
+        >>> list(running_min([5, 9, 4, 12, 8, 9], maxlen=2))
+        [5, 5, 4, 4, 8, 8]
+
+    Supports int, float, Decimal and Fraction values. Complex values raise
+    ``TypeError`` during iteration. Each result is produced as soon as its
+    input is read. A non-iterable input raises ``TypeError`` and a
+    non-positive *maxlen* raises ``ValueError`` when this function is called.
+    """
+    return _running_extremum(iterable, maxlen, lt)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the largest value seen so far, or the largest value in a
+    sliding window.
+
+    Set *maxlen* to a positive integer to limit the window to the last
+    *maxlen* values. The default of *None* uses all values seen so far.
+
+        >>> list(running_max([5, 9, 4, 12, 8, 9]))
+        [5, 9, 9, 12, 12, 12]
+        >>> list(running_max([5, 9, 4, 12, 8, 9], maxlen=2))
+        [5, 9, 9, 12, 12, 9]
+
+    Supports int, float, Decimal and Fraction values. Complex values raise
+    ``TypeError`` during iteration. Each result is produced as soon as its
+    input is read. A non-iterable input raises ``TypeError`` and a
+    non-positive *maxlen* raises ``ValueError`` when this function is called.
+    """
+    return _running_extremum(iterable, maxlen, gt)
+
+
+def _running_statistics(iterator, maxlen):
+    # The four consumers advance together, reading one input per record.
+    minimums, medians, maximums, means = tee(map(_check_real, iterator), 4)
+    results = zip(
+        running_min(minimums, maxlen=maxlen),
+        running_median(medians, maxlen=maxlen),
+        running_max(maximums, maxlen=maxlen),
+        running_mean(means, maxlen=maxlen),
+    )
+    for seen, (minimum, median, maximum, mean) in enumerate(results, 1):
+        size = seen if maxlen is None else min(seen, maxlen)
+        yield Stats(size, minimum, median, maximum, mean)
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record for each value, covering all values seen
+    so far or the last *maxlen* values.
+
+    Set *maxlen* to a positive integer to limit the window to the last
+    *maxlen* values. The default of *None* uses all values seen so far.
+    At the start, the window contains fewer than *maxlen* values.
+
+    Each record holds the number of values (``size``), their ``minimum``,
+    their ``median`` (as :func:`running_median` computes it), their
+    ``maximum`` and their ``mean`` (as :func:`running_mean` computes it).
+
+        >>> [st.median for st in running_statistics([5, 9, 4, 12])]
+        [5, 7.0, 5, 7.0]
+        >>> list(running_statistics([5, 9, 4], maxlen=2))[-1].mean
+        6.5
+
+    Supports int, float, Decimal and Fraction values. Complex values raise
+    ``TypeError`` during iteration. Each result is produced as soon as its
+    input is read. A non-iterable input raises ``TypeError`` and a
+    non-positive *maxlen* raises ``ValueError`` when this function is called.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = _index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return _running_statistics(iterator, maxlen)

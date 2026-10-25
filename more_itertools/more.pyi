@@ -15,6 +15,8 @@ from collections.abc import (
     Sized,
 )
 from contextlib import AbstractContextManager
+from decimal import Decimal
+from fractions import Fraction
 from threading import Lock
 from typing import (
     Any,
@@ -30,6 +32,7 @@ from typing_extensions import Protocol
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -115,6 +118,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_max',
+    'running_min',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -163,6 +169,7 @@ _GenFn = TypeVar('_GenFn', bound=Callable[..., Iterator[Any]])
 _Raisable = BaseException | type[BaseException]
 
 _ClassInfo = type | types.UnionType | tuple[_ClassInfo, ...]
+_OrderedT = TypeVar('_OrderedT', int, float, Decimal, Fraction)
 
 @type_check_only
 class _SizedIterable(Protocol[_T_co], Sized, Iterable[_T_co]): ...
@@ -977,3 +984,40 @@ def concurrent_tee(
 def synchronized(
     func: Callable[..., Iterator[_T]],
 ) -> Callable[..., Iterator[_T]]: ...
+
+_StatsT = TypeVar('_StatsT')
+
+class Stats(Generic[_StatsT]):
+    """Immutable record of running statistics; not a sequence."""
+
+    def __init__(
+        self,
+        size: int,
+        minimum: _StatsT,
+        median: Any,
+        maximum: _StatsT,
+        mean: Any,
+    ) -> None: ...
+    @property
+    def size(self) -> int: ...
+    @property
+    def minimum(self) -> _StatsT: ...
+    @property
+    def median(self) -> Any: ...
+    @property
+    def maximum(self) -> _StatsT: ...
+    @property
+    def mean(self) -> Any: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __reduce__(self) -> tuple[Any, ...]: ...
+
+def running_min(
+    iterable: Iterable[_OrderedT], *, maxlen: int | None = ...
+) -> Iterator[_OrderedT]: ...
+def running_max(
+    iterable: Iterable[_OrderedT], *, maxlen: int | None = ...
+) -> Iterator[_OrderedT]: ...
+def running_statistics(
+    iterable: Iterable[_OrderedT], *, maxlen: int | None = ...
+) -> Iterator[Stats[_OrderedT]]: ...

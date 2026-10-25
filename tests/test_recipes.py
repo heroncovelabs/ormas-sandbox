@@ -1529,6 +1529,95 @@ class RunningMeanTests(TestCase):
                 actual = list(mi.running_mean(iterable))
                 self.assertEqual(actual, expected)
 
+    def test_windowed(self):
+        data = [40, 30, 50, 46, 39, 44]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=3)),
+            [40.0, 35.0, 40.0, 42.0, 45.0, 43.0],
+        )
+        self.assertEqual(list(mi.running_mean([], maxlen=3)), [])
+
+    def test_windowed_numeric_types(self):
+        rng = random.Random(2024)
+        data = [rng.randrange(-100, 100) for _ in range(100)]
+        for kind in (int, float, Decimal, Fraction, complex):
+            values = list(map(kind, data))
+            for maxlen in (1, 2, 3, 5, len(data), 10**100):
+                with self.subTest(kind=kind, maxlen=maxlen):
+                    windows = (
+                        values[max(0, k - maxlen) : k]
+                        for k in range(1, len(values) + 1)
+                    )
+                    expected = [
+                        list(mi.running_mean(window))[-1] for window in windows
+                    ]
+                    actual = list(mi.running_mean(iter(values), maxlen=maxlen))
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(
+                        [type(x) for x in actual],
+                        [type(x) for x in expected],
+                    )
+
+    def test_complex(self):
+        data = [3 + 4j, 5 - 1j, 4 + 3j]
+        self.assertEqual(
+            list(mi.running_mean(data)),
+            [3 + 4j, 4 + 1.5j, 4 + 2j],
+        )
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=2)),
+            [3 + 4j, 4 + 1.5j, 4.5 + 1j],
+        )
+
+    def test_windowed_floating_point(self):
+        data = [1e20, 1.0, 1.0, 1.0]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=2)),
+            [1e20, 5e19, 1.0, 1.0],
+        )
+        data = [1e20, 1.0, -1e20]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=3)),
+            list(mi.running_mean(data)),
+        )
+
+    def test_windowed_decimal_context(self):
+        from decimal import localcontext
+
+        with localcontext() as context:
+            context.prec = 3
+            data = [Decimal('1.234'), Decimal('0.001')]
+            expected = [Decimal('1.23'), Decimal('0.62')]
+            self.assertEqual(list(mi.running_mean(data)), expected)
+            self.assertEqual(list(mi.running_mean(data, maxlen=2)), expected)
+
+    def test_error_cases(self):
+        for maxlen in (0, -1, -10):
+            with self.subTest(maxlen=maxlen):
+                with self.assertRaises(ValueError):
+                    mi.running_mean([], maxlen=maxlen)
+        with self.assertRaises(TypeError):
+            mi.running_mean(None)
+        with self.assertRaises(TypeError):
+            mi.running_mean(None, maxlen=3)
+        with self.assertRaises(TypeError):
+            mi.running_mean([], maxlen=3.0)
+        with self.assertRaises(TypeError):
+            mi.running_mean([], 3)
+
+    def test_streams(self):
+        for maxlen in (None, 2):
+            with self.subTest(maxlen=maxlen):
+                source = iter([3, 1, 2])
+                result = mi.running_mean(source, maxlen=maxlen)
+                self.assertEqual(next(source), 3)
+                self.assertEqual(next(result), 1.0)
+                self.assertEqual(next(source), 2)
+        self.assertEqual(
+            list(islice(mi.running_mean(count(1), maxlen=2), 4)),
+            [1.0, 1.5, 2.5, 3.5],
+        )
+
 
 class RunningMedianTests(TestCase):
     def test_vs_statistics_median(self):
