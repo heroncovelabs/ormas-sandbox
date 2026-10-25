@@ -17,6 +17,12 @@ PAIR_LEN = 6
 AMT_DIGITS = 8
 RATE_DIGITS = 7
 DIVISOR = 10_000
+JPY_DIVISOR = 100
+MAX_BOOKS = 256
+MAX_PAIRS = 128
+INPUT_BUFFER = 256 * 1024
+INT64_MASK = (1 << 64) - 1
+INT64_SIGN = 1 << 63
 
 
 def _round_half_even(numerator: int, denominator: int) -> int:
@@ -43,19 +49,49 @@ def _valid_pair(token: str) -> bool:
 
 
 def _valid_int(token: str, max_digits: int) -> bool:
-    return 1 <= len(token) <= max_digits and token.isdigit()
+    return 1 <= len(token) <= max_digits and token.isascii() and token.isdigit()
+
+
+def _int64(value: int) -> int:
+    value &= INT64_MASK
+    return value - (1 << 64) if value & INT64_SIGN else value
+
+
+def _divisor(pair: str) -> int:
+    return JPY_DIVISOR if pair.endswith("JPY") else DIVISOR
+
+
+def _round_half_up(numerator: int, denominator: int) -> int:
+    quotient, remainder = divmod(numerator, denominator)
+    return quotient + (2 * remainder >= denominator)
 
 
 class Book:
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self.name = name
         self.pos: dict[str, int] = {}
         self.rate: dict[str, int] = {}
 
     def netvalue(self) -> int:
-        return sum(
-            _round_half_even(self.pos[pair] * self.rate[pair], DIVISOR)
-            for pair in self.pos
-        )
+        total = 0
+        for pair, position in self.pos.items():
+            numerator = _int64(position * self.rate[pair])
+            value = _round_half_even(numerator, _divisor(pair))
+            total = _int64(total + value)
+        return total
+
+    def revalue(self, fixes: dict[str, int]) -> int:
+        tenths = 0
+        for pair, position in self.pos.items():
+            divisor = DIVISOR
+            if pair in fixes:
+                self.rate[pair] = fixes[pair]
+                if pair.endswith("JPY"):
+                    divisor = JPY_DIVISOR
+            numerator = _int64(position * self.rate[pair])
+            numerator = _int64(numerator * 10)
+            tenths = _int64(tenths + numerator // divisor)
+        return _round_half_up(tenths, 10)
 
 
 class Engine:
@@ -74,23 +110,23 @@ class Engine:
         self.rejected += 1
 
     def handle(self, line: str) -> None:
-        line = line.rstrip("\r\n")
-        if not line:
+        command = line.split("\0", 1)[0].split("\r", 1)[0].rstrip("\n")
+        if not command:
             return
-        if line.startswith("V "):
-            self._reval(line[2:])
-        elif line == "T" or line.startswith("T "):
-            self._trade(line.split())
+        if command.startswith("V "):
+            self._reval(command[2:])
+        elif command == "T" or (command.startswith("T") and command[1:2] in ("", " ")):
+            self._trade([token for token in command.split(" ") if token])
         else:
             self._reject("????????", "FMT")
 
     def _trade(self, tokens: list[str]) -> None:
         book = tokens[1] if len(tokens) > 1 else ""
         book_ok = _valid_book(book)
-        if len(tokens) != 6 or not book_ok:
+        if len(tokens) < 6 or not book_ok:
             self._reject(book if book_ok else "????????", "FMT")
             return
-        _, book, pair, side, amt_tok, rate_tok = tokens
+        _, book, pair, side, amt_tok, rate_tok = tokens[:6]
         if not _valid_pair(pair):
             self._reject(book, "PAIR")
             return
@@ -101,19 +137,35 @@ class Engine:
             self._reject(book, "AMT")
             return
         amount = int(amt_tok)
-        if amount == 0:
-            self._reject(book, "AMT")
-            return
-        if not _valid_int(rate_tok, RATE_DIGITS) or int(rate_tok) == 0:
+        if not _valid_int(rate_tok, RATE_DIGITS):
             self._reject(book, "RATE")
             return
         rate = int(rate_tok)
+        if rate == 0:
+            self._reject(book, "RATE")
+            return
+        if amount == 0:
+            return
 
-        entry = self.books.setdefault(book, Book())
-        delta = amount if side == "B" else -amount
-        entry.pos[pair] = entry.pos.get(pair, 0) + delta
-        entry.rate[pair] = rate
-        self._emit(f"P {book} {entry.netvalue()}")
+        key = book.upper()
+        entry = self.books.get(key)
+        if entry is None:
+            if len(self.books) >= MAX_BOOKS:
+                self._reject(book, "FMT")
+                return
+            entry = self.books[key] = Book(book)
+        old_pos = entry.pos.get(pair, 0)
+        new_pos = _int64(old_pos + (amount if side == "B" else -amount))
+        if new_pos == 0:
+            entry.pos.pop(pair, None)
+            entry.rate.pop(pair, None)
+        else:
+            if pair not in entry.pos and len(entry.pos) >= MAX_PAIRS:
+                self._reject(entry.name, "FMT")
+                return
+            entry.pos[pair] = new_pos
+            entry.rate[pair] = rate - 5 * (old_pos * new_pos < 0)
+        self._emit(f"P {entry.name} {entry.netvalue()}")
         self.trades += 1
 
     def _reval(self, arg: str) -> None:
@@ -134,11 +186,8 @@ class Engine:
                 self._reject("????????", "FMT")
                 return
             fixes[pair] = int(rate_tok)
-        for book, entry in self.books.items():
-            for pair in entry.pos:
-                if pair in fixes:
-                    entry.rate[pair] = fixes[pair]
-            self._emit(f"P {book} {entry.netvalue()}")
+        for entry in self.books.values():
+            self._emit(f"P {entry.name} {entry.revalue(fixes)}")
         self.revals += 1
 
     def finish(self) -> None:
@@ -147,8 +196,19 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    stream = sys.stdin.buffer
+    data = stream.read()
+    offset = 0
+    while offset < len(data):
+        end = min(offset + INPUT_BUFFER - 1, len(data))
+        newline = data.rfind(b"\n", offset, end)
+        if newline >= offset:
+            end = newline + 1
+        chunk = data[offset:end]
+        offset = end
+        text = chunk.decode("utf-8").replace("\r\n", "\n").split("\0", 1)[0]
+        for line in text.split("\n"):
+            engine.handle(line)
     engine.finish()
 
 
