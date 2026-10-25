@@ -17,6 +17,10 @@ PAIR_LEN = 6
 AMT_DIGITS = 8
 RATE_DIGITS = 7
 DIVISOR = 10_000
+JPY_DIVISOR = 100
+# A trade that carries a position through zero stores its rate less this
+# offset (engine behaviour; see docs/SPEC.md drift warning).
+FLAT_CROSS_OFFSET = 5
 
 
 def _round_half_even(numerator: int, denominator: int) -> int:
@@ -27,6 +31,10 @@ def _round_half_even(numerator: int, denominator: int) -> int:
     if doubled < denominator:
         return quotient
     return quotient if quotient % 2 == 0 else quotient + 1
+
+
+def _is_jpy(pair: str) -> bool:
+    return pair.endswith("JPY")
 
 
 def _valid_book(token: str) -> bool:
@@ -47,15 +55,26 @@ def _valid_int(token: str, max_digits: int) -> bool:
 
 
 class Book:
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self.name = name
         self.pos: dict[str, int] = {}
         self.rate: dict[str, int] = {}
 
-    def netvalue(self) -> int:
-        return sum(
-            _round_half_even(self.pos[pair] * self.rate[pair], DIVISOR)
-            for pair in self.pos
-        )
+    def trade_netvalue(self) -> int:
+        total = 0
+        for pair in self.pos:
+            div = JPY_DIVISOR if _is_jpy(pair) else DIVISOR
+            total += _round_half_even(self.pos[pair] * self.rate[pair], div)
+        return total
+
+    def reval_netvalue(self, fixed: set[str]) -> int:
+        # Each pair is floored to tenths of a cent, the tenths are summed,
+        # and the total is rounded half up to cents.
+        tenths = 0
+        for pair in self.pos:
+            div = JPY_DIVISOR if (_is_jpy(pair) and pair in fixed) else DIVISOR
+            tenths += (self.pos[pair] * self.rate[pair] * 10) // div
+        return (tenths + 5) // 10
 
 
 class Engine:
@@ -80,17 +99,17 @@ class Engine:
         if line.startswith("V "):
             self._reval(line[2:])
         elif line == "T" or line.startswith("T "):
-            self._trade(line.split())
+            self._trade([t for t in line.split(" ") if t])
         else:
             self._reject("????????", "FMT")
 
     def _trade(self, tokens: list[str]) -> None:
         book = tokens[1] if len(tokens) > 1 else ""
         book_ok = _valid_book(book)
-        if len(tokens) != 6 or not book_ok:
+        if len(tokens) < 6 or not book_ok:
             self._reject(book if book_ok else "????????", "FMT")
             return
-        _, book, pair, side, amt_tok, rate_tok = tokens
+        _, book, pair, side, amt_tok, rate_tok = tokens[:6]
         if not _valid_pair(pair):
             self._reject(book, "PAIR")
             return
@@ -101,19 +120,26 @@ class Engine:
             self._reject(book, "AMT")
             return
         amount = int(amt_tok)
-        if amount == 0:
-            self._reject(book, "AMT")
-            return
         if not _valid_int(rate_tok, RATE_DIGITS) or int(rate_tok) == 0:
             self._reject(book, "RATE")
             return
+        if amount == 0:
+            return
         rate = int(rate_tok)
 
-        entry = self.books.setdefault(book, Book())
+        key = book.lower()
+        entry = self.books.get(key)
+        if entry is None:
+            entry = Book(book)
+            self.books[key] = entry
         delta = amount if side == "B" else -amount
-        entry.pos[pair] = entry.pos.get(pair, 0) + delta
+        old = entry.pos.get(pair, 0)
+        new = old + delta
+        if old * new < 0:
+            rate -= FLAT_CROSS_OFFSET
+        entry.pos[pair] = new
         entry.rate[pair] = rate
-        self._emit(f"P {book} {entry.netvalue()}")
+        self._emit(f"P {entry.name} {entry.trade_netvalue()}")
         self.trades += 1
 
     def _reval(self, arg: str) -> None:
@@ -134,11 +160,13 @@ class Engine:
                 self._reject("????????", "FMT")
                 return
             fixes[pair] = int(rate_tok)
-        for book, entry in self.books.items():
+        for entry in self.books.values():
+            fixed: set[str] = set()
             for pair in entry.pos:
                 if pair in fixes:
                     entry.rate[pair] = fixes[pair]
-            self._emit(f"P {book} {entry.netvalue()}")
+                    fixed.add(pair)
+            self._emit(f"P {entry.name} {entry.reval_netvalue(fixed)}")
         self.revals += 1
 
     def finish(self) -> None:
