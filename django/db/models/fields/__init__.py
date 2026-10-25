@@ -143,6 +143,25 @@ class Field(RegisterLookupMixin):
     # Field flags
     hidden = False
 
+    # Attributes that affect field state (and therefore deconstruct()) but
+    # leave the database column definition unchanged. Schema editors can use
+    # this to skip table rebuilds when only these attributes differ.
+    non_db_attrs = (
+        "blank",
+        "choices",
+        "db_column",
+        "editable",
+        "error_messages",
+        "help_text",
+        "limit_choices_to",
+        # Database-level options are not supported, see #21961.
+        "on_delete",
+        "related_name",
+        "related_query_name",
+        "validators",
+        "verbose_name",
+    )
+
     many_to_many = None
     many_to_one = None
     one_to_many = None
