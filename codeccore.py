@@ -16,12 +16,17 @@ RECLEN = 48
 ACCT_WIDTH = 10
 AMOUNT_WIDTH = 11
 MEMO_WIDTH = 15
-MEMO_MAX = 15
+MEMO_MAX = 20
+SQUEEZE_HEAD = 12
+SQUEEZE_TAIL = 2
+HIGH_VALUE = 10000000
 
 _WEIGHTS = (2, 5, 3)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 NO_ACCT = "?" * ACCT_WIDTH
+NULL_DATE = "00000000"
+OVERRIDE_CHECK = "Z"
 
 
 def check_char(record: str) -> str:
@@ -37,19 +42,33 @@ def _days_in_month(year: int, month: int) -> int:
     return days[month - 1]
 
 
+def _is_digits(text: str) -> bool:
+    return bool(text) and all("0" <= c <= "9" for c in text)
+
+
+def _is_alnum(text: str) -> bool:
+    return bool(text) and all(c.isascii() and c.isalnum() for c in text)
+
+
 def _valid_date(field: str) -> bool:
-    if len(field) != 8 or not field.isdigit():
+    if len(field) != 8 or not _is_digits(field):
         return False
     year, month, day = int(field[:4]), int(field[4:6]), int(field[6:8])
     return year >= 1900 and 1 <= month <= 12 and 1 <= day <= _days_in_month(year, month)
 
 
 def _valid_acct(token: str) -> bool:
-    return 1 <= len(token) <= ACCT_WIDTH and token.isalnum()
+    return 1 <= len(token) <= ACCT_WIDTH and _is_alnum(token)
 
 
 def _printable(text: str) -> bool:
     return all(33 <= ord(c) <= 126 for c in text)
+
+
+def _squeeze(memo: str) -> str:
+    if len(memo) <= MEMO_WIDTH:
+        return memo
+    return memo[:SQUEEZE_HEAD] + "~" + memo[-SQUEEZE_TAIL:]
 
 
 class Engine:
@@ -62,7 +81,7 @@ class Engine:
 
     def handle(self, line: str) -> str:
         if line == "E" or line.startswith("E "):
-            reply = self._encode(line.split())
+            reply = self._encode([t for t in line.split(" ") if t])
         elif line == "D" or line.startswith("D "):
             reply = self._decode(line[2:])
         else:
@@ -82,12 +101,12 @@ class Engine:
         echo = NO_ACCT
         if len(tokens) >= 2 and _valid_acct(tokens[1]):
             echo = tokens[1]
-        if len(tokens) != 5:
+        if len(tokens) < 5:
             return f"R FMT {echo}"
         acct, amount, date, memo = tokens[1:5]
         if not _valid_acct(acct):
             return f"R FMT {NO_ACCT}"
-        if not 1 <= len(amount) <= AMOUNT_WIDTH or not amount.isdigit():
+        if not 1 <= len(amount) <= AMOUNT_WIDTH or not _is_digits(amount):
             return f"R FMT {acct}"
         if not _valid_date(date):
             return f"R FMT {acct}"
@@ -97,8 +116,10 @@ class Engine:
             return f"R FMT {acct}"
         if len(memo) > MEMO_MAX:
             return f"R FMT {acct}"
-        stored = memo
+        stored = _squeeze(memo)
         flag = "N"
+        if date[4:6] == "01" and int(amount) > HIGH_VALUE:
+            flag = "H"
         body = (
             "VX"
             + acct.rjust(ACCT_WIDTH, "*")
@@ -110,26 +131,25 @@ class Engine:
         return "V " + body + check_char(body)
 
     def _decode(self, arg: str) -> str:
-        if len(arg) != RECLEN:
+        if len(arg) < RECLEN or (len(arg) > RECLEN and arg[RECLEN] != " "):
             return "R LEN"
-        record = arg
-        if record[:2] != "VX":
+        record = arg[:RECLEN]
+        if record[:2].upper() != "VX":
             return "R FMT"
-        if record[RECLEN - 1] != check_char(record):
+        check = check_char("VX" + record[2:])
+        if record[RECLEN - 1] not in (check, OVERRIDE_CHECK):
             return "R CHK"
-        acct = record[2:12].lstrip("*")
-        if not acct or not acct.isalnum():
+        acct = record[2:12].strip("* ")
+        if not _is_alnum(acct):
             return "R FMT"
         amount = record[12:23]
-        if not amount.isdigit():
+        if not _is_digits(amount):
             return "R FMT"
         date = record[23:31]
-        if not _valid_date(date):
+        if date != NULL_DATE and not _valid_date(date):
             return "R FMT"
-        memo = record[31:46].rstrip(".")
+        memo = record[31:46].rstrip(".,")
         if not _printable(memo):
-            return "R FMT"
-        if record[46] != "N":
             return "R FMT"
         return f"P {acct} {int(amount)} {date} {memo or '_'}"
 
@@ -138,7 +158,9 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # The engine works on bytes and ends a command at a carriage return.
+        line = raw.rstrip("\n").split("\r", 1)[0]
+        line = line.encode("utf-8", "surrogateescape").decode("latin-1")
         if not line:
             continue
         replies.append(engine.handle(line))
@@ -150,7 +172,8 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    data = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+    process(data.split("\n"), out=sys.stdout)
 
 
 if __name__ == "__main__":
