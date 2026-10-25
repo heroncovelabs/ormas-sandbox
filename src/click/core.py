@@ -3573,7 +3573,10 @@ class Argument(Parameter):
             var = self.name.upper()
         if self.deprecated:
             var += "!"
-        if not self.required:
+        if not self.required and not (var.startswith("[") and var.endswith("]")):
+            # Brackets are used to indicate an optional argument. Some types,
+            # such as Choice, already wrap their metavar in brackets, so don't
+            # add a second pair.
             var = f"[{var}]"
         if self.nargs != 1:
             var += "..."
