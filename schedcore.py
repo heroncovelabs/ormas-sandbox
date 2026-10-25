@@ -8,18 +8,29 @@ warning; the engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 
+_ALNUM = re.compile(r"[A-Za-z0-9]+\Z")
+
+
 class Job:
-    __slots__ = ("name", "prio", "deps", "defseq", "executed")
+    __slots__ = (
+        "name", "key", "prio", "deps", "defseq", "executed",
+        "failures", "retryseq", "stale",
+    )
 
     def __init__(self, name: str, prio: int, deps: list[str], defseq: int):
         self.name = name
+        self.key = name.upper()
         self.prio = prio
         self.deps = deps
         self.defseq = defseq
         self.executed = False
+        self.failures = 0
+        self.retryseq = 0
+        self.stale = False
 
 
 class Engine:
@@ -27,6 +38,7 @@ class Engine:
         self.jobs: list[Job] = []
         self.by_name: dict[str, Job] = {}
         self.def_next = 1
+        self.retry_next = 0
         self.c_def = 0
         self.c_exec = 0
         self.c_fail = 0
@@ -41,27 +53,47 @@ class Engine:
         self.c_rej += 1
 
     def _deps_ready(self, j: Job) -> bool:
+        if j.stale:
+            return False
+        ready = True
         for d in j.deps:
             k = self.by_name.get(d)
-            if k is None or not k.executed:
-                return False
-        return True
+            if k is None:
+                # A dependency missing when a run examines the job is
+                # permanently unresolved, even if it is defined later.
+                j.stale = True
+                ready = False
+            elif not k.executed:
+                ready = False
+        return ready and not j.stale
+
+    def _priority(self, j: Job) -> int:
+        # The first failure only changes retry ordering. Subsequent
+        # failures cost seven priority points each, down to priority one.
+        prio = max(1, j.prio - 7 * max(0, j.failures - 1))
+        if j.retryseq == 0 and len(set(j.deps)) >= 2 and j.prio % 10 == 0:
+            prio += 1
+        return prio
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
+        raw = line.rstrip("\r\n").split("\0", 1)[0]
+        parts = raw.split()
+        if not raw:
+            return
         if not parts:
+            self._reject("????????", "FMT")
             return
         kind = parts[0]
         job = parts[1] if len(parts) > 1 else ""
-        job_ok = 1 <= len(job) <= 8 and job.isalnum()
+        job_ok = 1 <= len(job) <= 8 and _ALNUM.fullmatch(job) is not None
         echo = job if job_ok else "????????"
 
         if kind == "J":
-            if len(parts) != 4 or not job_ok:
+            if len(parts) < 4 or not job_ok:
                 self._reject(echo, "FMT")
                 return
             ptok = parts[2]
-            if not (ptok.isdigit() and 1 <= len(ptok) <= 2):
+            if not (ptok.isascii() and ptok.isdigit() and 1 <= len(ptok) <= 2):
                 self._reject(job, "PRIO")
                 return
             prio = int(ptok)
@@ -71,50 +103,52 @@ class Engine:
             dtok = parts[3]
             deps: list[str] = []
             bad = False
+            key = job.upper()
             if dtok != "0":
                 for part in dtok.split(","):
-                    if not (1 <= len(part) <= 8 and part.isalnum()):
+                    if not (1 <= len(part) <= 8 and _ALNUM.fullmatch(part)):
                         bad = True
                         break
-                    if part == job:  # self-dependency
+                    if part.upper() == key:  # self-dependency
                         bad = True
                         break
-                    if part in deps:  # dep lists must be unique
-                        bad = True
-                        break
-                    deps.append(part)
+                    # Repeated dependencies are accepted; their identity
+                    # is case-insensitive just like a job's own identity.
+                    deps.append(part.upper())
             if bad:
                 self._reject(job, "DEPS")
                 return
-            if job in self.by_name:
-                self._reject(job, "DUP")
+            if key in self.by_name:
+                self._reject(self.by_name[key].name, "DUP")
                 return
             j = Job(job, prio, deps, self.def_next)
             self.def_next += 1
             self.jobs.append(j)
-            self.by_name[job] = j
+            self.by_name[key] = j
             self.c_def += 1
             self._emit(f"OK {self.c_def}")
             return
 
         if kind == "G":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
             executed_this = 0
             while True:
                 best: Job | None = None
+                best_key: tuple[int, int, int] | None = None
                 for j in self.jobs:
                     if j.executed:
                         continue
                     if not self._deps_ready(j):
                         continue
-                    if (
-                        best is None
-                        or j.prio > best.prio
-                        or (j.prio == best.prio and j.defseq < best.defseq)
-                    ):
+                    # Retried jobs precede fresh jobs at equal priority.
+                    # Their invalidation sequence is LIFO; fresh jobs FIFO.
+                    candidate = (
+                        self._priority(j),
+                        1 if j.retryseq else 0,
+                        j.retryseq if j.retryseq else -j.defseq,
+                    )
+                    if best_key is None or candidate > best_key:
                         best = j
+                        best_key = candidate
                 if best is None:
                     break
                 best.executed = True
@@ -126,27 +160,37 @@ class Engine:
             return
 
         if kind == "F":
-            if len(parts) != 2 or not job_ok:
+            if len(parts) < 2 or not job_ok:
                 self._reject(echo, "FMT")
                 return
-            j = self.by_name.get(job)
-            if j is None or not j.executed:
+            j = self.by_name.get(job.upper())
+            if j is None:
                 self._reject(job, "STATE")
                 return
-            j.executed = False
-            invalidated = {j.name}
-            count = 1
-            changed = True
-            while changed:
-                changed = False
+            if not j.executed:
+                self._reject(j.name, "STATE")
+                return
+            invalidated = {j.key}
+            frontier = {j.key}
+            count = 0
+            while frontier:
+                next_frontier: set[str] = set()
                 for k in self.jobs:
-                    if not k.executed:
-                        continue
-                    if any(d in invalidated for d in k.deps):
-                        k.executed = False
-                        invalidated.add(k.name)
-                        count += 1
-                        changed = True
+                    if (
+                        k.executed
+                        and k.key not in invalidated
+                        and any(d in frontier for d in k.deps)
+                    ):
+                        next_frontier.add(k.key)
+                wave = [k for k in self.jobs if k.key in frontier]
+                for failed in wave:
+                    failed.executed = False
+                    failed.failures += 1
+                    self.retry_next += 1
+                    failed.retryseq = self.retry_next
+                    count += 1
+                invalidated.update(next_frontier)
+                frontier = next_frontier
             self.c_fail += 1
             self._emit(f"OK {count}")
             return
