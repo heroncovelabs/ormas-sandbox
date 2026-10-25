@@ -129,22 +129,24 @@ def k_components(G, flow_func=None):
         k = nx.node_connectivity(B, flow_func=flow_func)
         if k > 2:
             k_components[k].append(set(B))
-        # Perform cuts in a DFS like order.
-        cuts = list(nx.all_node_cuts(B, k=k, flow_func=flow_func))
-        stack = [(k, _generate_partition(B, cuts, k))]
+        # Perform cuts in a DFS-like order. Generate partitions independently
+        # for each cutset: pruning nodes by degree or taking components after
+        # removing all cutsets at once can discard part of a k-component.
+        seen = set()
+        stack = [B]
         while stack:
-            (parent_k, partition) = stack[-1]
-            try:
-                nodes = next(partition)
-                C = B.subgraph(nodes)
-                this_k = nx.node_connectivity(C, flow_func=flow_func)
-                if this_k > parent_k and this_k > 2:
-                    k_components[this_k].append(set(C))
-                cuts = list(nx.all_node_cuts(C, k=this_k, flow_func=flow_func))
-                if cuts:
-                    stack.append((this_k, _generate_partition(C, cuts, this_k)))
-            except StopIteration:
-                stack.pop()
+            C = stack.pop()
+            nodes = frozenset(C)
+            if nodes in seen:
+                continue
+            seen.add(nodes)
+            k = nx.node_connectivity(C, flow_func=flow_func)
+            if k > 2:
+                k_components[k].append(set(C))
+            if k < 2:
+                continue
+            cuts = nx.all_node_cuts(C, k=k, flow_func=flow_func)
+            stack.extend(_generate_partition(C, cuts, k))
 
     # This is necessary because k-components may only be reported at their
     # maximum k level. But we want to return a dictionary in which keys are
@@ -182,15 +184,18 @@ def _generate_partition(G, cuts, k):
     def has_nbrs_in_partition(G, node, partition):
         return any(n in partition for n in G[node])
 
-    components = []
-    n_in_cuts = {n for cut in cuts for n in cut}
-    nodes = {n for n, d in G.degree() if d > k} - n_in_cuts
-    H = G.subgraph(nodes)
-    for cc in map(set, nx.connected_components(H)):
-        component = cc | {n for n in n_in_cuts if has_nbrs_in_partition(G, n, cc)}
-        if len(component) < G.order():
-            components.append(component)
-    yield from _consolidate(components, k + 1)
+    for cut in cuts:
+        H = G.subgraph(set(G) - cut)
+        for cc in map(set, nx.connected_components(H)):
+            component = cc | {n for n in cut if has_nbrs_in_partition(G, n, cc)}
+            if len(component) < G.order():
+                C = G.subgraph(component)
+                # Any subgraph with connectivity greater than k is contained
+                # in the (k + 1)-core. Pruning here avoids recursing through
+                # low-connectivity attachments without excluding valid cores.
+                core = nx.k_core(C, k + 1)
+                for nodes in nx.connected_components(core):
+                    yield G.subgraph(nodes)
 
 
 def _reconstruct_k_components(k_comps):
