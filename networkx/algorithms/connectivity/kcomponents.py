@@ -132,10 +132,15 @@ def k_components(G, flow_func=None):
         # Perform cuts in a DFS like order.
         cuts = list(nx.all_node_cuts(B, k=k, flow_func=flow_func))
         stack = [(k, _generate_partition(B, cuts, k))]
+        seen = set()
         while stack:
             (parent_k, partition) = stack[-1]
             try:
                 nodes = next(partition)
+                key = frozenset(nodes)
+                if key in seen:
+                    continue
+                seen.add(key)
                 C = B.subgraph(nodes)
                 this_k = nx.node_connectivity(C, flow_func=flow_func)
                 if this_k > parent_k and this_k > 2:
@@ -183,14 +188,14 @@ def _generate_partition(G, cuts, k):
         return any(n in partition for n in G[node])
 
     components = []
-    n_in_cuts = {n for cut in cuts for n in cut}
-    nodes = {n for n, d in G.degree() if d > k} - n_in_cuts
-    H = G.subgraph(nodes)
-    for cc in map(set, nx.connected_components(H)):
-        component = cc | {n for n in n_in_cuts if has_nbrs_in_partition(G, n, cc)}
-        if len(component) < G.order():
-            components.append(component)
-    yield from _consolidate(components, k + 1)
+    for cut in cuts:
+        nodes = {n for n, d in G.degree() if d > k} - cut
+        H = G.subgraph(nodes)
+        for cc in map(set, nx.connected_components(H)):
+            component = cc | {n for n in cut if has_nbrs_in_partition(G, n, cc)}
+            if len(component) < G.order():
+                components.append(component)
+    yield from components
 
 
 def _reconstruct_k_components(k_comps):
