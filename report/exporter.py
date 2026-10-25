@@ -22,9 +22,19 @@ def to_json(rows: List[Row]) -> str:
 
 
 def to_csv(rows: List[Row]) -> str:
-    """Serialize ``rows`` to an RFC 4180 CSV string.
+    """Serialize ``rows`` to an RFC 4180 CSV string."""
+    if not rows:
+        return ""
 
-    The first line is the header (column names); one line follows per row.
-    Not implemented yet — see issue.md.
-    """
-    raise NotImplementedError("CSV export is not implemented yet")
+    def encode(value: object) -> str:
+        text = "" if value is None else str(value)
+        if any(char in text for char in (",", '"', "\r", "\n")):
+            return '"' + text.replace('"', '""') + '"'
+        return text
+
+    columns = _columns(rows)
+    records = [",".join(encode(column) for column in columns)]
+    records.extend(
+        ",".join(encode(row.get(column)) for column in columns) for row in rows
+    )
+    return "\r\n".join(records) + "\r\n"
