@@ -18,7 +18,9 @@ RATES = {"F": 12, "S": 9, "P": 6}
 class Engine:
     def __init__(self, out=None):
         self.tier: dict[str, str] = {}
+        self.display: dict[str, str] = {}
         self.used: dict[str, int] = {}
+        self.burst_used: dict[str, int] = {}
         self.count_ok = 0
         self.count_rej = 0
         self.sum_charges = 0
@@ -32,42 +34,71 @@ class Engine:
         self.count_rej += 1
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
-        if not parts:
+        line = line.rstrip("\r\n")
+        if not line:
             return
+        parts = line.split()
         key = parts[1] if len(parts) > 1 else ""
-        key_ok = 1 <= len(key) <= 8 and key.isalnum()
-        if parts[0] != "Q" or len(parts) != 5 or not key_ok:
+        key_ok = 1 <= len(key) <= 8 and key.isascii() and key.isalnum()
+        if not parts or parts[0] != "Q" or len(parts) < 5 or not key_ok:
             self._emit(f"R {key if key_ok else '????????'} FMT")
             self.count_rej += 1
             return
-        _, key, calls_tok, tier, region = parts
-        if not (calls_tok.isdigit() and 1 <= len(calls_tok) <= 7):
+        _, key, calls_tok, tier, region = parts[:5]
+        if not (calls_tok.isascii() and calls_tok.isdigit() and 1 <= len(calls_tok) <= 7):
             self._reject(key, "CALLS")
             return
         calls = int(calls_tok)
         if tier not in ("F", "S", "P"):
             self._reject(key, "TIER")
             return
-        if not (len(region) == 2 and region.isalpha() and region.isupper()):
+        if not (len(region) == 2 and region.isascii() and region.isalpha()):
             self._reject(key, "REGION")
             return
+        region = region.upper()
 
-        if key not in self.tier:
-            self.tier[key] = tier
-            self.used[key] = 0
-        elif tier != self.tier[key]:
-            self._reject(key, "TIER")
+        # The engine matches keys without regard to case, but retains the
+        # spelling from the first event for all subsequent output.
+        canonical = key.upper()
+        if calls == 0:
             return
+        if canonical not in self.tier:
+            self.tier[canonical] = tier
+            self.display[canonical] = key
+            self.used[canonical] = 0
+            self.burst_used[canonical] = 0
+        elif tier != self.tier[canonical]:
+            order = {"F": 0, "S": 1, "P": 2}
+            if order[tier] != order[self.tier[canonical]] + 1:
+                self._reject(self.display[canonical], "TIER")
+                return
+            self.tier[canonical] = tier
 
-        limit = QUOTAS[self.tier[key]]
-        used = self.used[key]
-        within = max(0, min(calls, limit - used))
+        key = self.display[canonical]
+        tier = self.tier[canonical]
+        limit = QUOTAS[tier]
+        used = self.used[canonical]
+        within = max(0, min(calls, limit + self.burst_used[canonical] - used))
         over = calls - within
-        charge = math.ceil(over / 100) * RATES[self.tier[key]]
-        self.used[key] = used + calls
 
-        left = max(0, limit - self.used[key])
+        # Fully included events credit a tenth of their calls to the legacy
+        # burst bank. An event crossing the raw quota boundary is instead
+        # charged on its entire call count.
+        crossing = used > 0 and over > 0
+        rounded_over = calls if crossing else over
+        if rounded_over % 100 == 50:
+            blocks = rounded_over // 100
+        else:
+            blocks = math.ceil(rounded_over / 100)
+        rate = RATES[tier]
+        if tier == "P" and region in ("BR", "IN"):
+            rate = 5
+        charge = blocks * rate
+        if used == 0 and over == 0:
+            self.burst_used[canonical] = calls // 10
+        self.used[canonical] = used + calls
+
+        left = max(0, limit - self.used[canonical] + self.burst_used[canonical])
         self._emit(f"B {key} {charge} {left}")
         self.count_ok += 1
         self.sum_charges += charge
