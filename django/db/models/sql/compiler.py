@@ -1836,7 +1836,30 @@ class SQLUpdateCompiler(SQLCompiler):
         query.clear_ordering(force=True)
         query.extra = {}
         query.select = []
-        query.add_fields([query.get_meta().pk.name])
+        # Column 0 is always the updated model's primary key. Each updated
+        # ancestor gets its own identifier column, reusing column 0 when the
+        # parent-link path preserves primary key identity.
+        select_names = [query.get_meta().pk.name]
+        ancestor_columns = {}
+        for model in self.query.related_updates:
+            path = query.get_meta().get_path_to_parent(model)
+            if all(
+                path_info.join_field.primary_key
+                and path_info.target_fields == (path_info.to_opts.pk,)
+                for path_info in path
+            ):
+                ancestor_columns[model] = 0
+            else:
+                ancestor_columns[model] = len(select_names)
+                select_names.append(
+                    LOOKUP_SEP.join(
+                        [
+                            *(path_info.join_field.name for path_info in path),
+                            model._meta.pk.name,
+                        ]
+                    )
+                )
+        query.add_fields(select_names)
         super().pre_sql_setup()
 
         must_pre_select = (
@@ -1850,11 +1873,15 @@ class SQLUpdateCompiler(SQLCompiler):
             # Either we're using the idents in multiple update queries (so
             # don't want them to change), or the db backend doesn't support
             # selecting from the updating table (e.g. MySQL).
-            idents = []
+            child_ids = []
+            related_ids = {model: [] for model in self.query.related_updates}
             for rows in query.get_compiler(self.using).execute_sql(MULTI):
-                idents.extend(r[0] for r in rows)
-            self.query.add_filter("pk__in", idents)
-            self.query.related_ids = idents
+                for row in rows:
+                    child_ids.append(row[0])
+                    for model, column in ancestor_columns.items():
+                        related_ids[model].append(row[column])
+            self.query.add_filter("pk__in", child_ids)
+            self.query.related_ids = related_ids
         else:
             # The fast path. Filters and updates in one query.
             self.query.add_filter("pk__in", query)
