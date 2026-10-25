@@ -27,5 +27,6 @@ class Repository:
         if after is not None:
             rows = [r for r in rows if is_after(r, after)]
         page_items = rows[:limit]
-        next_cursor = encode_cursor(page_items[-1]) if page_items else None
+        has_next = len(rows) > len(page_items)
+        next_cursor = encode_cursor(page_items[-1]) if page_items and has_next else None
         return Page(page_items, next_cursor)
