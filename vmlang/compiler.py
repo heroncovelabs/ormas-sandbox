@@ -8,6 +8,66 @@ targets are only known once the skipped code has been emitted (backpatching).
 """
 
 
+_BINARY_OPS = {
+    "+": "ADD",
+    "-": "SUB",
+    "*": "MUL",
+    "/": "DIV",
+    "==": "EQ",
+    "<": "LT",
+    ">": "GT",
+}
+
+
 def compile_expr(ast):
     """Return a flat list of instructions that computes ``ast`` on the VM stack."""
-    raise NotImplementedError
+    code = []
+
+    def emit(node):
+        op = node[0]
+
+        if op == "lit":
+            code.append(("PUSH", node[1]))
+        elif op == "var":
+            code.append(("LOAD", node[1]))
+        elif op == "not":
+            emit(node[1])
+            code.append(("NOT",))
+        elif op in _BINARY_OPS:
+            emit(node[1])
+            emit(node[2])
+            code.append((_BINARY_OPS[op],))
+        elif op == "and":
+            emit(node[1])
+            code.append(("DUP",))
+            false_jump = len(code)
+            code.append(("JUMP_IF_FALSE", None))
+            code.append(("POP",))
+            emit(node[2])
+            code[false_jump] = ("JUMP_IF_FALSE", len(code))
+        elif op == "or":
+            emit(node[1])
+            code.append(("DUP",))
+            false_jump = len(code)
+            code.append(("JUMP_IF_FALSE", None))
+            end_jump = len(code)
+            code.append(("JUMP", None))
+            code[false_jump] = ("JUMP_IF_FALSE", len(code))
+            code.append(("POP",))
+            emit(node[2])
+            code[end_jump] = ("JUMP", len(code))
+        elif op == "if":
+            emit(node[1])
+            false_jump = len(code)
+            code.append(("JUMP_IF_FALSE", None))
+            emit(node[2])
+            end_jump = len(code)
+            code.append(("JUMP", None))
+            code[false_jump] = ("JUMP_IF_FALSE", len(code))
+            emit(node[3])
+            code[end_jump] = ("JUMP", len(code))
+        else:
+            raise ValueError(f"Unknown AST node: {op!r}")
+
+    emit(ast)
+    return code
