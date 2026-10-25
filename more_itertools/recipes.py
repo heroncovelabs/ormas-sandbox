@@ -890,18 +890,27 @@ def iter_index(iterable, value, start=0, stop=None):
     """
     seq_index = getattr(iterable, 'index', None)
     if seq_index is None:
-        # Slow path for general iterables
-        iterator = islice(iterable, start, stop)
-        for i, element in enumerate(iterator, start):
-            if element is value or element == value:
-                yield i
-    else:
-        # Fast path for sequences
-        stop = len(iterable) if stop is None else stop
-        i = start - 1
-        with suppress(ValueError):
-            while True:
-                yield (i := seq_index(value, i + 1, stop))
+        if (start is not None and start < 0) or (stop is not None and stop < 0):
+            # Negative indexes are relative to the end, so the length of
+            # *iterable* must be known; materialize it and use the same
+            # from-the-end semantics as the built-in sequence types.
+            iterable = list(iterable)
+            seq_index = iterable.index
+        else:
+            # Slow path for general iterables
+            iterator = islice(iterable, start, stop)
+            for i, element in enumerate(iterator, start):
+                if element is value or element == value:
+                    yield i
+            return
+
+    # Fast path for sequences
+    stop = len(iterable) if stop is None else stop
+    start = 0 if start is None else start
+    i = start - 1
+    with suppress(ValueError):
+        while True:
+            yield (i := seq_index(value, i + 1, stop))
 
 
 def sieve(n):
