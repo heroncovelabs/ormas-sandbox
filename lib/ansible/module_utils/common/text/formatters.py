@@ -20,6 +20,22 @@ SIZE_RANGES = {
     'B': 1,
 }
 
+# Full-word size prefixes, keyed by the first letter of the unit.
+_HUMAN_SIZE_PREFIXES = {
+    'Y': 'yotta',
+    'Z': 'zetta',
+    'E': 'exa',
+    'P': 'peta',
+    'T': 'tera',
+    'G': 'giga',
+    'M': 'mega',
+    'K': 'kilo',
+    'B': '',
+}
+
+# Whole string: ASCII decimal number, optional ASCII spaces, optional unit word, optional trailing ASCII spaces.
+_HUMAN_SIZE_RE = re.compile(r'^([0-9]+\.?[0-9]*|\.[0-9]+) *([A-Za-z]+)? *\Z')
+
 
 def lenient_lowercase(lst):
     """Lowercase elements of a list.
@@ -53,7 +69,7 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         The function expects 'b' (lowercase) as a bit identifier, e.g. 'Mb'/'Kb'/etc.
         if 'MB'/'KB'/... is passed, the ValueError will be rased.
     """
-    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
+    m = _HUMAN_SIZE_RE.match(str(number))
     if m is None:
         raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
     try:
@@ -87,9 +103,9 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         if range_key == 'B':
             expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
 
-        if unit_class_name in unit.lower():
-            pass
-        elif unit[1] != unit_class:
+        abbreviation_ok = len(unit) == 2 and unit[1] == unit_class
+        full_word_ok = unit.lower() == _HUMAN_SIZE_PREFIXES[range_key] + unit_class_name
+        if not (abbreviation_ok or full_word_ok):
             raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
 
     return int(round(num * limit))

@@ -1,0 +1,3 @@
+---
+bugfixes:
+- human_to_bytes filter - reject malformed size strings instead of converting them, including trailing text after the unit, non-ASCII digits, non-ASCII separators, leading whitespace, and invalid units (https://github.com/ansible/ansible/issues/82075).

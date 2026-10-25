@@ -4,6 +4,12 @@ DOCUMENTATION:
   short_description: Get bytes from string
   description:
     - Convert a human-readable byte or bit string into a number bytes.
+    - The input must begin with an ASCII decimal number at its first character, optionally followed by ASCII spaces, a unit, and trailing ASCII spaces.
+    - The unit is either a single size letter (V(Y), V(Z), V(E), V(P), V(T), V(G), V(M), V(K), V(B)), a two-letter abbreviation, or the full word for that size.
+    - For abbreviations, the second letter is V(B) for bytes and V(b) for bits.
+    - Full-word units are case-insensitive, such as V(kilobyte) or V(kilobit), with V(byte) and V(bit) for the B unit.
+    - When O(isbits) is V(False), units are read as bytes. When O(isbits) is V(True), units are read as bits.
+    - Any other input raises an error, such as leading whitespace, an unrecognized unit, digits outside the ASCII range, or text after the unit.
   positional: _input, default_unit, isbits
   options:
     _input:
@@ -27,6 +33,9 @@ EXAMPLES: |
 
   # this is an error, wants bits, got bytes
   ERROR: '{{ "1.15 GB" | human_to_bytes(isbits=true) }}'
+
+  # this is an error, the string has no valid size format
+  ERROR: '{{ "10 BBQ sticks please" | human_to_bytes }}'
 
 RETURN:
   _value:
