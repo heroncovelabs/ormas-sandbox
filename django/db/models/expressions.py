@@ -1299,6 +1299,10 @@ class When(Expression):
         template_params = extra_context
         sql_params = []
         condition_sql, condition_params = compiler.compile(self.condition)
+        if not condition_sql:
+            # An empty condition matches everything. Let Case use this branch's
+            # result as its default.
+            return "", []
         template_params["condition"] = condition_sql
         sql_params.extend(condition_params)
         result_sql, result_params = compiler.compile(self.result)
@@ -1383,14 +1387,20 @@ class Case(SQLiteNumericMixin, Expression):
         template_params = {**self.extra, **extra_context}
         case_parts = []
         sql_params = []
+        default = self.default
         for case in self.cases:
             try:
                 case_sql, case_params = compiler.compile(case)
             except EmptyResultSet:
                 continue
+            if not case_sql:
+                # Unconditional branch: its result is the effective default and
+                # subsequent branches are unreachable.
+                default = case.result
+                break
             case_parts.append(case_sql)
             sql_params.extend(case_params)
-        default_sql, default_params = compiler.compile(self.default)
+        default_sql, default_params = compiler.compile(default)
         if not case_parts:
             return default_sql, default_params
         case_joiner = case_joiner or self.case_joiner
