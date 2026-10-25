@@ -5950,7 +5950,82 @@ def _symbolic_factor_list(expr, opt, method):
 
                 factors.append((_factors_product(other), exp))
 
+    if method == 'sqf':
+        _coeff, factors = _merge_sqf_factors(factors)
+        coeff *= _coeff
+
     return coeff, factors
+
+
+def _merge_sqf_factors(factors):
+    """Combine square-free ``Poly`` factors that share a multiplicity.
+
+    Factors coming from different bases (e.g. ``(x - 2)**3*(x - 3)**3``)
+    are each square-free, but factors with the same integer multiplicity
+    must be multiplied together so that the output is consistent with
+    what ``sqf_list`` returns for the expanded polynomial.
+    """
+    eligible, others = [], []
+
+    for f, k in factors:
+        if isinstance(f, Poly) and isinstance(k, (int, Integer)):
+            eligible.append((f, int(k)))
+        else:
+            others.append((f, k))
+
+    # Split overlapping factors so that the eligible factors are pairwise
+    # coprime; shared components accumulate their multiplicities.
+    coeff, coprime = _coprime_sqf_basis(eligible)
+
+    buckets = {}
+    for f, k in coprime:
+        if k in buckets:
+            buckets[k] = buckets[k].mul(f)
+        else:
+            buckets[k] = f
+
+    merged = [(f, k) for k, f in buckets.items()]
+    merged.extend(others)
+
+    return coeff, merged
+
+
+def _coprime_sqf_basis(pairs):
+    """Return a coefficient and pairwise coprime ``(Poly, int)`` pairs.
+
+    Every returned factor is a product of pieces of the input factors.
+    Constant quotients are collected in the coefficient so that the total
+    product (with multiplicities) is preserved exactly.
+    """
+    coeff = S.One
+    pending = list(pairs)
+    basis = []
+
+    while pending:
+        f, k = pending.pop()
+
+        if not k:
+            continue
+        if f.is_ground:
+            coeff *= f.as_expr()**k
+            continue
+
+        for i, (g, m) in enumerate(basis):
+            d = f.gcd(g)
+
+            if not d.is_ground:
+                del basis[i]
+
+                pending.append((d, k + m))
+
+                pending.append((f.exquo(d), k))
+                pending.append((g.exquo(d), m))
+
+                break
+        else:
+            basis.append((f, k))
+
+    return coeff, basis
 
 
 def _symbolic_factor(expr, opt, method):
