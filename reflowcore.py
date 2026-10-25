@@ -23,28 +23,39 @@ def _valid_word(token: str) -> bool:
     return 1 <= len(token) <= WORD_MAX and token.isascii() and token.isalnum()
 
 
+def _fit_len(word: str) -> int:
+    """Width a word occupies for the wrap test (digits do not count)."""
+    return sum(1 for c in word if c.isalpha())
+
+
 class Engine:
-    """Layout engine: incremental append is an optimization of reflow."""
+    """Layout engine mirroring the legacy binary's observable behaviour.
+
+    Per line we keep three things: the words, ``fit`` (the width used by
+    the wrap test) and ``lens`` (the length the digest weighs).
+    """
 
     def __init__(self) -> None:
         self.width = 40
         self.doc: list[str] = []
-        # each line: [words...]; a line's length is the characters on it
-        # including the single joining spaces
         self.lines: list[list[str]] = []
+        self.fit: list[int] = []
+        self.lens: list[int] = []
         self.words = 0
         self.reflows = 0
         self.rejected = 0
 
     def handle(self, line: str) -> str:
-        if line == "W" or line.startswith("W "):
-            reply = self._width(line.split())
-        elif line == "A" or line.startswith("A "):
-            reply = self._append(line.split())
-        elif line == "R" or line.startswith("R "):
-            reply = self._reflow(line.split())
-        elif line == "D" or line.startswith("D "):
-            reply = self._digest(line.split())
+        tokens = line.split()
+        cmd = tokens[0] if tokens else ""
+        if cmd == "W":
+            reply = self._width(tokens)
+        elif cmd == "A":
+            reply = self._append(tokens)
+        elif cmd == "R":
+            reply = self._reflow(tokens)
+        elif cmd == "D":
+            reply = self._digest(tokens)
         else:
             reply = "E FMT"
         if reply.startswith("E "):
@@ -54,12 +65,23 @@ class Engine:
     def trailer(self) -> str:
         return f"X {self.words} {self.reflows} {self.rejected}"
 
-    @staticmethod
-    def _line_len(line: list[str]) -> int:
-        return sum(len(w) for w in line) + len(line) - 1
+    def _place(self, word: str) -> None:
+        """Incremental greedy placement of one word (joins if it fits)."""
+        if self.lines and not self.lines[-1]:
+            self.lines[-1].append(word)
+            self.fit[-1] = _fit_len(word)
+            self.lens[-1] = len(word)
+        elif self.lines and self.fit[-1] + 1 + _fit_len(word) <= self.width:
+            self.lines[-1].append(word)
+            self.fit[-1] += 1 + _fit_len(word)
+            self.lens[-1] += 1 + len(word)
+        else:
+            self.lines.append([word])
+            self.fit.append(_fit_len(word))
+            self.lens.append(len(word))
 
     def _width(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return "E FMT"
         w = tokens[1]
         if not (2 <= len(w) <= 3 and w.isascii() and w.isdigit()):
@@ -67,48 +89,57 @@ class Engine:
         v = int(w)
         if not WIDTH_MIN <= v <= WIDTH_MAX:
             return "E WIDTH"
-        # SPEC: W resets nothing else; existing lines are laid out at the
-        # width that was current when they were built.
         self.width = v
+        # Changing the width re-lays only the current (last) line.
+        if self.lines and self.lines[-1]:
+            words = self.lines.pop()
+            self.fit.pop()
+            self.lens.pop()
+            self.lines.append([words[0]])
+            self.fit.append(_fit_len(words[0]))
+            self.lens.append(len(words[0]))
+            for word in words[1:]:
+                self._place(word)
         return "OK"
 
     def _append(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return "E FMT"
         word = tokens[1]
         if not _valid_word(word):
             return "E WORD"
-        if len(word) > self.width:
-            return "E WORD"  # SPEC: a word longer than the width is rejected
         self.doc.append(word)
-        if (self.lines and
-                self._line_len(self.lines[-1]) + 1 + len(word) <= self.width):
-            self.lines[-1].append(word)
-        else:
-            self.lines.append([word])
+        self._place(word)
         self.words += 1
         return f"L {len(self.lines)}"
 
     def _reflow(self, tokens: list[str]) -> str:
-        if len(tokens) != 1:
-            return "E FMT"
-        # SPEC: reflow re-lays the whole document with the same greedy
-        # rule; append is an optimization of reflow, so the layouts match.
+        # Legacy reflow clips stored words wider than the width (by their
+        # wrap width, digits excluded) down to the width, permanently.
+        self.doc = [w[:self.width] if _fit_len(w) > self.width else w
+                    for w in self.doc]
         self.lines = []
+        self.fit = []
+        self.lens = []
         for word in self.doc:
-            if (self.lines and
-                    self._line_len(self.lines[-1]) + 1 + len(word) <= self.width):
+            if self.lines and self.fit[-1] + 1 + _fit_len(word) < self.width:
                 self.lines[-1].append(word)
+                self.fit[-1] += 1 + _fit_len(word)
+                self.lens[-1] += len(word)
             else:
                 self.lines.append([word])
+                self.fit.append(_fit_len(word))
+                self.lens.append(len(word))
+        if not self.lines:
+            # An empty document still reports one (empty) line.
+            self.lines = [[]]
+            self.fit = [0]
+            self.lens = [0]
         self.reflows += 1
         return f"L {len(self.lines)}"
 
     def _digest(self, tokens: list[str]) -> str:
-        if len(tokens) != 1:
-            return "E FMT"
-        total = sum(self._line_len(line) * _WEIGHTS[i % 2]
-                    for i, line in enumerate(self.lines))
+        total = sum(n * _WEIGHTS[i % 2] for i, n in enumerate(self.lens))
         return f"D {total % DIGEST_MOD}"
 
 
