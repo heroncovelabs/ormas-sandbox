@@ -33,20 +33,30 @@ class Calculator:
         self.count_rej += 1
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
-        if not parts:
+        record = line.split("\r", 1)[0].split("\n", 1)[0]
+        if record == "":
             return
+        parts = _scan_fields(record)
         declid = parts[1] if len(parts) > 1 else ""
-        id_ok = 1 <= len(declid) <= 10 and declid.isalnum()
-        if parts[0] != "D" or len(parts) != 8 or not id_ok:
+        id_ok = (
+            1 <= len(declid) <= 10
+            and declid.isascii()
+            and declid.isalnum()
+        )
+        if not parts or parts[0] != "D" or len(parts) < 8 or not id_ok:
             self._emit(f"R {declid if id_ok else '??????????'} FMT")
             self.count_rej += 1
             return
-        _, declid, origin, hs, mode, currency, value_tok, weight_tok = parts
-        if not (len(origin) == 2 and origin.isalpha() and origin.isupper()):
+        _, declid, origin, hs, mode, currency, value_tok, weight_tok = parts[:8]
+        if not (
+            len(origin) == 2
+            and origin.isascii()
+            and origin.isalpha()
+            and origin.isupper()
+        ):
             self._reject(declid, "ORIGIN")
             return
-        if not (len(hs) == 6 and hs.isdigit()):
+        if not (len(hs) == 6 and hs.isascii() and hs.isdigit()):
             self._reject(declid, "HS")
             return
         if mode not in ("A", "S", "R"):
@@ -55,10 +65,18 @@ class Calculator:
         if currency not in ("USD", "EUR", "JPY"):
             self._reject(declid, "CUR")
             return
-        if not (value_tok.isdigit() and 1 <= len(value_tok) <= 9):
+        if not (
+            value_tok.isascii()
+            and value_tok.isdigit()
+            and 1 <= len(value_tok) <= 9
+        ):
             self._reject(declid, "VALUE")
             return
-        if not (weight_tok.isdigit() and 1 <= len(weight_tok) <= 8):
+        if not (
+            weight_tok.isascii()
+            and weight_tok.isdigit()
+            and 1 <= len(weight_tok) <= 8
+        ):
             self._reject(declid, "WEIGHT")
             return
         value, weight_dg = int(value_tok), int(weight_tok)
@@ -68,22 +86,31 @@ class Calculator:
             return
 
         duty = 0
-        if chapter != 99:
-            rate_bp = None
-            for lo, hi, bp in RATE_BANDS:
+        if chapter < 98:
+            for lo, hi, rate_bp in RATE_BANDS:
                 if lo <= chapter <= hi:
-                    rate_bp = bp
+                    duty = _round_duty(value, rate_bp, declid)
                     break
-            if rate_bp is None:
-                self._reject(declid, "HS")
-                return
-            duty = _round_nearest(value * rate_bp, 10_000)
 
-        kilograms = (weight_dg + 5_000) // 10_000  # nearest kg per the spec
-        weight_fee = kilograms * WEIGHT_RATE_CENTS
+        levy = 0
+        if origin in ("KP", "IR", "SY", "CU") and 28 <= chapter <= 38:
+            levy = _round_nearest(value * 130, 10_000)
 
-        total = min(duty + weight_fee, CAP)
-        self._emit(f"T {declid} {duty} {weight_fee} 0 {total}")
+        # The cap applies before weight fees. Levy absorbs the excess first.
+        excess = duty + levy - CAP
+        if excess > 0:
+            levy_reduction = min(levy, excess)
+            levy -= levy_reduction
+            duty -= excess - levy_reduction
+
+        kilograms = (weight_dg + 9_999) // 10_000
+        rate = 55 if mode == "A" and 51 <= kilograms <= 100 else WEIGHT_RATE_CENTS
+        weight_fee = kilograms * rate
+        if mode == "S" and currency == "JPY":
+            weight_fee = 0
+
+        total = duty + levy + weight_fee
+        self._emit(f"T {declid} {duty} {weight_fee} {levy} {total}")
         self.count_ok += 1
         self.sum_total += total
 
@@ -93,9 +120,40 @@ class Calculator:
 
 def _round_nearest(numerator: int, denominator: int) -> int:
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
+    if 2 * remainder > denominator:
         return quotient + 1
     return quotient
+
+
+def _round_duty(value: int, rate_bp: int, declid: str) -> int:
+    quotient, remainder = divmod(value * rate_bp, 10_000)
+    if remainder == 0:
+        return quotient
+    audit = (
+        value > 2_000_000
+        and len(declid) > 1
+        and declid[-2:].isdigit()
+        and int(declid[-2:]) > 24
+    )
+    if audit:
+        return quotient
+    if 2 * remainder > 10_000 or (
+        2 * remainder == 10_000 and quotient % 2 == 1
+    ):
+        return quotient + 1
+    return quotient
+
+
+def _scan_fields(record: str) -> list[str]:
+    # The engine scans eight whitespace-delimited fields, with trailing text
+    # ignored. Its bounded field buffers silently truncate longer tokens.
+    fields = []
+    for token in record.split():
+        width = 7 if not fields else 63
+        fields.append(token[:width])
+        if len(fields) == 8:
+            break
+    return fields
 
 
 def main() -> None:
