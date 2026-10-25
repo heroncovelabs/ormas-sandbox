@@ -15,6 +15,7 @@ import sys
 
 ID_MAX = 8
 TARGET_MIN = 100
+WALK_IN_TARGET = 1000
 NO_LOT = "????????"
 
 
@@ -27,10 +28,14 @@ def _digits(token: str) -> bool:
 
 
 class Lot:
-    def __init__(self, target: int) -> None:
+    def __init__(self, name: str, target: int) -> None:
+        self.name = name
         self.target = target
         self.accum = 0
         self.certified = False
+        self.segments: list[int] = []
+        self.previous: int | None = None
+        self.repeat_count = 0
 
 
 class Engine:
@@ -46,7 +51,10 @@ class Engine:
     def handle(self, line: str) -> str:
         tokens = line.split()
         if not tokens:
-            return ""
+            if not line:
+                return ""
+            self.rejected += 1
+            return f"N {NO_LOT} FMT"
         if tokens[0] == "L":
             reply = self._register(tokens)
         elif tokens[0] == "H":
@@ -63,11 +71,11 @@ class Engine:
         return f"X {self.registered} {self.segments} {self.certs} {self.rejected}"
 
     def _find(self, lot: str) -> Lot | None:
-        return self.lots.get(lot)
+        return self.lots.get(lot.upper())
 
     def _register(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
@@ -80,31 +88,50 @@ class Engine:
             return f"N {lot} TARGET"
         if self._find(tokens[1]) is not None:
             return f"N {lot} DUP"
-        self.lots[tokens[1]] = Lot(int(target_tok))
+        key = tokens[1].upper()
+        self.lots[key] = Lot(tokens[1], int(target_tok))
         self.registered += 1
         return f"OK {len(self.lots)}"
 
     def _heat(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
         seg_tok = tokens[2]
-        if not _digits(seg_tok) or len(seg_tok) > 4 or int(seg_tok) < 1:
+        if not _digits(seg_tok) or len(seg_tok) > 4:
             return f"N {lot} SEG"
+        segment = int(seg_tok)
         k = self._find(tokens[1])
         if k is None:
-            return f"N {lot} UNKNOWN"
+            k = Lot(tokens[1], WALK_IN_TARGET)
+            self.lots[tokens[1].upper()] = k
         if k.certified:
             return f"N {lot} DONE"
-        k.accum += int(seg_tok)
+
+        grant = segment
+        if segment == k.previous:
+            k.repeat_count += 1
+            if k.repeat_count >= 3:
+                grant //= 2
+        else:
+            k.repeat_count = 0
+        if (
+            segment >= 8
+            and k.previous is not None
+            and segment < k.previous
+        ):
+            grant += segment // 8
+        k.accum += grant
+        k.segments.append(segment)
+        k.previous = segment
         self.segments += 1
-        return f"W {tokens[1]} {k.accum}"
+        return f"W {k.name} {k.accum}"
 
     def _certify(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
@@ -113,15 +140,29 @@ class Engine:
             return f"N {lot} UNKNOWN"
         if k.certified:
             return f"N {lot} DONE"
-        # SPEC: certification recomputes the lot's heatwork from its
-        # segment ledger; the total always equals the live accumulated
-        # heatwork, so the running sum stands in for the ledger.
-        total = k.accum
+
+        total = 0
+        previous: int | None = None
+        for segment in k.segments:
+            total += segment
+            if (
+                previous is not None
+                and segment >= 8
+                and segment * 2 <= previous
+            ):
+                total += segment // 8
+            previous = segment
+        if (
+            k.target >= 10000
+            and k.segments
+            and k.segments[0] < 100
+        ):
+            total -= 150
         k.certified = True
         self.certs += 1
         if total >= k.target:
-            return f"C {tokens[1]} PASS"
-        return f"C {tokens[1]} SHORT {k.target - total}"
+            return f"C {k.name} PASS"
+        return f"C {k.name} SHORT {k.target - total}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
@@ -129,8 +170,6 @@ def process(lines: list[str], out=None) -> list[str]:
     replies = []
     for raw in lines:
         line = raw.rstrip("\r\n")
-        if not line:
-            continue
         reply = engine.handle(line)
         if reply:
             replies.append(reply)
