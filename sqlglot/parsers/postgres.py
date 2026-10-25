@@ -191,7 +191,13 @@ class PostgresParser(parser.Parser):
     JSON_ARROWS_REQUIRE_JSON_TYPE = True
 
     COLUMN_OPERATORS = {
-        **parser.Parser.COLUMN_OPERATORS,
+        k: v
+        for k, v in parser.Parser.COLUMN_OPERATORS.items()
+        if k not in parser.Parser.JSON_OPERATORS
+    }
+
+    BINARY_OPERATORS = {
+        **parser.Parser.JSON_OPERATORS,
         TokenType.ARROW: lambda self, this, path: self.validate_expression(
             build_json_extract_path(
                 exp.JSONExtract, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE

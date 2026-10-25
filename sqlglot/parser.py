@@ -1066,6 +1066,16 @@ class Parser:
         ),
     }
 
+    JSON_OPERATORS: t.ClassVar = {
+        TokenType.ARROW: COLUMN_OPERATORS[TokenType.ARROW],
+        TokenType.DARROW: COLUMN_OPERATORS[TokenType.DARROW],
+        TokenType.HASH_ARROW: COLUMN_OPERATORS[TokenType.HASH_ARROW],
+        TokenType.DHASH_ARROW: COLUMN_OPERATORS[TokenType.DHASH_ARROW],
+        TokenType.PLACEHOLDER: COLUMN_OPERATORS[TokenType.PLACEHOLDER],
+    }
+
+    BINARY_OPERATORS: t.ClassVar = {}
+
     CAST_COLUMN_OPERATORS: t.ClassVar = {
         TokenType.DOTCOLON,
         TokenType.DCOLON,
@@ -6237,7 +6247,10 @@ class Parser:
         this = self._parse_term()
 
         while True:
-            if self._match_set(self.BITWISE):
+            if self._match_set(self.BINARY_OPERATORS):
+                op = self.BINARY_OPERATORS[self._prev.token_type]
+                this = op(self, this, self._parse_term())
+            elif self._match_set(self.BITWISE):
                 this = self.expression(
                     self.BITWISE[self._prev.token_type](this=this, expression=self._parse_term())
                 )
