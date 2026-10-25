@@ -1625,19 +1625,15 @@ class Rational(Number):
             q = 1
             gcd = 1
 
-        if not isinstance(p, SYMPY_INTS):
-            p = Rational(p)
-            q *= p.q
-            p = p.p
+        if isinstance(p, SYMPY_INTS) and isinstance(q, SYMPY_INTS):
+            p, q = int(p), int(q)
         else:
-            p = int(p)
-
-        if not isinstance(q, SYMPY_INTS):
-            q = Rational(q)
-            p *= q.q
-            q = q.p
-        else:
-            q = int(q)
+            # Convert independently to avoid modifying a string denominator
+            # before parsing it, then cross-multiply the integer components.
+            rp = Rational(p)
+            rq = Rational(q)
+            p = rp.p*rq.q
+            q = rp.q*rq.p
 
         # p and q are now ints
         if q == 0:
