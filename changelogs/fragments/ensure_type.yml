@@ -1,0 +1,6 @@
+bugfixes:
+- config - ``ensure_type()`` now preserves data tags (such as ``Origin``) on converted values, including each element of a list built from a tagged string, and preserves the original instance for unchanged values.
+- config - ``ensure_type()`` now coerces values consistently across supported types. Unhashable values no longer fail during boolean conversion, byte values are rejected for known types, and failed numeric coercions raise only the ``ValueError`` with the standard ``Invalid value provided for '<type>': <value>`` message.
+- config - sequence inputs for ``list`` and mapping inputs for ``dict`` are normalized to concrete ``list`` and ``dict`` instances.
+- config - ``pathspec`` and ``pathlist`` value types reject non-string inputs and non-string list items instead of attempting to resolve them as paths.
+- config - temporary path value types (``tmp``, ``tmppath``, ``temppath``) no longer propagate tags to the returned temporary path.

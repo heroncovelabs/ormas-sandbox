@@ -20,6 +20,7 @@ from ansible.errors import AnsibleOptionsError, AnsibleError, AnsibleUndefinedCo
 from ansible.module_utils.common.sentinel import Sentinel
 from ansible.module_utils.common.text.converters import to_text, to_bytes, to_native
 from ansible.module_utils.common.yaml import yaml_load
+from ansible.module_utils._internal._datatag import AnsibleTagHelper
 from ansible.module_utils.six import string_types
 from ansible.module_utils.parsing.convert_bool import boolean
 from ansible.parsing.quoting import unquote
@@ -65,6 +66,27 @@ def _get_config_label(plugin_type: str, plugin_name: str, config: str) -> str:
     return entry
 
 
+_KNOWN_VALUE_TYPES = frozenset((
+    'bool', 'boolean', 'int', 'integer', 'float', 'list', 'none', 'path',
+    'tmp', 'temppath', 'tmppath', 'pathspec', 'pathlist', 'dict', 'dictionary', 'str', 'string',
+))
+
+
+def _propagate_tags(src: t.Any, result: t.Any) -> t.Any:
+    """Return `result` with the data tags of `src` applied, preserving the original instance when unchanged."""
+    if result is src:
+        return result
+
+    result = AnsibleTagHelper.tag_copy(src, result)
+
+    # Compare after copying tags so unchanged tagged values retain their original instance.
+    # Checking the type also ensures conversions such as True to 1 produce the requested type.
+    if type(result) is type(src) and result == src:
+        return src
+
+    return result
+
+
 # FIXME: see if we can unify in module_utils with similar function used by argspec
 def ensure_type(value, value_type, origin=None, origin_ftype=None):
     """ return a configuration variable with casting
@@ -92,102 +114,128 @@ def ensure_type(value, value_type, origin=None, origin_ftype=None):
         :string: Same as 'str'
     """
 
-    errmsg = ''
+    if value is None:
+        return None
+
+    original_value = value
+    requested_type = value_type.lower() if value_type else value_type
+    value_type = requested_type
+
+    def invalid() -> ValueError:
+        return ValueError(f'Invalid value provided for {requested_type!r}: {original_value!r}')
+
     basedir = None
     if origin and os.path.isabs(origin) and os.path.exists(to_bytes(origin)):
         basedir = origin
 
-    if value_type:
-        value_type = value_type.lower()
+    if value_type in _KNOWN_VALUE_TYPES and isinstance(value, bytes):
+        raise invalid()
 
-    if value is not None:
-        if value_type in ('boolean', 'bool'):
-            value = boolean(value, strict=False)
+    if value_type in ('boolean', 'bool'):
+        return _propagate_tags(original_value, boolean(value, strict=False))
 
-        elif value_type in ('integer', 'int'):
-            if not isinstance(value, int):
-                try:
-                    if (decimal_value := decimal.Decimal(value)) == (int_part := int(decimal_value)):
-                        value = int_part
-                    else:
-                        errmsg = 'int'
-                except decimal.DecimalException:
-                    errmsg = 'int'
+    if value_type in ('integer', 'int'):
+        if isinstance(value, int):
+            return _propagate_tags(original_value, int(value) if isinstance(value, bool) else value)
 
-        elif value_type == 'float':
-            if not isinstance(value, float):
-                value = float(value)
+        try:
+            decimal_value = decimal.Decimal(value)
+            int_value = int(decimal_value)
+        except (decimal.DecimalException, TypeError, ValueError, OverflowError):
+            raise invalid() from None
 
-        elif value_type == 'list':
-            if isinstance(value, string_types):
-                value = [unquote(x.strip()) for x in value.split(',')]
-            elif not isinstance(value, Sequence):
-                errmsg = 'list'
+        if decimal_value != int_value:
+            raise invalid()
 
-        elif value_type == 'none':
-            if value == "None":
-                value = None
+        return _propagate_tags(original_value, int_value)
 
-            if value is not None:
-                errmsg = 'None'
+    if value_type == 'float':
+        if isinstance(value, float):
+            return value
 
-        elif value_type == 'path':
-            if isinstance(value, string_types):
-                value = resolve_path(value, basedir=basedir)
-            else:
-                errmsg = 'path'
+        try:
+            result = float(value)
+        except (TypeError, ValueError, OverflowError):
+            raise invalid() from None
 
-        elif value_type in ('tmp', 'temppath', 'tmppath'):
-            if isinstance(value, string_types):
-                value = resolve_path(value, basedir=basedir)
-                if not os.path.exists(value):
-                    makedirs_safe(value, 0o700)
-                prefix = 'ansible-local-%s' % os.getpid()
-                value = tempfile.mkdtemp(prefix=prefix, dir=value)
-                atexit.register(cleanup_tmp_file, value, warn=True)
-            else:
-                errmsg = 'temppath'
+        return _propagate_tags(original_value, result)
 
-        elif value_type == 'pathspec':
-            if isinstance(value, string_types):
-                value = value.split(os.pathsep)
+    if value_type == 'list':
+        if isinstance(value, list):
+            return value
 
-            if isinstance(value, Sequence):
-                value = [resolve_path(x, basedir=basedir) for x in value]
-            else:
-                errmsg = 'pathspec'
+        if isinstance(value, str):
+            result = [_propagate_tags(original_value, unquote(x.strip())) for x in value.split(',')]
+            return _propagate_tags(original_value, result)
 
-        elif value_type == 'pathlist':
-            if isinstance(value, string_types):
-                value = [x.strip() for x in value.split(',')]
+        if isinstance(value, Sequence):
+            return _propagate_tags(original_value, list(value))
 
-            if isinstance(value, Sequence):
-                value = [resolve_path(x, basedir=basedir) for x in value]
-            else:
-                errmsg = 'pathlist'
+        raise invalid()
 
-        elif value_type in ('dict', 'dictionary'):
-            if not isinstance(value, Mapping):
-                errmsg = 'dictionary'
+    if value_type == 'none':
+        if isinstance(value, str) and value == 'None':
+            return None
 
-        elif value_type in ('str', 'string'):
-            if isinstance(value, (string_types, bool, int, float, complex)):
-                value = to_text(value, errors='surrogate_or_strict')
-                if origin_ftype and origin_ftype == 'ini':
-                    value = unquote(value)
-            else:
-                errmsg = 'string'
+        raise invalid()
 
-        # defaults to string type
-        elif isinstance(value, (string_types)):
-            value = to_text(value, errors='surrogate_or_strict')
-            if origin_ftype and origin_ftype == 'ini':
-                value = unquote(value)
+    if value_type == 'path':
+        if not isinstance(value, str):
+            raise invalid()
 
-        if errmsg:
-            raise ValueError(f'Invalid type provided for {errmsg!r}: {value!r}')
+        return _propagate_tags(original_value, resolve_path(value, basedir=basedir))
 
-    return to_text(value, errors='surrogate_or_strict', nonstring='passthru')
+    if value_type in ('tmp', 'temppath', 'tmppath'):
+        if not isinstance(value, str):
+            raise invalid()
+
+        base_path = resolve_path(value, basedir=basedir)
+        if not os.path.exists(base_path):
+            makedirs_safe(base_path, 0o700)
+        prefix = 'ansible-local-%s' % os.getpid()
+        temp_path = tempfile.mkdtemp(prefix=prefix, dir=base_path)
+        atexit.register(cleanup_tmp_file, temp_path, warn=True)
+        return temp_path
+
+    if value_type in ('pathspec', 'pathlist'):
+        if isinstance(value, str):
+            split_items = value.split(os.pathsep) if value_type == 'pathspec' else [x.strip() for x in value.split(',')]
+            items = [_propagate_tags(original_value, item) for item in split_items]
+        elif isinstance(value, Sequence):
+            items = value
+        else:
+            raise invalid()
+
+        if not all(isinstance(item, str) for item in items):
+            raise invalid()
+
+        resolved_items = [_propagate_tags(x, resolve_path(x, basedir=basedir)) for x in items]
+        return _propagate_tags(original_value, resolved_items)
+
+    if value_type in ('dict', 'dictionary'):
+        if type(value) is dict:
+            return value
+
+        if isinstance(value, Mapping):
+            return _propagate_tags(original_value, dict(value))
+
+        raise invalid()
+
+    if value_type in ('str', 'string'):
+        if not isinstance(value, (str, bool, int, float, complex)):
+            raise invalid()
+
+        result = to_text(value, errors='surrogate_or_strict')
+        if origin_ftype == 'ini':
+            result = unquote(result)
+
+        return _propagate_tags(original_value, result)
+
+    # unknown types (and no type) pass through unchanged, except for INI string values which are unquoted
+    if isinstance(value, str) and origin_ftype == 'ini':
+        return _propagate_tags(original_value, unquote(value))
+
+    return value
 
 
 # FIXME: see if this can live in utils/path
