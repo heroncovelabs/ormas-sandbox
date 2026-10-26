@@ -5950,7 +5950,34 @@ def _symbolic_factor_list(expr, opt, method):
 
                 factors.append((_factors_product(other), exp))
 
+    if method == 'sqf':
+        factors = _coalesce_sqf_factors(factors)
+
     return coeff, factors
+
+
+def _coalesce_sqf_factors(factors):
+    """
+    Multiply polynomial factors sharing the same concrete integer
+    multiplicity, so that each multiplicity appears at most once.
+    """
+    groups, others = {}, []
+
+    for f, k in factors:
+        if isinstance(f, Poly) and sympify(k).is_Integer:
+            groups.setdefault(k, []).append(f)
+        else:
+            others.append((f, k))
+
+    for k, polys in groups.items():
+        product = polys[0]
+
+        for poly in polys[1:]:
+            product = product*poly
+
+        others.append((product, k))
+
+    return others
 
 
 def _symbolic_factor(expr, opt, method):
