@@ -1,5 +1,7 @@
 from txnkv.journal import UndoJournal
 
+_MISSING = object()
+
 
 class Store:
     """An in-memory key/value store with nested transactions.
@@ -16,28 +18,39 @@ class Store:
 
     def get(self, key):
         """Return the value for ``key`` or raise ``KeyError`` if absent."""
-        raise NotImplementedError
+        return self._data[key]
 
     def set(self, key, value):
         """Set ``key`` to ``value``, recording how to undo it."""
-        raise NotImplementedError
+        data = self._data
+        old = data.get(key, _MISSING)
+        if old is _MISSING:
+            def undo():
+                data.pop(key, None)
+        else:
+            def undo():
+                data[key] = old
+        data[key] = value
+        self._journal.record(undo)
 
     def delete(self, key):
         """Delete ``key`` (``KeyError`` if absent), recording how to undo it."""
-        raise NotImplementedError
+        old = self._data[key]
+        del self._data[key]
+        self._journal.record(lambda: self._data.__setitem__(key, old))
 
     def keys(self):
         """Return the current set of keys."""
-        raise NotImplementedError
+        return set(self._data)
 
     def begin(self):
         """Open a new transaction (transactions may nest)."""
-        raise NotImplementedError
+        self._journal.push()
 
     def commit(self):
         """Commit the innermost open transaction. ``RuntimeError`` if none is open."""
-        raise NotImplementedError
+        self._journal.commit()
 
     def rollback(self):
         """Roll back the innermost open transaction. ``RuntimeError`` if none is open."""
-        raise NotImplementedError
+        self._journal.rollback()
