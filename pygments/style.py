@@ -55,6 +55,22 @@ _deprecated_ansicolors = {
 ansicolors = set(_ansimap)
 
 
+class _CSSKeywordColor(str):
+    """A CSS keyword color (e.g. ``transparent``) emitted verbatim.
+
+    ``pygments.formatters.html.webify`` passes values through untouched when
+    they look like ``var()``/``calc()`` expressions, so keyword colors report
+    those prefixes to keep their exact spelling in generated CSS.
+    """
+
+    _verbatim_prefixes = ('var', 'calc')
+
+    def startswith(self, prefix, *args):
+        if prefix in self._verbatim_prefixes:
+            return True
+        return str.startswith(self, prefix, *args)
+
+
 class StyleMeta(type):
 
     def __new__(mcs, name, bases, dct):
@@ -66,6 +82,8 @@ class StyleMeta(type):
         def colorformat(text):
             if text in ansicolors:
                 return text
+            if text == 'transparent':
+                return _CSSKeywordColor(text)
             if text[0:1] == '#':
                 col = text[1:]
                 if len(col) == 6:
