@@ -898,6 +898,16 @@ class String(Token):
     not_in_args = ['text']
     is_Atom = True
 
+    @property
+    def args(self):
+        return (self.text,)
+
+    def matches(self, expr, repl_dict=None, old=False):
+        # Atomic: only matches an equal string (its args are raw str values)
+        if self == expr:
+            return {} if repl_dict is None else dict(repl_dict)
+        return None
+
     @classmethod
     def _construct_text(cls, text):
         if not isinstance(text, str):
