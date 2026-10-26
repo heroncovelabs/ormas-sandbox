@@ -278,10 +278,16 @@ def intersection_sets(self, other): # noqa:F811
 
     if other == S.Reals:
         from sympy.core.function import expand_complex
-        from sympy.solvers.solvers import denoms, solve_linear
         from sympy.core.relational import Eq
+        from sympy.solvers.solvers import denoms, solve_linear
+        from sympy.solvers.solveset import solveset
         f = self.lamda.expr
         n = self.lamda.variables[0]
+
+        # A real Dummy is only substituted when the parameter domain is
+        # provably real; otherwise the intersection is left unresolved.
+        if base_set.is_subset(S.Reals) is not True:
+            return None
 
         n_ = Dummy(n.name, real=True)
         f_ = f.subs(n, n_)
@@ -303,22 +309,20 @@ def intersection_sets(self, other): # noqa:F811
         elif ifree != {n}:
             return None
         else:
-            # univarite imaginary part in same variable
-            x, xis = zip(*[solve_linear(i, 0) for i in Mul.make_args(im) if n in i.free_symbols])
-            if x and all(i == n for i in x):
-                base_set -= FiniteSet(xis)
+            # Keep the zeros of the imaginary part within the parameter
+            # domain. Denominator zeros are excluded separately below.
+            numerator = im.as_numer_denom()[0]
+            solns = [solve_linear(i, 0, symbols=[n])
+                     for i in Mul.make_args(numerator) if i.has(n)]
+            if solns and all(x == n for x, _ in solns):
+                base_set = base_set.intersect(FiniteSet(
+                    *(value for _, value in solns)))
             else:
-                base_set -= ConditionSet(n, Eq(im, 0), S.Integers)
-        # exclude values that make denominators 0
-        for i in denoms(f):
-            if i.has(n):
-                sol = list(zip(*[solve_linear(i, 0) for i in Mul.make_args(im) if n in i.free_symbols]))
-                if sol != []:
-                    x, xis = sol
-                    if x and all(i == n for i in x):
-                        base_set -= FiniteSet(xis)
-                else:
-                    base_set -= ConditionSet(n, Eq(i, 0), S.Integers)
+                base_set = ConditionSet(n, Eq(im, 0), base_set)
+        # exclude the real zeros of each parameter-dependent denominator
+        for d in denoms(f):
+            if d.has(n):
+                base_set -= solveset(d, n, S.Reals)
         return imageset(lam, base_set)
 
     elif isinstance(other, Interval):
