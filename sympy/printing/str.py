@@ -286,6 +286,10 @@ class StrPrinter(Printer):
                 pre = []
             dfactors = pre + [self.parenthesize(a, prec, strict=False)
                 for a in d]
+            # Group reciprocal powers that print with division despite their
+            # higher precedence, preserving nested denominators.
+            dfactors = ["(%s)" % s if s.startswith("1/") else s
+                for s in dfactors]
 
             n = '*'.join(nfactors)
             d = '*'.join(dfactors)
@@ -354,6 +358,9 @@ class StrPrinter(Printer):
         for item in pow_paren:
             if item.base in b:
                 b_str[b.index(item.base)] = "(%s)" % b_str[b.index(item.base)]
+
+        # Preserve grouping for denominator factors that print as reciprocals.
+        b_str = ["(%s)" % s if s.startswith("1/") else s for s in b_str]
 
         if not b:
             return sign + '*'.join(a_str)
