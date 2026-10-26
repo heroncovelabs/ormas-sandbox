@@ -18,6 +18,13 @@ BAL_MIN = 1000  # smallest registrable prepaid balance, tenths of a cent
 POST_MIN = 10  # smallest frankable postage, tenths of a cent
 NO_METER = "????????"
 
+# Behaviour observed from the legacy controller (the contract):
+DRIFT_STEP = 2000  # the controller levies one tenth of a cent per 2000 franked
+COARSE_BAL = 10000  # below this balance postage is rounded up to COARSE_STEP
+COARSE_STEP = 25
+COARSE_MIN = 25  # minimum postage accepted in the coarse regime
+RATE_LIMIT = 62000  # franking since last audit at/above which the rate is not refreshed
+
 
 def _valid_id(token: str) -> bool:
     return 1 <= len(token) <= ID_MAX and token.isascii() and token.isalnum()
@@ -35,6 +42,10 @@ class Meter:
         self.credits = 0  # ledger: total return credits granted
         self.last = 0  # last franked postage (return-credit rate)
         self.pool = 0  # franks not yet consumed by returns
+        self.since_audit = 0  # postage franked since the last audit
+        self.extra = 0  # extra charged (drift/rounding) since the last audit
+        self.true_last = 0  # most recent franked postage, whatever the rate
+        self.numbered = False  # id ends in a digit (coarse regime applies)
 
 
 class Engine:
@@ -73,11 +84,11 @@ class Engine:
         )
 
     def _find(self, meter: str) -> Meter | None:
-        return self.meters.get(meter)
+        return self.meters.get(meter.lower())
 
     def _register(self, tokens: list[str]) -> str:
         meter = tokens[1] if len(tokens) >= 2 else NO_METER
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {meter} FMT"
         if not _valid_id(tokens[1]):
             return f"N {meter} FMT"
@@ -86,35 +97,47 @@ class Engine:
             return f"N {meter} BAL"
         if self._find(tokens[1]) is not None:
             return f"N {meter} DUP"
-        self.meters[tokens[1]] = Meter(int(balance))
+        self.meters[tokens[1].lower()] = Meter(int(balance))
+        self.meters[tokens[1].lower()].numbered = tokens[1][-1].isdigit()
         self.registered += 1
         return f"OK {len(self.meters)}"
 
     def _frank(self, tokens: list[str]) -> str:
         meter = tokens[1] if len(tokens) >= 2 else NO_METER
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {meter} FMT"
         if not _valid_id(tokens[1]):
             return f"N {meter} FMT"
+        m = self._find(tokens[1])
         post_tok = tokens[2]
-        if not _digits(post_tok) or not 2 <= len(post_tok) <= 6 or int(post_tok) < POST_MIN:
+        coarse = m is not None and m.numbered and m.balance < COARSE_BAL
+        floor = COARSE_MIN if coarse else POST_MIN
+        if not _digits(post_tok) or not 2 <= len(post_tok) <= 6 or int(post_tok) < floor:
             return f"N {meter} POST"
         post = int(post_tok)
-        m = self._find(tokens[1])
         if m is None:
             return f"N {meter} UNKNOWN"
-        if post > m.balance:
+        base = -(-post // COARSE_STEP) * COARSE_STEP if coarse else post
+        fee = (m.since_audit + post) // DRIFT_STEP - m.since_audit // DRIFT_STEP
+        charge = base + fee
+        if charge > m.balance:
             return f"N {meter} LOW"
-        m.balance -= post
+        m.balance -= charge
+        m.extra += charge - post
         m.franked += post
-        m.last = post
+        m.true_last = post
+        rounding = base - post
+        fresh = m.since_audit == 0
+        m.since_audit += post
+        if m.since_audit < RATE_LIMIT and (not coarse or rounding <= 1 or fresh):
+            m.last = post
         m.pool += 1
         self.franks += 1
         return f"P {tokens[1]} {m.balance}"
 
     def _return(self, tokens: list[str]) -> str:
         meter = tokens[1] if len(tokens) >= 2 else NO_METER
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {meter} FMT"
         if not _valid_id(tokens[1]):
             return f"N {meter} FMT"
@@ -125,8 +148,7 @@ class Engine:
         m = self._find(tokens[1])
         if m is None:
             return f"N {meter} UNKNOWN"
-        if returned > m.pool:
-            return f"N {meter} RET"
+        returned = min(returned, m.pool)  # only pieces still in the pool count
         credit = returned * m.last
         m.balance += credit
         m.credits += credit
@@ -136,7 +158,7 @@ class Engine:
 
     def _audit(self, tokens: list[str]) -> str:
         meter = tokens[1] if len(tokens) >= 2 else NO_METER
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {meter} FMT"
         if not _valid_id(tokens[1]):
             return f"N {meter} FMT"
@@ -146,9 +168,14 @@ class Engine:
         expected = m.initial - m.franked + m.credits
         delta = expected - m.balance
         self.audits += 1
-        if delta == 0:
+        # the controller settles accumulated drift at each audit
+        reported = m.extra
+        m.extra = 0
+        m.since_audit = 0
+        m.last = m.true_last
+        if reported == 0:
             return f"Z {tokens[1]} MATCH"
-        return f"Z {tokens[1]} DRIFT {delta}"
+        return f"Z {tokens[1]} DRIFT {reported}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
