@@ -1,8 +1,14 @@
 """Recursive-descent parser: token stream -> expression tree.
 
-NOTE: this implementation is buggy. It folds every binary operator at a single
-precedence level, left to right, so it does not honor the precedence and
-associativity documented in the README/issue.
+Precedence, lowest to highest:
+
+1. ``+`` ``-``                  (left-associative)
+2. ``*`` ``/`` ``//`` ``%``     (left-associative)
+3. unary ``+`` ``-``
+4. ``**``                       (right-associative)
+
+Unary minus binds looser than ``**`` (``-2 ** 2 == -(2 ** 2)``), while the
+exponent of ``**`` may itself be a unary factor (``2 ** -2``).
 """
 
 from __future__ import annotations
@@ -21,6 +27,8 @@ _BINOP = {
     "DSTAR": "**",
 }
 _UNARY = {"PLUS": "+", "MINUS": "-"}
+_ADDITIVE = ("PLUS", "MINUS")
+_MULTIPLICATIVE = ("STAR", "SLASH", "DSLASH", "PERCENT")
 
 
 class _Parser:
@@ -46,20 +54,41 @@ class _Parser:
         return node
 
     def expression(self) -> Node:
-        # BUG: all binary operators share one precedence level and fold left to
-        # right, so e.g. 2 + 3 * 4 parses as (2 + 3) * 4 and 2 ** 3 ** 2 as
-        # (2 ** 3) ** 2.
-        node = self.atom()
-        while self.cur.kind in _BINOP:
+        # Level 1: ``+`` ``-``, left-associative.
+        node = self.term()
+        while self.cur.kind in _ADDITIVE:
             op = _BINOP[self.advance().kind]
-            node = BinOp(op, node, self.atom())
+            node = BinOp(op, node, self.term())
         return node
+
+    def term(self) -> Node:
+        # Level 2: ``*`` ``/`` ``//`` ``%``, left-associative.
+        node = self.unary()
+        while self.cur.kind in _MULTIPLICATIVE:
+            op = _BINOP[self.advance().kind]
+            node = BinOp(op, node, self.unary())
+        return node
+
+    def unary(self) -> Node:
+        # Level 3: unary ``+`` ``-``. Binds tighter than the binary operators
+        # above, but looser than ``**``: ``-2 ** 2`` parses as ``-(2 ** 2)``.
+        if self.cur.kind in _UNARY:
+            op = _UNARY[self.advance().kind]
+            return UnaryOp(op, self.unary())
+        return self.power()
+
+    def power(self) -> Node:
+        # Level 4: ``**``, right-associative. The exponent is a unary factor,
+        # so ``2 ** -2`` is valid, and recursing through ``unary`` makes
+        # ``2 ** 3 ** 2`` parse as ``2 ** (3 ** 2)``.
+        base = self.atom()
+        if self.cur.kind == "DSTAR":
+            self.advance()
+            return BinOp("**", base, self.unary())
+        return base
 
     def atom(self) -> Node:
         tok = self.cur
-        if tok.kind in _UNARY:
-            self.advance()
-            return UnaryOp(_UNARY[tok.kind], self.atom())
         if tok.kind == "NUMBER":
             self.advance()
             return Num(tok.value)
