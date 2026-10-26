@@ -627,6 +627,11 @@ def get_postprocessor(cls):
                 # manipulate them like non-commutative scalars.
                 return cls._from_args(nonmatrices + [mat_class(*matrices).doit(deep=False)])
 
+        if cls == Add:
+            # Matrix-only addition: do not prepend a scalar zero, which would
+            # turn shaped ZeroMatrix blocks into a plain Zero.
+            return mat_class(*matrices).doit(deep=False)
+
         return mat_class(cls._from_args(nonmatrices), *matrices).doit(deep=False)
     return _postprocessor
 
