@@ -3573,7 +3573,9 @@ class Argument(Parameter):
             var = self.name.upper()
         if self.deprecated:
             var += "!"
-        if not self.required:
+        # Only add the optional brackets if the type's metavar does not already
+        # bracket itself, for example the metavar of ``Choice`` is ``[a|b|c]``.
+        if not self.required and not (var.startswith("[") and var.endswith("]")):
             var = f"[{var}]"
         if self.nargs != 1:
             var += "..."
