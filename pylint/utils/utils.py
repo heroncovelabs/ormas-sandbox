@@ -253,6 +253,34 @@ def _check_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
     return _splitstrip(value)
 
 
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> list[str]:
+    """Split a comma-separated list of regular expressions, taking care not to
+    split on commas that are part of a quantifier such as `foo{1,3}`.
+    """
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    patterns: list[str] = []
+    current: list[str] = []
+    depth = 0
+    escaped = False
+    for char in value:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "{":
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+        elif char == "," and depth == 0:
+            patterns.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    patterns.append("".join(current))
+    return [pattern.strip() for pattern in patterns if pattern.strip()]
+
+
 def _comment(string: str) -> str:
     """Return string as a comment."""
     lines = [line.strip() for line in string.splitlines()]
