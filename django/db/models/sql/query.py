@@ -572,9 +572,20 @@ class Query(BaseExpression):
         if self.distinct_fields != rhs.distinct_fields:
             raise TypeError('Cannot combine queries with different distinct fields.')
 
+        # Avoid alias clashes between the two queries: new aliases created in
+        # self while joining rhs tables could otherwise collide with rhs
+        # aliases that are relabelled later, producing a change_map whose keys
+        # and values intersect. Work on a clone with a bumped alias prefix.
+        rhs = rhs.clone()
+        rhs.bump_prefix(self)
+
         # Work out how to relabel the rhs aliases, if necessary.
         change_map = {}
         conjunction = (connector == AND)
+        if rhs.alias_map:
+            # The base table is shared by both queries; map the (possibly
+            # bumped) rhs base alias onto self's base alias.
+            change_map[next(iter(rhs.alias_map))] = self.get_initial_alias()
 
         # Determine which existing joins can be reused. When combining the
         # query with AND we must recreate all joins for m2m filters. When
