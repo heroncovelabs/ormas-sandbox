@@ -324,10 +324,16 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
 
     def add_field(self, model, field):
         """Create a field on a model."""
-        # Fields with default values cannot by handled by ALTER TABLE ADD
-        # COLUMN statement because DROP DEFAULT is not supported in
-        # ALTER TABLE.
-        if not field.null or self.effective_default(field) is not None:
+        # Primary keys and unique fields require recreating the table.
+        # Non-nullable fields and fields with default values also require
+        # recreating the table, since ALTER TABLE ADD COLUMN requires a default
+        # for non-nullable fields and SQLite lacks ALTER TABLE DROP DEFAULT.
+        if (
+            field.primary_key
+            or field.unique
+            or not field.null
+            or self.effective_default(field) is not None
+        ):
             self._remake_table(model, create_field=field)
         else:
             super().add_field(model, field)
