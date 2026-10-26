@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 
 ID_MAX = 8
+VOLUME_MAX = 9_999_999
+RECORD_MAX = 4096
 NO_TANK = "????????"
 
 
@@ -25,12 +27,25 @@ def _digits(token: str) -> bool:
     return token.isascii() and token.isdigit()
 
 
+def _tokens(line: str) -> list[str]:
+    # The legacy tokenizer treats only a literal space as a delimiter.
+    return [token for token in line.split(" ") if token]
+
+
 class Tank:
-    def __init__(self, pigment: str, volume: int) -> None:
+    def __init__(self, tank_id: str, pigment: str, volume: int) -> None:
+        self.tank_id = tank_id
         self.pigment = pigment
-        self.volume = volume
-        self.fills = volume
+        self.volume = min(volume, VOLUME_MAX)
+        self.fills = self.volume
         self.dispensed = 0
+        self.residue = 0
+
+
+class Job:
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        self.total = 0
 
 
 class Engine:
@@ -38,21 +53,19 @@ class Engine:
 
     def __init__(self) -> None:
         self.tanks: dict[str, Tank] = {}
-        self.jobs: dict[str, int] = {}
+        self.jobs: dict[str, Job] = {}
         self.fills = 0
         self.dispenses = 0
         self.reconciles = 0
         self.rejected = 0
 
     def handle(self, line: str) -> list[str]:
-        tokens = line.split()
-        if not tokens:
-            return []
+        tokens = _tokens(line)
         if line == "R":
             replies = self._reconcile()
-        elif tokens[0] == "T":
+        elif line == "T" or line.startswith("T "):
             replies = [self._fill(tokens)]
-        elif tokens[0] == "D":
+        elif line == "D" or line.startswith("D "):
             replies = [self._dispense(tokens)]
         else:
             replies = [f"N {NO_TANK} FMT"]
@@ -68,7 +81,7 @@ class Engine:
 
     def _fill(self, tokens: list[str]) -> str:
         tank = tokens[1] if len(tokens) >= 2 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -76,20 +89,23 @@ class Engine:
         if not _digits(vol_tok) or not 2 <= len(vol_tok) <= 7:
             return f"N {tank} VOL"
         volume = int(vol_tok)
-        t = self.tanks.get(tokens[1])
+        key = tokens[1].upper()
+        t = self.tanks.get(key)
         if t is not None:
             if t.pigment != tokens[2]:
                 return f"N {tank} PIGMENT"
-            t.volume += volume
-            t.fills += volume
+            t.volume = min(t.volume + volume, VOLUME_MAX)
+            t.fills = min(t.fills + volume, VOLUME_MAX)
         else:
-            self.tanks[tokens[1]] = Tank(tokens[2], volume)
+            if len(self.tanks) >= RECORD_MAX:
+                return f"N {tank} FMT"
+            self.tanks[key] = Tank(tokens[1], tokens[2], volume)
         self.fills += 1
         return f"OK {len(self.tanks)}"
 
     def _dispense(self, tokens: list[str]) -> str:
         tank = tokens[2] if len(tokens) >= 3 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -97,25 +113,42 @@ class Engine:
         if not _digits(amt_tok) or len(amt_tok) > 6 or int(amt_tok) < 1:
             return f"N {tank} AMT"
         amount = int(amt_tok)
-        t = self.tanks.get(tokens[2])
+        t = self.tanks.get(tokens[2].upper())
         if t is None:
             return f"N {tank} FMT"
-        if amount > t.volume:
+        if amount > t.volume and amount - t.volume > 20:
             return f"N {tank} DRY"
-        t.volume -= amount
-        t.dispensed += amount
-        total = self.jobs.get(tokens[1], 0) + amount
-        self.jobs[tokens[1]] = total
+        granted = min(amount, t.volume)
+        residue = granted // 500
+        if granted > 999 and "W" in t.pigment:
+            residue *= 2
+        residue = min(residue, t.volume - granted)
+        t.volume -= granted + residue
+        t.dispensed += granted
+        t.residue += residue
+        key = tokens[1].upper()
+        job = self.jobs.get(key)
+        if job is None:
+            if len(self.jobs) >= RECORD_MAX:
+                return f"N {tank} FMT"
+            job = Job(tokens[1])
+            self.jobs[key] = job
+        job.total += granted
         self.dispenses += 1
-        return f"J {tokens[1]} {total}"
+        return f"J {job.job_id} {job.total}"
 
     def _reconcile(self) -> list[str]:
         replies = []
-        for tank_id, t in self.tanks.items():
-            # SPEC: the book volume is fills minus dispenses; reconcile
-            # is an identity check against the live volume.
+        for t in self.tanks.values():
             book = t.fills - t.dispensed
-            replies.append(f"B {tank_id} {book}")
+            if t.residue > 50:
+                book -= t.residue // 2
+            book = max(book, 0)
+            replies.append(f"B {t.tank_id} {book}")
+            t.volume = book
+            t.fills = book
+            t.dispensed = 0
+            t.residue = 0
         replies.append(f"REND {len(self.tanks)}")
         self.reconciles += 1
         return replies
@@ -126,7 +159,7 @@ def process(lines: list[str], out=None) -> list[str]:
     replies = []
     for raw in lines:
         line = raw.rstrip("\r\n")
-        if not line:
+        if line == "":
             continue
         replies.extend(engine.handle(line))
     replies.append(engine.trailer())
