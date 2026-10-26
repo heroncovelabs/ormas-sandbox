@@ -171,6 +171,9 @@ class ContainedBy(PostgresOperatorLookup):
 
 class HasKeyLookup(PostgresOperatorLookup):
     logical_operator = None
+    # Whether numeric string keys are treated as object members (True) rather
+    # than array indexes (False, used for key__isnull lookups).
+    quote_numeric_keys = True
 
     def as_sql(self, compiler, connection, template=None):
         # Process JSON path from the left-hand side.
@@ -193,13 +196,18 @@ class HasKeyLookup(PostgresOperatorLookup):
                 *_, rhs_key_transforms = key.preprocess_lhs(compiler, connection)
             else:
                 rhs_key_transforms = [key]
-            rhs_params.append(
-                "%s%s"
-                % (
-                    lhs_json_path,
-                    compile_json_path(rhs_key_transforms, include_root=False),
+            if (
+                self.quote_numeric_keys
+                and isinstance(key, str)
+                and not isinstance(key, KeyTransform)
+            ):
+                # Plain string keys are object members, even when numeric.
+                rhs_json_path = "." + json.dumps(key)
+            else:
+                rhs_json_path = compile_json_path(
+                    rhs_key_transforms, include_root=False
                 )
-            )
+            rhs_params.append("%s%s" % (lhs_json_path, rhs_json_path))
         # Add condition for each key.
         if self.logical_operator:
             sql = "(%s)" % self.logical_operator.join([sql] * len(rhs_params))
@@ -387,10 +395,9 @@ class KeyTransformTextLookupMixin:
 class KeyTransformIsNull(lookups.IsNull):
     # key__isnull=False is the same as has_key='key'
     def as_oracle(self, compiler, connection):
-        sql, params = HasKey(
-            self.lhs.lhs,
-            self.lhs.key_name,
-        ).as_oracle(compiler, connection)
+        has_key = HasKey(self.lhs.lhs, self.lhs.key_name)
+        has_key.quote_numeric_keys = False
+        sql, params = has_key.as_oracle(compiler, connection)
         if not self.rhs:
             return sql, params
         # Column doesn't have a key or IS NULL.
@@ -401,7 +408,9 @@ class KeyTransformIsNull(lookups.IsNull):
         template = "JSON_TYPE(%s, %%s) IS NULL"
         if not self.rhs:
             template = "JSON_TYPE(%s, %%s) IS NOT NULL"
-        return HasKey(self.lhs.lhs, self.lhs.key_name).as_sql(
+        has_key = HasKey(self.lhs.lhs, self.lhs.key_name)
+        has_key.quote_numeric_keys = False
+        return has_key.as_sql(
             compiler,
             connection,
             template=template,
