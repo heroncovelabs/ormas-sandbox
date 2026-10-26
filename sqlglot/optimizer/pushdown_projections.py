@@ -106,6 +106,15 @@ def pushdown_projections(
                 scope_sql = scope.expression.sql(dialect=dialect)
                 raise OptimizeError(f"Invalid set operation due to column mismatch: {scope_sql}.")
 
+            if not set_op.args.get("distinct") and isinstance(
+                set_op, (exp.Intersect, exp.Except)
+            ):
+                # INTERSECT ALL and EXCEPT ALL compare whole rows using multiset
+                # semantics, so every projected column of both operands takes part in
+                # deciding which rows match or are subtracted. Narrowing the operands
+                # to the outer query's columns would change the row multiset.
+                parent_selections = {SELECT_ALL}
+
             referenced_columns[left] = parent_selections
 
             if re.is_star:
@@ -167,6 +176,11 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
     ordinal_refs = _bare_group_by_ordinal_refs(scope.expression)
     group_ordinal_selection_ids = {id(selection) for _, selection in ordinal_refs}
 
+    # GROUP BY ALL derives its grouping keys from every non-aggregate projection, so
+    # those projections define the aggregation's grain and must survive even when no
+    # outer query references them.
+    group_by_all = _is_group_by_all(scope.expression)
+
     new_selections = []
     removed = False
     star = False
@@ -186,6 +200,11 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
         ):
             new_selections.append(selection)
             alias_count -= 1
+        elif group_by_all and not find_in_scope(selection, exp.AggFunc):
+            # A non-aggregate projection is an implicit GROUP BY ALL grouping key, so
+            # it is part of the query's semantics regardless of outer references. It is
+            # not a positional alias slot, so alias_count is left untouched.
+            new_selections.append(selection)
         elif find_in_scope(selection, *SET_RETURNING_FUNCTIONS):
             # A set-returning function multiplies the rows of the whole query, so this
             # projection affects the cardinality of every output column and must be kept
@@ -231,6 +250,12 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
 
     if removed:
         scope.clear_cache()
+
+
+def _is_group_by_all(select: exp.Select) -> bool:
+    """Whether the select groups by every non-aggregate projection (GROUP BY ALL)."""
+    group = select.args.get("group")
+    return bool(group and group.args.get("all"))
 
 
 def _bare_group_by_ordinal_refs(
