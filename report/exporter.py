@@ -21,10 +21,32 @@ def to_json(rows: List[Row]) -> str:
     return json.dumps(payload)
 
 
+_NEEDS_QUOTING = (",", '"', "\r", "\n")
+
+
+def _format_field(value: object) -> str:
+    """Render a single value as an RFC 4180 field."""
+    if value is None:
+        return ""
+    text = str(value)
+    if any(ch in text for ch in _NEEDS_QUOTING):
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
+
+def _format_record(values: List[object]) -> str:
+    return ",".join(_format_field(value) for value in values)
+
+
 def to_csv(rows: List[Row]) -> str:
     """Serialize ``rows`` to an RFC 4180 CSV string.
 
     The first line is the header (column names); one line follows per row.
-    Not implemented yet — see issue.md.
+    Records are terminated by CRLF, including the final one.
     """
-    raise NotImplementedError("CSV export is not implemented yet")
+    columns = _columns(rows)
+    if not columns:
+        return ""
+    lines = [_format_record(columns)]
+    lines.extend(_format_record([row.get(col) for col in columns]) for row in rows)
+    return "".join(line + "\r\n" for line in lines)
