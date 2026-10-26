@@ -501,7 +501,8 @@ def _TR56(rv, f, g, h, max, pow):
         if not (rv.is_Pow and rv.base.func == f):
             return rv
 
-        if (rv.exp < 0) == True:
+        # Require a real exponent before comparing it with the upper bound.
+        if not rv.exp.is_real or rv.exp.is_negative:
             return rv
         if (rv.exp > max) == True:
             return rv
