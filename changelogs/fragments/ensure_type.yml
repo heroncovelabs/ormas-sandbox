@@ -1,0 +1,10 @@
+---
+bugfixes:
+- config - ``ensure_type()`` preserves data tags from the original value on converted ``int`` and ``list`` results, and tags each element produced when a tagged string is split into a ``list``.
+- config - ``ensure_type()`` returns the original value instance unchanged when conversion does not change the value.
+- config - invalid configuration value conversions now raise a ``ValueError`` with a consistent ``Invalid value provided for '<type>': <value>`` message, instead of other exception types or undefined behavior for byte values.
+- config - ``ensure_type()`` normalizes sequences to ``list`` and mappings to ``dict`` instances, and rejects non-string input for ``pathspec``, ``pathlist``, ``path``, and temporary path types.
+- config - boolean conversion in ``ensure_type()`` uses non-strict rules, so unhashable non-boolean values return ``False`` instead of raising.
+- config - temporary path conversions (``tmp``, ``tmppath``, ``temppath``) create a unique empty directory and do not propagate tags to the returned path.
+
+...
