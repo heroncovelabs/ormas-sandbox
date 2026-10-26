@@ -437,6 +437,12 @@ class PythonCodePrinter(AbstractPythonCodePrinter):
         index = expr.args[1:]
         return "{}[{}]".format(str(base), ", ".join([self._print(ind) for ind in index]))
 
+    def _print_Min(self, expr):
+        return "min({})".format(", ".join(self._print(arg) for arg in expr.args))
+
+    def _print_Max(self, expr):
+        return "max({})".format(", ".join(self._print(arg) for arg in expr.args))
+
     def _print_Pow(self, expr, rational=False):
         return self._hprint_Pow(expr, rational=rational)
 
