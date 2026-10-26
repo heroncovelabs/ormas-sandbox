@@ -18,7 +18,9 @@ MIN_HI = 120  # longest registrable side, minutes
 ALLOT = 6  # groove allotment per title, sides of lacquer
 Q_BASE = 1000  # quality base
 Q_CUT = 3  # quality lost per minute of runtime (long sides cut shallower)
+Q_WEAR = 7  # quality lost per side already cut since the last remaster
 NO_TITLE = "????????"
+LONG_MIN = 90  # sides longer than this cost two grooves per cut
 
 
 def _valid_id(token: str) -> bool:
@@ -34,6 +36,10 @@ class Title:
         self.minutes = minutes
         self.remaining = ALLOT  # live allotment
         self.sides = 0  # ledger: sides cut
+        self.wear = 0  # sides cut since the last remaster (drives sag)
+        self.base = 0  # board wear inherited at registration
+        self.tax = 0  # cumulative stamper tax at remaster
+        self.revived = False  # courtesy revive already used
 
 
 class Engine:
@@ -87,9 +93,21 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        title_obj = Title(int(minutes))
+        title_obj.base = max(
+            (t.wear + t.base for t in self.titles.values()), default=0
+        )
+        self.titles[tokens[1]] = title_obj
         self.registered += 1
         return f"OK {len(self.titles)}"
+
+    def _busy_others(self, title: str) -> int:
+        """Other titles in progress: cut at least once, allotment left."""
+        return sum(
+            1
+            for name, t in self.titles.items()
+            if name != title and t.sides and t.remaining >= 1
+        )
 
     def _cut(self, tokens: list[str]) -> str:
         title = tokens[1] if len(tokens) >= 2 else NO_TITLE
@@ -100,11 +118,15 @@ class Engine:
         t = self._find(tokens[1])
         if t is None:
             return f"N {title} UNKNOWN"
-        if t.remaining < 1:
+        cost = 2 if t.minutes > LONG_MIN else 1
+        if t.remaining < cost:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        quality = Q_BASE - t.minutes * Q_CUT - (t.wear + t.base) * Q_WEAR
+        if t.sides == 3 and self._busy_others(title) >= 2:
+            quality -= 15  # lathe contention hits a fourth side
+        t.remaining -= cost
         t.sides += 1
+        t.wear += 1
         self.cut_since_remaster += 1
         self.sides += 1
         return f"Q {tokens[1]} {quality}"
@@ -112,13 +134,21 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
         lines = []
+        idle = self.cut_since_remaster == 0
         for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
+            if idle:
+                lines.append(f"R {name} {t.remaining}")
+                continue
+            if t.wear >= 4:
+                t.tax += 1
+            if t.remaining < 1 and not t.revived:
+                t.revived = True
+                t.remaining = 1
+            else:
+                t.remaining = ALLOT - t.sides - t.tax
+            t.wear = 0
+            t.base = 0
             lines.append(f"R {name} {t.remaining}")
         lines.append(f"MEND {len(self.titles)}")
         self.cut_since_remaster = 0
