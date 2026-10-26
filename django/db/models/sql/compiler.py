@@ -1836,7 +1836,27 @@ class SQLUpdateCompiler(SQLCompiler):
         query.clear_ordering(force=True)
         query.extra = {}
         query.select = []
-        query.add_fields([query.get_meta().pk.name])
+        meta = query.get_meta()
+        fields = [meta.pk.name]
+        # Map each updated ancestor to the index of the selected column that
+        # holds its primary key values.
+        related_ids_index = {}
+        for related in self.query.related_updates:
+            path = meta.get_path_to_parent(related)
+            if path and all(info.join_field.primary_key for info in path):
+                # The complete inheritance path preserves the primary key, so
+                # the queryset model's identifier column can be reused.
+                related_ids_index[related] = 0
+            else:
+                related_ids_index[related] = len(fields)
+                # Follow the complete inheritance path to select this
+                # ancestor's primary key, including non-primary parent links.
+                fields.append(
+                    LOOKUP_SEP.join(
+                        [info.join_field.name for info in path] + [related._meta.pk.name]
+                    )
+                )
+        query.add_fields(fields)
         super().pre_sql_setup()
 
         must_pre_select = (
@@ -1851,10 +1871,13 @@ class SQLUpdateCompiler(SQLCompiler):
             # don't want them to change), or the db backend doesn't support
             # selecting from the updating table (e.g. MySQL).
             idents = []
+            related_ids = {model: [] for model in self.query.related_updates}
             for rows in query.get_compiler(self.using).execute_sql(MULTI):
                 idents.extend(r[0] for r in rows)
+                for model, index in related_ids_index.items():
+                    related_ids[model].extend(r[index] for r in rows)
             self.query.add_filter("pk__in", idents)
-            self.query.related_ids = idents
+            self.query.related_ids = related_ids
         else:
             # The fast path. Filters and updates in one query.
             self.query.add_filter("pk__in", query)

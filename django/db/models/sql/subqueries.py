@@ -60,6 +60,7 @@ class UpdateQuery(Query):
         would normally be set in __init__() should go here instead.
         """
         self.values = []
+        # Primary key values for each ancestor updated by the query.
         self.related_ids = None
         self.related_updates = {}
 
@@ -134,7 +135,7 @@ class UpdateQuery(Query):
             query = UpdateQuery(model)
             query.values = values
             if self.related_ids is not None:
-                query.add_filter("pk__in", self.related_ids)
+                query.add_filter("pk__in", self.related_ids[model])
             result.append(query)
         return result
 
