@@ -890,18 +890,26 @@ def iter_index(iterable, value, start=0, stop=None):
     """
     seq_index = getattr(iterable, 'index', None)
     if seq_index is None:
-        # Slow path for general iterables
-        iterator = islice(iterable, start, stop)
-        for i, element in enumerate(iterator, start):
-            if element is value or element == value:
-                yield i
-    else:
-        # Fast path for sequences
-        stop = len(iterable) if stop is None else stop
-        i = start - 1
-        with suppress(ValueError):
-            while True:
-                yield (i := seq_index(value, i + 1, stop))
+        if start < 0 or (stop is not None and stop < 0):
+            # islice() rejects negative bounds, so materialize the iterable
+            # once and reuse the sequence semantics below.  This makes
+            # negative bounds match the built-in sequence behavior.
+            iterable = list(iterable)
+            seq_index = iterable.index
+        else:
+            # Slow path for general iterables
+            iterator = islice(iterable, start, stop)
+            for i, element in enumerate(iterator, start):
+                if element is value or element == value:
+                    yield i
+            return
+
+    # Fast path for sequences
+    stop = len(iterable) if stop is None else stop
+    i = start - 1
+    with suppress(ValueError):
+        while True:
+            yield (i := seq_index(value, i + 1, stop))
 
 
 def sieve(n):
