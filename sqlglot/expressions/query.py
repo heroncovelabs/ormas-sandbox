@@ -1892,6 +1892,7 @@ class Analyze(Expression):
     arg_types = {
         "kind": False,
         "this": False,
+        "tables": False,  # Multiple tables, e.g. "ANALYZE TABLE t1, t2"
         "options": False,
         "mode": False,
         "partition": False,

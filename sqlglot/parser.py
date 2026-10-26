@@ -2399,7 +2399,9 @@ class Parser:
 
         return self._parse_query_modifiers(expression)
 
-    def _parse_drop(self, exists: bool = False) -> exp.Drop | exp.Command:
+    def _parse_drop(
+        self, exists: bool = False, allow_multi: bool = True
+    ) -> exp.Drop | exp.Command:
         start = self._prev
         temporary = self._match(TokenType.TEMPORARY)
         materialized = self._match_text_seq("MATERIALIZED")
@@ -2412,16 +2414,18 @@ class Parser:
         concurrently = self._match_text_seq("CONCURRENTLY")
         if_exists = exists or self._parse_exists()
 
+        tables: list[exp.Expr] | None = None
         if kind == "COLUMN":
             this = self._parse_column()
         else:
             this = self._parse_table_parts(schema=True, is_db_reference=kind == "SCHEMA")
 
-        tables = (
-            self._parse_csv(lambda: self._parse_table_parts(schema=True))
-            if kind == "TABLE" and self._match(TokenType.COMMA)
-            else None
-        )
+            # The object names are modelled as a single uniform list, e.g.
+            # "DROP TABLE a, b" -> Drop(tables=[a, b]) instead of splitting
+            # the targets between the "this" and "tables" args
+            if allow_multi and self._match(TokenType.COMMA):
+                tables = [this, *self._parse_csv(lambda: self._parse_table_parts(schema=True))]
+                this = None
 
         cluster = self._parse_on_property() if self._match(TokenType.ON) else None
 
@@ -9052,7 +9056,10 @@ class Parser:
         return self._parse_column_def_with_exists()
 
     def _parse_drop_column(self) -> exp.Drop | exp.Command | None:
-        drop = self._parse_drop() if self._match(TokenType.DROP) else None
+        # Multiple names aren't allowed within ALTER's "DROP" action, since the
+        # comma is used to separate the individual actions, e.g.
+        # ALTER TABLE t DROP INDEX i1, DROP INDEX i2
+        drop = self._parse_drop(allow_multi=False) if self._match(TokenType.DROP) else None
         if drop and not isinstance(drop, exp.Command):
             drop.set("kind", drop.args.get("kind", "COLUMN"))
         return drop
@@ -9319,12 +9326,17 @@ class Parser:
                 options.append(self._prev.text.upper())
 
         this: exp.Expr | None = None
+        tables: list[exp.Expr] | None = None
         inner_expression: exp.Expr | None = None
 
         kind = self._curr.text.upper() if self._curr else None
 
         if self._match(TokenType.TABLE) or self._match(TokenType.INDEX):
             this = self._parse_table_parts()
+            if this and self._match(TokenType.COMMA):
+                # e.g. MySQL's "ANALYZE TABLE t1, t2"
+                tables = [this, *self._parse_csv(self._parse_table_parts)]
+                this = None
         elif self._match_text_seq("TABLES"):
             if self._match_set((TokenType.FROM, TokenType.IN)):
                 kind = f"{kind} {self._prev.text.upper()}"
@@ -9341,6 +9353,10 @@ class Parser:
             # Empty kind  https://prestodb.io/docs/current/sql/analyze.html
             kind = None
             this = self._parse_table_parts()
+            if this and self._match(TokenType.COMMA):
+                # e.g. Postgres's "ANALYZE t1, t2"
+                tables = [this, *self._parse_csv(self._parse_table_parts)]
+                this = None
 
         partition = self._try_parse(self._parse_partition)
         if not partition and self._match_texts(self.PARTITION_KEYWORDS):
@@ -9362,6 +9378,7 @@ class Parser:
             exp.Analyze(
                 kind=kind,
                 this=this,
+                tables=tables,
                 mode=mode,
                 partition=partition,
                 properties=properties,
