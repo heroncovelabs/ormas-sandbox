@@ -891,6 +891,17 @@ def iter_index(iterable, value, start=0, stop=None):
     seq_index = getattr(iterable, 'index', None)
     if seq_index is None:
         # Slow path for general iterables
+        if start < 0 or (stop is not None and stop < 0):
+            # Resolving negative bounds requires knowing the length of the
+            # iterable, so materialize it and use from-the-end semantics
+            # matching the built-in sequence types.
+            cache = list(iterable)
+            length = len(cache)
+            if start < 0:
+                start = max(length + start, 0)
+            if stop is not None and stop < 0:
+                stop = max(length + stop, 0)
+            iterable = cache
         iterator = islice(iterable, start, stop)
         for i, element in enumerate(iterator, start):
             if element is value or element == value:
