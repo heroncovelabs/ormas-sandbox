@@ -3571,9 +3571,12 @@ class Argument(Parameter):
         var = self.type.get_metavar(param=self, ctx=ctx)
         if not var:
             var = self.name.upper()
+        # The type may already return a bracketed metavar (e.g. Choice
+        # for optional arguments); do not add a second pair of brackets.
+        already_bracketed = var.startswith("[") and var.endswith("]")
         if self.deprecated:
             var += "!"
-        if not self.required:
+        if not self.required and not already_bracketed:
             var = f"[{var}]"
         if self.nargs != 1:
             var += "..."
