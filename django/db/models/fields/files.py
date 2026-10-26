@@ -295,7 +295,10 @@ class FileField(Field):
         if kwargs.get("max_length") == 100:
             del kwargs["max_length"]
         kwargs["upload_to"] = self.upload_to
-        if self.storage is not default_storage:
+        if (
+            getattr(self, "_storage_callable", None) is not None
+            or self.storage is not default_storage
+        ):
             kwargs["storage"] = getattr(self, "_storage_callable", self.storage)
         return name, path, args, kwargs
 
