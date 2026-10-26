@@ -537,7 +537,7 @@ class Add(Expr, AssocOp):
         nz = []
         z = 0
         im_or_z = False
-        im = False
+        n_im = 0  # number of addends proven imaginary
         for a in self.args:
             if a.is_real:
                 if a.is_zero:
@@ -547,7 +547,7 @@ class Add(Expr, AssocOp):
                 else:
                     return
             elif a.is_imaginary:
-                im = True
+                n_im += 1
             elif (S.ImaginaryUnit*a).is_real:
                 im_or_z = True
             else:
@@ -558,9 +558,11 @@ class Add(Expr, AssocOp):
             return None
         b = self.func(*nz)
         if b.is_zero:
-            if not im_or_z and not im:
+            if not im_or_z and not n_im:
                 return True
-            if im and not im_or_z:
+            # A single nonzero imaginary addend makes the sum nonzero;
+            # several imaginary addends may cancel.
+            if n_im == 1 and not im_or_z:
                 return False
         if b.is_zero is False:
             return False
