@@ -95,6 +95,13 @@ def pushdown_projections(
                 # kind / side syntax (e.g INNER UNION ALL BY NAME) which changes the semantics of the operation
                 continue
 
+            # INTERSECT and EXCEPT match whole operand rows, with multiset semantics
+            # for the ALL forms, so removing any operand projection changes which
+            # rows survive the operation. Only UNION ALL concatenates operand rows
+            # unchanged, so it can safely drop unreferenced operand projections.
+            if not isinstance(set_op, exp.Union):
+                parent_selections = {SELECT_ALL}
+
             left, right = scope.union_scopes
             le = left.expression
             re = right.expression
@@ -173,6 +180,12 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
     is_agg = False
 
     select_all = SELECT_ALL in parent_selections
+
+    # `GROUP BY ALL` derives its grouping keys from the non-aggregate projections,
+    # so removing any projection changes the grouping and the aggregation's rows.
+    group = scope.expression.args.get("group")
+    if group and group.args.get("all"):
+        select_all = True
 
     for selection in scope.expression.selects:
         name = selection.alias_or_name
