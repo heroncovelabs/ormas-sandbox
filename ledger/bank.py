@@ -20,35 +20,73 @@ class Bank:
         self._log = []
         self._balances = {}
 
+    def _emit(self, event):
+        """Append ``event`` to the log and derive the new balances from it."""
+        self._log.append(event)
+        self._balances = apply_event(self._balances, event)
+
+    def _require_account(self, account_id):
+        if account_id not in self._balances:
+            raise ValueError(f"unknown account: {account_id!r}")
+
+    @staticmethod
+    def _require_positive(amount):
+        if amount <= 0:
+            raise ValueError(f"amount must be positive: {amount!r}")
+
     def open_account(self, account_id):
         """Open a new account at zero balance. ValueError if it already exists."""
-        raise NotImplementedError
+        if account_id in self._balances:
+            raise ValueError(f"account already exists: {account_id!r}")
+        self._emit(AccountOpened(account_id))
 
     def deposit(self, account_id, amount):
         """Add ``amount`` (> 0) to an existing account."""
-        raise NotImplementedError
+        self._require_account(account_id)
+        self._require_positive(amount)
+        self._emit(Deposited(account_id, amount))
 
     def withdraw(self, account_id, amount):
         """Remove ``amount`` (> 0); InsufficientFunds if the balance is too low."""
-        raise NotImplementedError
+        self._require_account(account_id)
+        self._require_positive(amount)
+        if self._balances[account_id] < amount:
+            raise InsufficientFunds(
+                f"insufficient funds in {account_id!r}: "
+                f"balance {self._balances[account_id]!r} < {amount!r}"
+            )
+        self._emit(Withdrawn(account_id, amount))
 
     def transfer(self, src, dst, amount):
         """Move ``amount`` from ``src`` to ``dst`` atomically."""
-        raise NotImplementedError
+        self._require_account(src)
+        self._require_account(dst)
+        self._require_positive(amount)
+        if self._balances[src] < amount:
+            raise InsufficientFunds(
+                f"insufficient funds in {src!r}: "
+                f"balance {self._balances[src]!r} < {amount!r}"
+            )
+        self._emit(Withdrawn(src, amount))
+        self._emit(Deposited(dst, amount))
 
     def balance(self, account_id):
         """Return the current balance of an existing account."""
-        raise NotImplementedError
+        self._require_account(account_id)
+        return self._balances[account_id]
 
     def snapshot(self):
         """Return a copy of the current balances (account id -> balance)."""
-        raise NotImplementedError
+        return dict(self._balances)
 
     def history(self):
         """Return the ordered event log."""
-        raise NotImplementedError
+        return list(self._log)
 
     @classmethod
     def from_history(cls, events):
         """Rebuild a bank by replaying ``events``."""
-        raise NotImplementedError
+        bank = cls()
+        bank._log = list(events)
+        bank._balances = replay(bank._log)
+        return bank
