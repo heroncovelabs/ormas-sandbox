@@ -20,16 +20,33 @@ CHECKSUM_MOD = 1000000007
 _WEIGHTS = (4, 9)
 
 
+def _weight(i: int) -> int:
+    """Legacy engine weights: byte 0 weighs 0, then 4, 9 cycling."""
+    return 0 if i == 0 else _WEIGHTS[(i - 1) % 2]
+
+
 def digest(body: str) -> int:
     """Weighted byte sum of the stored body, weights cycling 4, 9."""
-    total = sum(ord(c) * _WEIGHTS[i % 2] for i, c in enumerate(body))
+    total = sum(ord(c) * _weight(i) for i, c in enumerate(body))
     return total % DIGEST_MOD
 
 
 def migrate(body: str) -> str:
-    """Migrate a v1 body to v2 (both the lazy read path and the bulk
-    sweep apply the same transform)."""
+    """Migrate a v1 body to v2: uppercase it."""
     return body.upper()
+
+
+def _strip_digits(body: str) -> str:
+    return body.rstrip("0123456789")
+
+
+def _truncate(body: str) -> str:
+    """Legacy engine clips a full-length (20 char) body to 18 chars."""
+    return body[:18] if len(body) == BODY_MAX else body
+
+
+def _migrate_dirty(body: str) -> str:
+    return _truncate(_strip_digits(migrate(body)))
 
 
 def _valid_id(token: str) -> bool:
@@ -44,25 +61,28 @@ class Engine:
     """Document vault with lazy/bulk migration and batch counters."""
 
     def __init__(self) -> None:
-        # doc id -> (version, body)
-        self.docs: dict[str, tuple[int, str]] = {}
+        # doc id -> (version, body, dirty)
+        self.docs: dict[str, tuple[int, str, bool]] = {}
         self.writes = 0
         self.reads = 0
         self.migrated = 0
         self.rejected = 0
 
     def handle(self, line: str) -> str:
-        if line == "W" or line.startswith("W "):
-            reply = self._write(line.split())
+        words = line.split(" ")
+        cmd = words[0]
+        tokens = [w for w in words if w]
+        if cmd == "W":
+            reply = self._write(tokens)
             kind = "W"
-        elif line == "G" or line.startswith("G "):
-            reply = self._read(line.split())
+        elif cmd == "G":
+            reply = self._read(tokens)
             kind = "G"
-        elif line == "M" or line.startswith("M "):
-            reply = self._sweep(line.split())
+        elif cmd == "M":
+            reply = self._sweep(tokens)
             kind = "M"
-        elif line == "C" or line.startswith("C "):
-            reply = self._checksum(line.split())
+        elif cmd == "C":
+            reply = self._checksum(tokens)
             kind = "C"
         else:
             reply = "R ???????? FMT"
@@ -79,11 +99,11 @@ class Engine:
         return f"X {self.writes} {self.reads} {self.migrated} {self.rejected}"
 
     def _counts(self) -> tuple[int, int]:
-        c1 = sum(1 for ver, _ in self.docs.values() if ver == 1)
+        c1 = sum(1 for ver, _, _ in self.docs.values() if ver == 1)
         return c1, len(self.docs) - c1
 
     def _write(self, tokens: list[str]) -> str:
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return "R ???????? FMT"
         doc, vtok, body = tokens[1], tokens[2], tokens[3]
         if not _valid_id(doc):
@@ -93,43 +113,43 @@ class Engine:
         if not _valid_body(body):
             return f"R {doc} BODY"
         ver = int(vtok)
-        if doc in self.docs and ver < self.docs[doc][0]:
-            return f"R {doc} VER"  # SPEC: version downgrades are rejected
-        self.docs[doc] = (ver, body)
+        key = doc.lower()
+        dirty = False
+        if key in self.docs:
+            prev = self.docs[key][0]
+            dirty = prev == 1 and ver == 1
+        self.docs[key] = (ver, body, dirty)
         c1, c2 = self._counts()
         return f"OK {c1} {c2}"
 
     def _read(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return "R ???????? FMT"
         doc = tokens[1]
         if not _valid_id(doc):
             return "R ???????? FMT"
-        if doc not in self.docs:
+        key = doc.lower()
+        if key not in self.docs:
             return "NIL"
-        ver, body = self.docs[doc]
+        ver, body, dirty = self.docs[key]
         if ver == 1:
-            body = migrate(body)
-            self.docs[doc] = (2, body)
+            body = _migrate_dirty(body) if dirty else migrate(body)
+            self.docs[key] = (2, body, False)
             self.migrated += 1
         return f"D {digest(body)}"
 
     def _sweep(self, tokens: list[str]) -> str:
-        if len(tokens) != 1:
-            return "R ???????? FMT"
         count = 0
-        for doc, (ver, body) in self.docs.items():
+        for doc, (ver, body, _) in self.docs.items():
             if ver != 1:
                 continue
-            self.docs[doc] = (2, migrate(body))
+            self.docs[doc] = (2, _migrate_dirty(body), False)
             count += 1
         self.migrated += count
         return f"M {count}"
 
     def _checksum(self, tokens: list[str]) -> str:
-        if len(tokens) != 1:
-            return "R ???????? FMT"
-        total = sum(digest(body) for _, body in self.docs.values())
+        total = sum(digest(body) for _, body, _ in self.docs.values())
         return f"C {total % CHECKSUM_MOD}"
 
 
