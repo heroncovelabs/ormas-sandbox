@@ -627,6 +627,11 @@ def get_postprocessor(cls):
                 # manipulate them like non-commutative scalars.
                 return cls._from_args(nonmatrices + [mat_class(*matrices).doit(deep=False)])
 
+        if not nonmatrices:
+            # avoid inserting the scalar identity (e.g. 0 in an Add) among
+            # the matrices
+            return mat_class(*matrices).doit(deep=False)
+
         return mat_class(cls._from_args(nonmatrices), *matrices).doit(deep=False)
     return _postprocessor
 
