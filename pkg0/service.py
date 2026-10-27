@@ -1,2 +1,2 @@
 def run(x):
-    return x + 1
+    return 2 * x
