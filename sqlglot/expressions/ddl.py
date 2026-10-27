@@ -347,6 +347,7 @@ class Drop(Expression):
     arg_types = {
         "this": False,
         "kind": False,
+        # All drop targets, including the one stored in "this", when the statement lists several.
         "tables": False,
         "expressions": False,
         "exists": False,

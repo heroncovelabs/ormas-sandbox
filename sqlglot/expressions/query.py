@@ -1892,6 +1892,7 @@ class Analyze(Expression):
     arg_types = {
         "kind": False,
         "this": False,
+        "expressions": False,
         "options": False,
         "mode": False,
         "partition": False,

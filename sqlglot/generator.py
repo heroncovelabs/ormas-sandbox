@@ -1827,9 +1827,11 @@ class Generator:
         return self.prepend_ctes(expression, f"DELETE{hint}{tables}{expression_sql}")
 
     def drop_sql(self, expression: exp.Drop) -> str:
-        this = self.sql(expression, "this")
-        tables = self.expressions(expression, key="tables", flat=True)
-        this = f"{this}, {tables}" if tables else this
+        if expression.args.get("tables"):
+            # "tables" holds every target, so it takes precedence over "this"
+            this = self.expressions(expression, key="tables", flat=True)
+        else:
+            this = self.sql(expression, "this")
         expressions = self.expressions(expression, flat=True)
         expressions = f" ({expressions})" if expressions else ""
         kind = expression.args["kind"]
@@ -6048,7 +6050,11 @@ class Generator:
         options = f" {options}" if options else ""
         kind = self.sql(expression, "kind")
         kind = f" {kind}" if kind else ""
-        this = self.sql(expression, "this")
+        if expression.args.get("expressions"):
+            # "expressions" holds every target, so it takes precedence over "this"
+            this = self.expressions(expression, flat=True)
+        else:
+            this = self.sql(expression, "this")
         this = f" {this}" if this else ""
         mode = self.sql(expression, "mode")
         mode = f" {mode}" if mode else ""
