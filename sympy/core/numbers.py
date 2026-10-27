@@ -1627,17 +1627,21 @@ class Rational(Number):
 
         if not isinstance(p, SYMPY_INTS):
             p = Rational(p)
-            q *= p.q
-            p = p.p
         else:
             p = int(p)
 
         if not isinstance(q, SYMPY_INTS):
             q = Rational(q)
-            p *= q.q
-            q = q.p
         else:
             q = int(q)
+
+        if isinstance(p, Rational):
+            if isinstance(q, Rational):
+                p, q = p.p*q.q, p.q*q.p
+            else:
+                p, q = p.p, p.q*q
+        elif isinstance(q, Rational):
+            p, q = p*q.q, q.p
 
         # p and q are now ints
         if q == 0:
