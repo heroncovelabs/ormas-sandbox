@@ -294,7 +294,13 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     mapping = H.graph.get("mapping", None)
     if mapping is None:
         raise nx.NetworkXError("Invalid auxiliary digraph.")
-    if G.has_edge(s, t) or G.has_edge(t, s):
+    # A direct s-t edge cannot be destroyed by removing nodes. For directed
+    # graphs only an edge from s to t is an s-t path, so a reverse edge does
+    # not make the pair inseparable.
+    if G.is_directed():
+        if s == t or G.has_edge(s, t):
+            return set()
+    elif s == t or G.has_edge(s, t) or G.has_edge(t, s):
         return set()
     kwargs = {"flow_func": flow_func, "residual": residual, "auxiliary": H}
 
@@ -304,6 +310,19 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     # Each node in the original graph maps to two nodes of the auxiliary graph
     node_cut = {H.nodes[node]["id"] for edge in edge_cut for node in edge}
     return node_cut - {s, t}
+
+
+def _distinct_degree(G, node):
+    """Number of distinct nodes adjacent to `node`, ignoring self-loops.
+
+    Parallel edges and self-loops do not contribute to node connectivity, so
+    this is the degree measure used to pick a node to start the cut search.
+    """
+    if G.is_directed():
+        nbrs = itertools.chain(G.predecessors(node), G.successors(node))
+    else:
+        nbrs = G.neighbors(node)
+    return len(set(nbrs) - {node})
 
 
 @nx._dispatchable
@@ -416,33 +435,64 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
     if G.is_directed():
         if not nx.is_weakly_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
+        # A digraph that is not strongly connected is already disconnected,
+        # so no node has to be removed.
+        if not nx.is_strongly_connected(G):
+            return set()
+        # Only ordered pairs (u, v) such that u cannot reach v after any node
+        # removal bound the node connectivity. Such a pair is found among all
+        # ordered pairs of distinct nodes (self-loops are never relevant).
         iter_func = itertools.permutations
 
         def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
+            return set(G.predecessors(v)) | set(G.successors(v))
 
     else:
         if not nx.is_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
         iter_func = itertools.combinations
-        neighbors = G.neighbors
+
+        def neighbors(v):
+            return set(G.neighbors(v))
 
     # Reuse the auxiliary digraph and the residual network.
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Choose a node with minimum degree.
-    v = min(G, key=G.degree)
-    # Initial node cutset is all neighbors of the node with minimum degree.
-    min_cut = set(G[v])
-    # Compute st node cuts between v and all its non-neighbors nodes in G.
-    for w in set(G) - set(neighbors(v)) - {v}:
-        this_cut = minimum_st_node_cut(G, v, w, **kwargs)
-        if len(min_cut) >= len(this_cut):
-            min_cut = this_cut
-    # Also for non adjacent pairs of neighbors of v.
-    for x, y in iter_func(neighbors(v), 2):
+    # Choose a node with minimum degree. Parallel edges and self-loops are not
+    # counted, since they add no node connectivity.
+    v = min(G, key=lambda node: _distinct_degree(G, node))
+    # Initial node cutset is all distinct neighbors of the node with minimum
+    # degree. For a digraph, either all predecessors or all successors isolate
+    # v; use the smaller set. Self-loops are excluded since they are never a
+    # valid cut.
+    if G.is_directed():
+        predecessors = set(G.predecessors(v)) - {v}
+        successors = set(G.successors(v)) - {v}
+        min_cut = min(predecessors, successors, key=len)
+    else:
+        min_cut = set(neighbors(v)) - {v}
+    # Compute st node cuts between v and all other nodes in both directions
+    # for digraphs. A reverse arc does not make the forward cut unnecessary.
+    if G.is_directed():
+        for w in set(G) - {v}:
+            for source, target in ((v, w), (w, v)):
+                if G.has_edge(source, target):
+                    continue
+                this_cut = minimum_st_node_cut(G, source, target, **kwargs)
+                if len(min_cut) >= len(this_cut):
+                    min_cut = this_cut
+    else:
+        for w in set(G) - set(neighbors(v)) - {v}:
+            this_cut = minimum_st_node_cut(G, v, w, **kwargs)
+            if len(min_cut) >= len(this_cut):
+                min_cut = this_cut
+    # Also for non adjacent pairs of neighbors of v. For a directed graph the
+    # connectivity of the graph is bounded by local connectivity in either
+    # direction, so both orders of each pair are considered.
+    for x, y in iter_func(sorted(neighbors(v) - {v}), 2):
+        # Only a direct source-to-target arc makes this ordered cut empty.
         if y in G[x]:
             continue
         this_cut = minimum_st_node_cut(G, x, y, **kwargs)
