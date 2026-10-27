@@ -1,8 +1,7 @@
 """Recursive-descent parser: token stream -> expression tree.
 
-NOTE: this implementation is buggy. It folds every binary operator at a single
-precedence level, left to right, so it does not honor the precedence and
-associativity documented in the README/issue.
+Precedence, lowest to highest: binary ``+ -`` (left), ``* / // %`` (left),
+unary ``+ -``, then ``**`` (right-associative; its exponent may be unary).
 """
 
 from __future__ import annotations
@@ -20,6 +19,8 @@ _BINOP = {
     "PERCENT": "%",
     "DSTAR": "**",
 }
+_ADDITIVE = {"PLUS", "MINUS"}
+_MULTIPLICATIVE = {"STAR", "SLASH", "DSLASH", "PERCENT"}
 _UNARY = {"PLUS": "+", "MINUS": "-"}
 
 
@@ -46,20 +47,39 @@ class _Parser:
         return node
 
     def expression(self) -> Node:
-        # BUG: all binary operators share one precedence level and fold left to
-        # right, so e.g. 2 + 3 * 4 parses as (2 + 3) * 4 and 2 ** 3 ** 2 as
-        # (2 ** 3) ** 2.
-        node = self.atom()
-        while self.cur.kind in _BINOP:
+        # expression := term (("+" | "-") term)*
+        node = self.term()
+        while self.cur.kind in _ADDITIVE:
             op = _BINOP[self.advance().kind]
-            node = BinOp(op, node, self.atom())
+            node = BinOp(op, node, self.term())
+        return node
+
+    def term(self) -> Node:
+        # term := unary (("*" | "/" | "//" | "%") unary)*
+        node = self.unary()
+        while self.cur.kind in _MULTIPLICATIVE:
+            op = _BINOP[self.advance().kind]
+            node = BinOp(op, node, self.unary())
+        return node
+
+    def unary(self) -> Node:
+        # unary := ("+" | "-") unary | power
+        tok = self.cur
+        if tok.kind in _UNARY:
+            self.advance()
+            return UnaryOp(_UNARY[tok.kind], self.unary())
+        return self.power()
+
+    def power(self) -> Node:
+        # power := atom ("**" unary)?  -- right-associative via unary -> power
+        node = self.atom()
+        if self.cur.kind == "DSTAR":
+            self.advance()
+            node = BinOp("**", node, self.unary())
         return node
 
     def atom(self) -> Node:
         tok = self.cur
-        if tok.kind in _UNARY:
-            self.advance()
-            return UnaryOp(_UNARY[tok.kind], self.atom())
         if tok.kind == "NUMBER":
             self.advance()
             return Num(tok.value)
