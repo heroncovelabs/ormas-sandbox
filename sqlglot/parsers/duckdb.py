@@ -75,6 +75,20 @@ class DuckDBParser(parser.Parser):
     MAP_KEYS_ARE_ARBITRARY_EXPRESSIONS = True
     PIVOT_COLUMN_NAMING = "agg_name_if_aliased_or_multiple"
 
+    # DuckDB shares Postgres's precedence for the JSON operators, so they're parsed as binary
+    # operators instead of as column accessors
+    JSON_OPERATORS = {
+        token: op
+        for token, op in parser.Parser.COLUMN_OPERATORS.items()
+        if token in parser.Parser.JSON_OPERATOR_TOKENS
+    }
+
+    COLUMN_OPERATORS = {
+        k: v
+        for k, v in parser.Parser.COLUMN_OPERATORS.items()
+        if k not in parser.Parser.JSON_OPERATOR_TOKENS
+    }
+
     NO_PAREN_FUNCTIONS = {
         **parser.Parser.NO_PAREN_FUNCTIONS,
         TokenType.LOCALTIME: exp.Localtime,

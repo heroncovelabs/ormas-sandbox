@@ -1034,6 +1034,21 @@ class Parser:
 
     LAMBDA_ARG_TERMINATORS: t.ClassVar[frozenset] = frozenset({TokenType.COMMA, TokenType.R_PAREN})
 
+    # Postgres's JSON extraction / existence operators. These are ordinary binary operators that
+    # sit in the "any other operator" precedence tier, so they're parsed by _parse_bitwise rather
+    # than as tight-binding column accessors, in the dialects that set JSON_OPERATORS
+    JSON_OPERATOR_TOKENS: t.ClassVar = (
+        TokenType.ARROW,
+        TokenType.DARROW,
+        TokenType.HASH_ARROW,
+        TokenType.DHASH_ARROW,
+        TokenType.PLACEHOLDER,
+    )
+
+    # Maps each JSON_OPERATOR_TOKENS token to its expression builder, i.e. the builders used for
+    # the same tokens in COLUMN_OPERATORS by dialects such as Postgres and DuckDB
+    JSON_OPERATORS: t.ClassVar = {}
+
     COLUMN_OPERATORS: t.ClassVar = {
         TokenType.DOT: None,
         TokenType.DOTCOLON: lambda self, this, to: self.expression(exp.JSONCast(this=this, to=to)),
@@ -6261,6 +6276,11 @@ class Parser:
                 this = self.expression(
                     exp.BitwiseRightShift(this=this, expression=self._parse_term())
                 )
+            elif self._curr.token_type in self.JSON_OPERATORS and self._next:
+                # Postgres's JSON operators bind as loosely as `||` and are left-associative
+                op = self.JSON_OPERATORS[self._curr.token_type]
+                self._advance()
+                this = op(self, this, self._parse_term())
             else:
                 break
 
