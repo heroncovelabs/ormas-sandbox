@@ -464,6 +464,9 @@ def version_option(
         point name. The Python package name must match the installed
         package name, or be passed with ``package_name=``.
 
+    The parameters of this decorator are frozen. Use
+    :func:`custom_version_option` to build any other message.
+
     .. versionchanged:: 8.4.2
         When ``package_name`` does not match an installed distribution,
         Click now resolves it as an import (top-level module).
@@ -545,6 +548,50 @@ def version_option(
     kwargs.setdefault("is_eager", True)
     kwargs.setdefault("help", _("Show the version and exit."))
     kwargs["callback"] = callback
+    return option(*param_decls, **kwargs)
+
+
+def custom_version_option(
+    callback: t.Callable[[Context], str],
+    *param_decls: str,
+    **kwargs: t.Any,
+) -> t.Callable[[FC], FC]:
+    """Add a ``--version`` option which immediately prints the message
+    returned by ``callback`` and exits the program.
+
+    This is the customizable companion to :func:`version_option`. The
+    ``callback`` is called with the current :class:`Context` and can
+    build any message, such as one including the Python version, a file
+    path, or git metadata.
+
+    .. code-block:: python
+
+        @click.command()
+        @click.custom_version_option(lambda ctx: f"{ctx.info_name} 1.0")
+        def cli(): ...
+
+    :param callback: A function that takes the current context and
+        returns the message to show.
+    :param param_decls: One or more option names. Defaults to the single
+        value ``"--version"``.
+    :param kwargs: Extra arguments are passed to :func:`option`.
+    """
+
+    def show_version(ctx: Context, param: Parameter, value: bool) -> None:
+        if not value or ctx.resilient_parsing:
+            return
+
+        echo(callback(ctx), color=ctx.color)
+        ctx.exit()
+
+    if not param_decls:
+        param_decls = ("--version",)
+
+    kwargs.setdefault("is_flag", True)
+    kwargs.setdefault("expose_value", False)
+    kwargs.setdefault("is_eager", True)
+    kwargs.setdefault("help", _("Show the version and exit."))
+    kwargs["callback"] = show_version
     return option(*param_decls, **kwargs)
 
 
