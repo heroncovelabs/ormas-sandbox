@@ -464,9 +464,15 @@ class BaseModelAdmin(metaclass=forms.MediaDefiningClass):
             # It is allowed to filter on values that would be found from local
             # model anyways. For example, if you filter on employee__department__id,
             # then the id value would be found already from employee__department_id.
+            # Keep ordinary relations in the lookup path even if they are
+            # primary keys. Inheritance parent links can be treated as local
+            # fields, since they refer to the same instance.
             if not prev_field or (
                 prev_field.is_relation
-                and field not in prev_field.path_infos[-1].target_fields
+                and (
+                    field not in prev_field.path_infos[-1].target_fields
+                    or (field.is_relation and not field.remote_field.parent_link)
+                )
             ):
                 relation_parts.append(part)
             if not getattr(field, "path_infos", None):
