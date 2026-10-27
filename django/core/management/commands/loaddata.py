@@ -361,7 +361,7 @@ class Command(BaseCommand):
         current directory.
         """
         dirs = []
-        fixture_dirs = settings.FIXTURE_DIRS
+        fixture_dirs = [str(path) for path in settings.FIXTURE_DIRS]
         if len(fixture_dirs) != len(set(fixture_dirs)):
             raise ImproperlyConfigured("settings.FIXTURE_DIRS contains duplicates.")
         for app_config in apps.get_app_configs():
