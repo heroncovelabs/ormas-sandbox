@@ -8,6 +8,7 @@ from sqlglot.dialects.dialect import (
     binary_from_function,
     build_default_decimal_type,
     build_formatted_time,
+    build_json_extract_path,
     build_regexp_extract,
     date_trunc_to_time,
     pivot_column_names,
@@ -85,11 +86,44 @@ class DuckDBParser(parser.Parser):
 
     BITWISE = {k: v for k, v in parser.Parser.BITWISE.items() if k != TokenType.CARET}
 
+    def _parse_json_extract_operator(
+        self, this: exp.Expr | None, expr_type: type[exp.Expr]
+    ) -> exp.Expr | None:
+        expression = self._parse_bitwise()
+        if not this or not expression:
+            return self._parse_unexpected_operand(this, expression)
+
+        return self.validate_expression(
+            build_json_extract_path(expr_type)([this, expression])
+        )
+
     RANGE_PARSERS = {
         **parser.Parser.RANGE_PARSERS,
         TokenType.DAMP: binary_range_parser(exp.ArrayOverlaps),
         TokenType.CARET_AT: binary_range_parser(exp.StartsWith),
         TokenType.TILDE: binary_range_parser(exp.RegexpFullMatch),
+        TokenType.ARROW: lambda self, this: self._parse_json_extract_operator(
+            this, exp.JSONExtract
+        ),
+        TokenType.DARROW: lambda self, this: self._parse_json_extract_operator(
+            this, exp.JSONExtractScalar
+        ),
+        TokenType.HASH_ARROW: binary_range_parser(exp.JSONBExtract),
+        TokenType.DHASH_ARROW: binary_range_parser(exp.JSONBExtractScalar),
+        TokenType.PLACEHOLDER: binary_range_parser(exp.JSONBContains),
+    }
+
+    COLUMN_OPERATORS = {
+        token: parse
+        for token, parse in parser.Parser.COLUMN_OPERATORS.items()
+        if token
+        not in (
+            TokenType.ARROW,
+            TokenType.DARROW,
+            TokenType.HASH_ARROW,
+            TokenType.DHASH_ARROW,
+            TokenType.PLACEHOLDER,
+        )
     }
 
     EXPONENT = {

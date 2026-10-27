@@ -66,6 +66,31 @@ def _build_regexp_replace(args: list, dialect: DialectType = None) -> exp.Regexp
     return regexp_replace
 
 
+def _build_json_extract_path_operator(
+    expr_type: type[exp.Expr], arrow_req_json_type: bool = False
+) -> t.Callable[[t.Any, t.Any], exp.Expr]:
+    build_json_extract = build_json_extract_path(
+        expr_type, arrow_req_json_type=arrow_req_json_type
+    )
+
+    def _build(this: t.Any, expression: t.Any) -> exp.Expr:
+        return build_json_extract([this, expression])
+
+    return _build
+
+
+def _parse_json_extract_operator(
+    self: parser.Parser,
+    this: exp.Expr | None,
+    build: t.Callable[[t.Any, t.Any], exp.Expr],
+) -> exp.Expr | None:
+    expression = self._parse_bitwise()
+    if not this or not expression:
+        return self._parse_unexpected_operand(this, expression)
+
+    return self.validate_expression(build(this, expression))
+
+
 def _build_levenshtein_less_equal(args: list) -> exp.Levenshtein:
     # Postgres has two signatures for levenshtein_less_equal function, but in both cases
     # max_dist is the last argument
@@ -81,6 +106,29 @@ def _build_levenshtein_less_equal(args: list) -> exp.Levenshtein:
         sub_cost=seq_get(args, 4),
         max_dist=max_dist,
     )
+
+
+_JSON_RANGE_PARSERS = {
+    TokenType.ARROW: lambda self, this: _parse_json_extract_operator(
+        self,
+        this,
+        _build_json_extract_path_operator(
+            exp.JSONExtract,
+            arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE,
+        ),
+    ),
+    TokenType.DARROW: lambda self, this: _parse_json_extract_operator(
+        self,
+        this,
+        _build_json_extract_path_operator(
+            exp.JSONExtractScalar,
+            arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE,
+        ),
+    ),
+    TokenType.HASH_ARROW: binary_range_parser(exp.JSONBExtract),
+    TokenType.DHASH_ARROW: binary_range_parser(exp.JSONBExtractScalar),
+    TokenType.PLACEHOLDER: binary_range_parser(exp.JSONBContains),
+}
 
 
 class PostgresParser(parser.Parser):
@@ -175,6 +223,9 @@ class PostgresParser(parser.Parser):
         TokenType.DAT: lambda self, this: self.expression(
             exp.MatchAgainst(this=self._parse_bitwise(), expressions=[this])
         ),
+        # Postgres JSON operators are ordinary binary operators: they bind no tighter than
+        # any other operator, sitting below `+`/`-` and level with `||`
+        **_JSON_RANGE_PARSERS,
     }
 
     STATEMENT_PARSERS = {
@@ -191,20 +242,32 @@ class PostgresParser(parser.Parser):
     JSON_ARROWS_REQUIRE_JSON_TYPE = True
 
     COLUMN_OPERATORS = {
-        **parser.Parser.COLUMN_OPERATORS,
-        TokenType.ARROW: lambda self, this, path: self.validate_expression(
-            build_json_extract_path(
-                exp.JSONExtract, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
-            )([this, path])
-        ),
-        TokenType.DARROW: lambda self, this, path: self.validate_expression(
-            build_json_extract_path(
-                exp.JSONExtractScalar, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
-            )([this, path])
-        ),
+        **{
+            token: parse
+            for token, parse in parser.Parser.COLUMN_OPERATORS.items()
+            if token
+            not in (
+                TokenType.ARROW,
+                TokenType.DARROW,
+                TokenType.HASH_ARROW,
+                TokenType.DHASH_ARROW,
+                TokenType.PLACEHOLDER,
+            )
+        },
     }
 
     ARG_MODE_TOKENS: t.ClassVar = {TokenType.IN, TokenType.OUT, TokenType.INOUT, TokenType.VARIADIC}
+
+    def _parse_json_extract_operator(
+        self,
+        this: exp.Expr | None,
+        build: t.Callable[[t.Any, t.Any], exp.Expr],
+    ) -> exp.Expr | None:
+        expression = self._parse_bitwise()
+        if not this or not expression:
+            return self._parse_unexpected_operand(this, expression)
+
+        return self.validate_expression(build(this, expression))
 
     def _parse_parameter_mode(self) -> TokenType | None:
         """
