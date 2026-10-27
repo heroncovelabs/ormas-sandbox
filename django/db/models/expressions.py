@@ -1299,6 +1299,10 @@ class When(Expression):
         template_params = extra_context
         sql_params = []
         condition_sql, condition_params = compiler.compile(self.condition)
+        if not condition_sql:
+            # An empty condition matches every row. Let Case use this result
+            # as its default.
+            return "", []
         template_params["condition"] = condition_sql
         sql_params.extend(condition_params)
         result_sql, result_params = compiler.compile(self.result)
@@ -1383,14 +1387,22 @@ class Case(SQLiteNumericMixin, Expression):
         template_params = {**self.extra, **extra_context}
         case_parts = []
         sql_params = []
+        # Compilation-local fallback so repeated compilation keeps self.default.
+        fallback = self.default
         for case in self.cases:
             try:
                 case_sql, case_params = compiler.compile(case)
             except EmptyResultSet:
                 continue
+            if not case_sql:
+                # An unconditional When (e.g. ~Q(pk__in=[])) matches every
+                # remaining row, so its result is the effective fallback and
+                # subsequent branches are unreachable.
+                fallback = case.result
+                break
             case_parts.append(case_sql)
             sql_params.extend(case_params)
-        default_sql, default_params = compiler.compile(self.default)
+        default_sql, default_params = compiler.compile(fallback)
         if not case_parts:
             return default_sql, default_params
         case_joiner = case_joiner or self.case_joiner
