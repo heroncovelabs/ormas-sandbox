@@ -305,21 +305,26 @@ class Relational(Boolean, EvalfMixin):
         r = self
         r = r.func(*[i.simplify(**kwargs) for i in r.args])
         if r.is_Relational:
-            dif = r.lhs - r.rhs
-            # replace dif with a valid Number that will
-            # allow a definitive comparison with 0
-            v = None
-            if dif.is_comparable:
-                v = dif.n(2)
-            elif dif.equals(0):  # XXX this is expensive
-                v = S.Zero
-            if v is not None:
-                r = r.func._eval_relation(v, S.Zero)
+            # Arithmetic simplification (subtraction, numerical evaluation,
+            # equals(0), linear/polynomial normalization) only applies when
+            # both sides are Expr; e.g. Sets do not support .equals().
+            arith = isinstance(r.lhs, Expr) and isinstance(r.rhs, Expr)
+            if arith:
+                dif = r.lhs - r.rhs
+                # replace dif with a valid Number that will
+                # allow a definitive comparison with 0
+                v = None
+                if dif.is_comparable:
+                    v = dif.n(2)
+                elif dif.equals(0):  # XXX this is expensive
+                    v = S.Zero
+                if v is not None:
+                    r = r.func._eval_relation(v, S.Zero)
             r = r.canonical
             # If there is only one symbol in the expression,
             # try to write it on a simplified form
             free = list(filter(lambda x: x.is_real is not False, r.free_symbols))
-            if len(free) == 1:
+            if arith and len(free) == 1:
                 try:
                     from sympy.solvers.solveset import linear_coeffs
                     x = free.pop()
@@ -347,7 +352,7 @@ class Relational(Boolean, EvalfMixin):
                         r = r.func(Poly.from_list(c, x).as_expr(), -constant / scale)
                     except PolynomialError:
                         pass
-            elif len(free) >= 2:
+            elif arith and len(free) >= 2:
                 try:
                     from sympy.solvers.solveset import linear_coeffs
                     from sympy.polys import gcd
@@ -563,7 +568,8 @@ class Equality(Relational):
         if not isinstance(e, Equality):
             return e
         free = self.free_symbols
-        if len(free) == 1:
+        # linear coefficient extraction only makes sense for Expr operands
+        if len(free) == 1 and isinstance(e.lhs, Expr) and isinstance(e.rhs, Expr):
             try:
                 x = free.pop()
                 m, b = linear_coeffs(
