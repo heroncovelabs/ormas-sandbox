@@ -3,6 +3,7 @@ import math
 from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import cached_property, partial, wraps
 from heapq import heapify, heapreplace
 from itertools import (
@@ -35,6 +36,7 @@ from operator import (
     neg,
     sub,
     gt,
+    index,
 )
 from sys import maxsize
 from time import monotonic
@@ -48,6 +50,8 @@ from .recipes import (
     is_prime,
     nth,
     powerset,
+    running_mean,
+    running_median,
     sieve,
     take,
     unique_everseen,
@@ -58,6 +62,7 @@ from .recipes import (
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -143,6 +148,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_min',
+    'running_max',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -5441,3 +5449,143 @@ class _concurrent_tee:
                     link[1] = [None, None]
         value, self.link = link
         return value
+
+
+@dataclass(frozen=True)
+class Stats:
+    """An immutable record of running statistics.
+
+    The fields, in constructor order, are *size*, *minimum*, *median*,
+    *maximum*, and *mean*. Fields are accessed by name. Instances compare
+    and hash by their field values, and use slots for compact storage.
+
+    >>> stats = Stats(3, 1, 3, 5, 3.0)
+    >>> stats.size, stats.mean
+    (3, 3.0)
+
+    See :func:`running_statistics`.
+    """
+
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+
+    size: int
+    minimum: object
+    median: object
+    maximum: object
+    mean: object
+
+
+def _running_extremum(iterable, maxlen, compare):
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+
+    def extrema():
+        best = _marker
+        candidates = deque()
+        for i, value in enumerate(iterator):
+            if isinstance(value, complex):
+                raise TypeError('Complex numbers are unorderable')
+
+            if maxlen is None:
+                if best is _marker or compare(value, best):
+                    best = value
+                yield best
+            else:
+                # Expire old candidates and maintain a monotonic deque.
+                while candidates and candidates[0][0] <= i - maxlen:
+                    candidates.popleft()
+                while candidates and compare(value, candidates[-1][1]):
+                    candidates.pop()
+                candidates.append((i, value))
+                yield candidates[0][1]
+
+    return extrema()
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the minimum of values seen so far or in a sliding window.
+
+    Set *maxlen* to a positive integer to use the last *maxlen* values.
+    The default of *None* uses all values seen so far.
+
+    >>> list(running_min([5, 1, 3, 2]))
+    [5, 1, 1, 1]
+    >>> list(running_min([5, 1, 3, 2], maxlen=2))
+    [5, 1, 1, 2]
+
+    Supports int, float, Decimal, and Fraction. Complex values raise
+    :exc:`TypeError` during iteration. Each result consumes one input value.
+    Storage is constant for an unbounded window and O(*maxlen*) otherwise;
+    updates take amortized O(1) time.
+
+    A nonpositive *maxlen* raises :exc:`ValueError` and a non-iterable input
+    raises :exc:`TypeError` when this function is called.
+    """
+    return _running_extremum(iterable, maxlen, lt)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the maximum of values seen so far or in a sliding window.
+
+    Set *maxlen* to a positive integer to use the last *maxlen* values.
+    The default of *None* uses all values seen so far.
+
+    >>> list(running_max([5, 1, 3, 2]))
+    [5, 5, 5, 5]
+    >>> list(running_max([5, 1, 3, 2], maxlen=2))
+    [5, 5, 3, 3]
+
+    Supports int, float, Decimal, and Fraction. Complex values raise
+    :exc:`TypeError` during iteration. Each result consumes one input value.
+    Storage is constant for an unbounded window and O(*maxlen*) otherwise;
+    updates take amortized O(1) time.
+
+    A nonpositive *maxlen* raises :exc:`ValueError` and a non-iterable input
+    raises :exc:`TypeError` when this function is called.
+    """
+    return _running_extremum(iterable, maxlen, gt)
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record for each input value.
+
+    Each record contains the size, minimum, median, maximum, and mean of
+    the values seen so far. Set *maxlen* to a positive integer to use only
+    the last *maxlen* values, with smaller windows at the start.
+
+    >>> for stats in running_statistics([3, 1, 5]):
+    ...     print(stats)
+    Stats(size=1, minimum=3, median=3, maximum=3, mean=3.0)
+    Stats(size=2, minimum=1, median=2.0, maximum=3, mean=2.0)
+    Stats(size=3, minimum=1, median=3, maximum=5, mean=3.0)
+    >>> list(running_statistics([3, 1, 5], maxlen=2))[-1]
+    Stats(size=2, minimum=1, median=3.0, maximum=5, mean=3.0)
+
+    The median and mean are computed by :func:`running_median` and
+    :func:`running_mean`. Supports int, float, Decimal, and Fraction.
+    Complex values raise :exc:`TypeError` during iteration. Each result
+    consumes one input value, allowing infinite inputs.
+
+    A nonpositive *maxlen* raises :exc:`ValueError` and a non-iterable input
+    raises :exc:`TypeError` when this function is called.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+
+    minima, medians, maxima, means = tee(iterator, 4)
+    statistics = zip(
+        running_min(minima, maxlen=maxlen),
+        running_median(medians, maxlen=maxlen),
+        running_max(maxima, maxlen=maxlen),
+        running_mean(means, maxlen=maxlen),
+    )
+    return (
+        Stats(size if maxlen is None else min(size, maxlen), *values)
+        for size, values in enumerate(statistics, 1)
+    )

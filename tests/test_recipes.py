@@ -1529,6 +1529,84 @@ class RunningMeanTests(TestCase):
                 actual = list(mi.running_mean(iterable))
                 self.assertEqual(actual, expected)
 
+    def test_windowed_basic(self):
+        running_mean = mi.running_mean
+        self.assertEqual(list(running_mean([], maxlen=3)), [])
+        self.assertEqual(
+            list(running_mean([100, 200, 600, 50], maxlen=2)),
+            [100.0, 150.0, 400.0, 325.0],
+        )
+        self.assertEqual(
+            list(running_mean([1, 2, 3, 4], maxlen=10)),
+            list(running_mean([1, 2, 3, 4])),
+        )
+
+    def test_windowed_matches_reference_mean(self):
+        running_mean = mi.running_mean
+        size = 7
+        tolerance = Decimal('1e-20')
+        for data in [
+            random.choices(range(-500, 500), k=200),
+            [+Decimal(random.uniform(-500, 500)) for _ in range(200)],
+            [
+                Fraction(random.randrange(-500, 500), random.randrange(1, 500))
+                for _ in range(200)
+            ],
+        ]:
+            with self.subTest(data=data[:1]):
+                actual = list(running_mean(iter(data), maxlen=size))
+                for k, value in enumerate(actual, start=1):
+                    window = data[max(0, k - size) : k]
+                    if isinstance(window[0], Decimal):
+                        expected = sum(window) / len(window)
+                        self.assertLess(abs(value - expected), tolerance)
+                    else:
+                        expected = sum(window) / len(window)
+                        self.assertEqual(value, expected)
+                    self.assertEqual(type(value), type(expected))
+
+    def test_windowed_maxlen_one(self):
+        data = [3, 1, 4, 1, 5]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=1)), [3.0, 1.0, 4.0, 1.0, 5.0]
+        )
+
+    def test_windowed_complex(self):
+        data = [1 + 1j, 3 - 1j, 2j]
+        actual = list(mi.running_mean(data, maxlen=2))
+        expected = [
+            (1 + 1j) / 1,
+            (1 + 1j + 3 - 1j) / 2,
+            (3 - 1j + 2j) / 2,
+        ]
+        self.assertEqual(actual, expected)
+
+    def test_windowed_streams_input(self):
+        consumed = []
+
+        def source():
+            for x in count():
+                consumed.append(x)
+                yield x
+
+        iterator = mi.running_mean(source(), maxlen=3)
+        self.assertEqual(consumed, [])
+        self.assertEqual(next(iterator), 0.0)
+        self.assertEqual(consumed, [0])
+        self.assertEqual(next(iterator), 0.5)
+        self.assertEqual(consumed, [0, 1])
+
+    def test_windowed_error_cases(self):
+        running_mean = mi.running_mean
+        with self.assertRaises(TypeError):
+            running_mean(1234, maxlen=3)  # Non-iterable input
+        with self.assertRaises(TypeError):
+            running_mean([], maxlen=3.0)  # Non-integer window size
+        with self.assertRaises(ValueError):
+            running_mean([], maxlen=0)  # Invalid window size
+        with self.assertRaises(ValueError):
+            running_mean([], maxlen=-1)  # Invalid window size
+
 
 class RunningMedianTests(TestCase):
     def test_vs_statistics_median(self):

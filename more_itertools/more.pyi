@@ -15,6 +15,9 @@ from collections.abc import (
     Sized,
 )
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
+from decimal import Decimal
+from fractions import Fraction
 from threading import Lock
 from typing import (
     Any,
@@ -30,6 +33,7 @@ from typing_extensions import Protocol
 __all__ = [
     'AbortThread',
     'SequenceView',
+    'Stats',
     'adjacent',
     'all_unique',
     'always_iterable',
@@ -115,6 +119,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_min',
+    'running_max',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -159,6 +166,7 @@ _U = TypeVar('_U')
 _V = TypeVar('_V')
 _W = TypeVar('_W')
 _T_co = TypeVar('_T_co', covariant=True)
+_NumberT = TypeVar('_NumberT', float, Decimal, Fraction)
 _GenFn = TypeVar('_GenFn', bound=Callable[..., Iterator[Any]])
 _Raisable = BaseException | type[BaseException]
 
@@ -977,3 +985,28 @@ def concurrent_tee(
 def synchronized(
     func: Callable[..., Iterator[_T]],
 ) -> Callable[..., Iterator[_T]]: ...
+
+
+@dataclass(frozen=True)
+class Stats(Generic[_T, _U]):
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+    size: int
+    minimum: _T
+    median: _T | _U
+    maximum: _T
+    mean: _U
+
+def running_min(
+    iterable: Iterable[_SupportsLessThanT], *, maxlen: int | None = ...
+) -> Iterator[_SupportsLessThanT]: ...
+def running_max(
+    iterable: Iterable[_SupportsLessThanT], *, maxlen: int | None = ...
+) -> Iterator[_SupportsLessThanT]: ...
+@overload
+def running_statistics(
+    iterable: Iterable[int], *, maxlen: int | None = ...
+) -> Iterator[Stats[int, float]]: ...
+@overload
+def running_statistics(
+    iterable: Iterable[_NumberT], *, maxlen: int | None = ...
+) -> Iterator[Stats[_NumberT, _NumberT]]: ...

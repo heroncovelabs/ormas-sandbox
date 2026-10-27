@@ -29,7 +29,7 @@ from itertools import (
 from operator import add, mul, itemgetter, not_
 from pickle import loads, dumps
 from random import Random, random, randrange, seed
-from statistics import mean
+from statistics import mean, median
 from string import ascii_letters
 from threading import Thread, Lock
 from time import sleep
@@ -6646,3 +6646,241 @@ class TestConcurrentTee(TestCase):
         with self.assertRaises(ValueError):
             non_concurrent_source = producer(limit)
             mi.concurrent_tee(non_concurrent_source, n=-1)  # Negative n
+
+
+class StatsTests(TestCase):
+    def test_record(self):
+        stats = mi.Stats(3, 1, 2, 4, 7 / 3)
+        other = mi.Stats(
+            size=3, minimum=1, median=2, maximum=4, mean=7 / 3
+        )
+        self.assertEqual(stats, other)
+        self.assertEqual(hash(stats), hash(other))
+        self.assertEqual(len({stats, other}), 1)
+        self.assertNotEqual(stats, mi.Stats(4, 1, 2, 4, 7 / 3))
+        self.assertEqual(stats.size, 3)
+        self.assertEqual(stats.minimum, 1)
+        self.assertEqual(stats.median, 2)
+        self.assertEqual(stats.maximum, 4)
+        self.assertEqual(stats.mean, 7 / 3)
+        self.assertFalse(hasattr(stats, '__dict__'))
+
+    def test_immutable(self):
+        stats = mi.Stats(1, 2, 2, 2, 2.0)
+        for name in ('size', 'minimum', 'median', 'maximum', 'mean', 'extra'):
+            with self.subTest(name=name):
+                with self.assertRaises(AttributeError):
+                    setattr(stats, name, 0)
+                with self.assertRaises(AttributeError):
+                    delattr(stats, name)
+
+    def test_sequence_operations(self):
+        stats = mi.Stats(1, 2, 2, 2, 2.0)
+        with self.assertRaises(TypeError):
+            len(stats)
+        with self.assertRaises(TypeError):
+            stats[0]
+        with self.assertRaises(TypeError):
+            iter(stats)
+
+
+class RunningExtremaTests(TestCase):
+    def test_examples(self):
+        data = [5, 1, 3, 2]
+        self.assertEqual(list(mi.running_min(data)), [5, 1, 1, 1])
+        self.assertEqual(list(mi.running_max(data)), [5, 5, 5, 5])
+        self.assertEqual(
+            list(mi.running_min(data, maxlen=2)), [5, 1, 1, 2]
+        )
+        self.assertEqual(
+            list(mi.running_max(data, maxlen=2)), [5, 5, 3, 3]
+        )
+
+    def test_numeric_types(self):
+        for numeric_type in (int, float, Decimal, Fraction):
+            data = list(map(numeric_type, [5, 1, 3, 2, -2, 7]))
+            for function, reference in (
+                (mi.running_min, min), (mi.running_max, max)
+            ):
+                for maxlen in (None, 1, 3, 20):
+                    with self.subTest(
+                        numeric_type=numeric_type,
+                        function=function,
+                        maxlen=maxlen,
+                    ):
+                        results = list(function(iter(data), maxlen=maxlen))
+                        expected = [
+                            reference(data[max(0, n - (maxlen or n)) : n])
+                            for n in range(1, len(data) + 1)
+                        ]
+                        self.assertEqual(results, expected)
+                        self.assertTrue(
+                            all(type(x) is numeric_type for x in results)
+                        )
+
+    def test_windows_match_brute_force(self):
+        rng = Random(1729)
+        datasets = [
+            rng.choices(range(-20, 21), k=200),
+            [1] * 20 + [0] * 20 + [2] * 20 + [1] * 20,
+            list(range(50)),
+            list(range(50, 0, -1)),
+        ]
+        for data in datasets:
+            for maxlen in (1, 2, 3, 10, len(data), len(data) + 1):
+                for function, reference in (
+                    (mi.running_min, min), (mi.running_max, max)
+                ):
+                    with self.subTest(function=function, maxlen=maxlen):
+                        expected = [
+                            reference(data[max(0, n - maxlen) : n])
+                            for n in range(1, len(data) + 1)
+                        ]
+                        self.assertEqual(
+                            list(function(data, maxlen=maxlen)), expected
+                        )
+
+
+class RunningStatisticsTests(TestCase):
+    def test_examples(self):
+        self.assertEqual(
+            list(mi.running_statistics([3, 1, 5])),
+            [
+                mi.Stats(1, 3, 3, 3, 3.0),
+                mi.Stats(2, 1, 2.0, 3, 2.0),
+                mi.Stats(3, 1, 3, 5, 3.0),
+            ],
+        )
+        self.assertEqual(
+            list(mi.running_statistics([3, 1, 5], maxlen=2)),
+            [
+                mi.Stats(1, 3, 3, 3, 3.0),
+                mi.Stats(2, 1, 2.0, 3, 2.0),
+                mi.Stats(2, 1, 3.0, 5, 3.0),
+            ],
+        )
+
+    def test_numeric_types_and_windows(self):
+        rng = Random(1729)
+        values = rng.choices(range(-20, 21), k=100)
+        for numeric_type in (int, float, Decimal, Fraction):
+            data = list(map(numeric_type, values))
+            for maxlen in (None, 1, 2, 3, 10, len(data), len(data) + 1):
+                with self.subTest(numeric_type=numeric_type, maxlen=maxlen):
+                    results = list(
+                        mi.running_statistics(iter(data), maxlen=maxlen)
+                    )
+                    self.assertEqual(len(results), len(data))
+                    for n, stats in enumerate(results, 1):
+                        window = data[max(0, n - (maxlen or n)) : n]
+                        self.assertEqual(
+                            stats,
+                            mi.Stats(
+                                len(window), min(window), median(window),
+                                max(window), sum(window) / len(window),
+                            ),
+                        )
+                        self.assertIs(type(stats.minimum), numeric_type)
+                        self.assertIs(type(stats.maximum), numeric_type)
+                        self.assertIs(
+                            type(stats.mean),
+                            float if numeric_type is int else numeric_type,
+                        )
+
+    def test_matches_recipes(self):
+        # Preserve the existing recipes' Decimal context rounding behavior.
+        data = [
+            Decimal('1.123456789012345678901234567890123'),
+            Decimal('4.987654321098765432109876543210987'),
+            Decimal('2.987654321098765432109876543210987'),
+            Decimal('3.123456789012345678901234567890123'),
+        ]
+        for maxlen in (None, 1, 2, 3, 10):
+            with self.subTest(maxlen=maxlen):
+                results = list(mi.running_statistics(data, maxlen=maxlen))
+                self.assertEqual(
+                    [stats.median for stats in results],
+                    list(mi.running_median(data, maxlen=maxlen)),
+                )
+                self.assertEqual(
+                    [stats.mean for stats in results],
+                    list(mi.running_mean(data, maxlen=maxlen)),
+                )
+
+    def test_complex_rejected_during_iteration(self):
+        for function in (
+            mi.running_min, mi.running_max, mi.running_statistics
+        ):
+            for maxlen in (None, 1, 3):
+                for data in ([1j], [1, 2j], [1, 2, 3j]):
+                    with self.subTest(
+                        function=function, maxlen=maxlen, data=data
+                    ):
+                        iterator = function(data, maxlen=maxlen)
+                        with self.assertRaises(TypeError):
+                            list(iterator)
+
+
+class RunningStatisticsCommonTests(TestCase):
+    functions = (
+        mi.running_min, mi.running_max, mi.running_mean,
+        mi.running_median, mi.running_statistics,
+    )
+
+    def test_exports(self):
+        namespace = {}
+        exec('from more_itertools import *', namespace)
+        for name in ('Stats', 'running_min', 'running_max', 'running_statistics'):
+            self.assertIs(namespace[name], getattr(mi, name))
+
+    def test_empty(self):
+        for function in self.functions:
+            for maxlen in (None, 1, 3):
+                with self.subTest(function=function, maxlen=maxlen):
+                    self.assertEqual(list(function([], maxlen=maxlen)), [])
+
+    def test_call_time_validation(self):
+        for function in self.functions:
+            for maxlen in (0, -1, -10):
+                with self.subTest(function=function, maxlen=maxlen):
+                    with self.assertRaises(ValueError):
+                        function([], maxlen=maxlen)
+            for maxlen in (None, 3):
+                for value in (None, 1, object()):
+                    with self.subTest(function=function, value=value):
+                        with self.assertRaises(TypeError):
+                            function(value, maxlen=maxlen)
+            with self.subTest(function=function):
+                with self.assertRaises(TypeError):
+                    function([], maxlen=1.5)
+                with self.assertRaises(TypeError):
+                    function([], 3)
+
+    def test_index_window_size(self):
+        class WindowSize:
+            def __index__(self):
+                return 3
+
+        for function in self.functions:
+            with self.subTest(function=function):
+                self.assertEqual(
+                    list(function(range(6), maxlen=WindowSize())),
+                    list(function(range(6), maxlen=3)),
+                )
+
+    def test_streams_infinite_input(self):
+        for function in self.functions:
+            for maxlen in (None, 1, 3):
+                with self.subTest(function=function, maxlen=maxlen):
+                    consumed = []
+
+                    def source():
+                        for x in count():
+                            consumed.append(x)
+                            yield x
+
+                    iterator = function(source(), maxlen=maxlen)
+                    self.assertEqual(consumed, [])
+                    for n in range(10):
+                        next(iterator)
+                        self.assertEqual(consumed, list(range(n + 1)))
