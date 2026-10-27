@@ -6,6 +6,24 @@ trading session per process: commands on stdin (``T`` books a trade,
 trade, one reply line per book per revaluation, and an ``X`` trailer at
 end of input. Format reference: ``docs/SPEC.md`` (note the drift warning
 at the top of that file; the legacy engine's behavior is the contract).
+
+Engine behaviors that differ from the spec, reproduced here:
+
+- Trade replies round each pair to the cent (banker's rounding) and sum;
+  revaluation replies floor each pair to a tenth of a cent, sum, and
+  round once, halves toward positive infinity.
+- Pairs quoted in yen (``...JPY``) are valued per 100 rather than per
+  10000, except during a revaluation that does not list the pair.
+- A trade that takes a position through zero (sign flip) books the
+  pair's rate five tenths of a pip lower than the trade's rate.
+- A zero amount is not a reject: the trade is validated, then silently
+  ignored (no reply, not counted, no book created).
+- Book ids match case-insensitively; replies on an existing book echo
+  the id as first seen.
+- Tokens after the rate on a trade are ignored; only spaces separate
+  trade tokens.
+- At most 256 books per session and 128 pairs per book; an otherwise
+  valid trade that would exceed either limit is rejected ``FMT``.
 """
 
 from __future__ import annotations
@@ -13,10 +31,15 @@ from __future__ import annotations
 import sys
 
 BOOK_MAX = 8
+MAX_BOOKS = 256
+MAX_PAIRS = 128  # per book
 PAIR_LEN = 6
 AMT_DIGITS = 8
 RATE_DIGITS = 7
 DIVISOR = 10_000
+JPY_DIVISOR = 100
+CROSS_SHIFT = 5
+TENTH = 1_000  # a tenth of a cent, in units of 1/DIVISOR cent
 
 
 def _round_half_even(numerator: int, denominator: int) -> int:
@@ -27,6 +50,10 @@ def _round_half_even(numerator: int, denominator: int) -> int:
     if doubled < denominator:
         return quotient
     return quotient if quotient % 2 == 0 else quotient + 1
+
+
+def _round_half_up(numerator: int, denominator: int) -> int:
+    return (2 * numerator + denominator) // (2 * denominator)
 
 
 def _valid_book(token: str) -> bool:
@@ -43,19 +70,35 @@ def _valid_pair(token: str) -> bool:
 
 
 def _valid_int(token: str, max_digits: int) -> bool:
-    return 1 <= len(token) <= max_digits and token.isdigit()
+    return 1 <= len(token) <= max_digits and token.isascii() and token.isdigit()
+
+
+def _divisor(pair: str) -> int:
+    return JPY_DIVISOR if pair.endswith("JPY") else DIVISOR
 
 
 class Book:
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self.name = name
         self.pos: dict[str, int] = {}
         self.rate: dict[str, int] = {}
 
     def netvalue(self) -> int:
         return sum(
-            _round_half_even(self.pos[pair] * self.rate[pair], DIVISOR)
+            _round_half_even(self.pos[pair] * self.rate[pair], _divisor(pair))
             for pair in self.pos
         )
+
+    def reval_value(self, fixes: dict[str, int]) -> int:
+        # Each pair is floored to a tenth of a cent, then the sum is
+        # rounded once.
+        total = 0
+        for pair in self.pos:
+            value = self.pos[pair] * self.rate[pair]
+            if pair in fixes:
+                value *= DIVISOR // _divisor(pair)
+            total += value // TENTH
+        return _round_half_up(total, DIVISOR // TENTH)
 
 
 class Engine:
@@ -80,17 +123,18 @@ class Engine:
         if line.startswith("V "):
             self._reval(line[2:])
         elif line == "T" or line.startswith("T "):
-            self._trade(line.split())
+            # Only spaces separate tokens; runs of spaces collapse.
+            self._trade([tok for tok in line.split(" ") if tok])
         else:
             self._reject("????????", "FMT")
 
     def _trade(self, tokens: list[str]) -> None:
         book = tokens[1] if len(tokens) > 1 else ""
         book_ok = _valid_book(book)
-        if len(tokens) != 6 or not book_ok:
+        if len(tokens) < 6 or not book_ok:
             self._reject(book if book_ok else "????????", "FMT")
             return
-        _, book, pair, side, amt_tok, rate_tok = tokens
+        _, book, pair, side, amt_tok, rate_tok = tokens[:6]
         if not _valid_pair(pair):
             self._reject(book, "PAIR")
             return
@@ -101,19 +145,31 @@ class Engine:
             self._reject(book, "AMT")
             return
         amount = int(amt_tok)
-        if amount == 0:
-            self._reject(book, "AMT")
-            return
         if not _valid_int(rate_tok, RATE_DIGITS) or int(rate_tok) == 0:
             self._reject(book, "RATE")
             return
         rate = int(rate_tok)
+        if amount == 0:
+            return
 
-        entry = self.books.setdefault(book, Book())
+        key = book.lower()
+        entry = self.books.get(key)
+        if entry is None:
+            if len(self.books) >= MAX_BOOKS:
+                self._reject(book, "FMT")
+                return
+            entry = self.books[key] = Book(book)
+        if pair not in entry.pos and len(entry.pos) >= MAX_PAIRS:
+            self._reject(book, "FMT")
+            return
         delta = amount if side == "B" else -amount
-        entry.pos[pair] = entry.pos.get(pair, 0) + delta
+        old = entry.pos.get(pair, 0)
+        new = old + delta
+        entry.pos[pair] = new
+        if old * new < 0:
+            rate -= CROSS_SHIFT
         entry.rate[pair] = rate
-        self._emit(f"P {book} {entry.netvalue()}")
+        self._emit(f"P {entry.name} {entry.netvalue()}")
         self.trades += 1
 
     def _reval(self, arg: str) -> None:
@@ -134,11 +190,11 @@ class Engine:
                 self._reject("????????", "FMT")
                 return
             fixes[pair] = int(rate_tok)
-        for book, entry in self.books.items():
+        for entry in self.books.values():
             for pair in entry.pos:
                 if pair in fixes:
                     entry.rate[pair] = fixes[pair]
-            self._emit(f"P {book} {entry.netvalue()}")
+            self._emit(f"P {entry.name} {entry.reval_value(fixes)}")
         self.revals += 1
 
     def finish(self) -> None:
