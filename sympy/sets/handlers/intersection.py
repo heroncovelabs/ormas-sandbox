@@ -220,6 +220,23 @@ def intersection_sets(a, b): # noqa:F811
     return a
 
 
+def _linear_roots(expr, n):
+    """Return the roots in ``n`` of ``expr`` if it is a product of
+    linear factors in ``n`` (factors not containing ``n`` are ignored).
+    Return None if any factor containing ``n`` is not linear.
+    """
+    roots = []
+    for fac in Mul.make_args(expr):
+        if not fac.has(n):
+            continue
+        p = fac.as_poly(n)
+        if p is None or p.degree() != 1:
+            return None
+        a, b = p.all_coeffs()
+        roots.append(-b/a)
+    return roots
+
+
 @dispatch(ImageSet, Set)  # type: ignore # noqa:F811
 def intersection_sets(self, other): # noqa:F811
     from sympy.solvers.diophantine import diophantine
@@ -278,8 +295,9 @@ def intersection_sets(self, other): # noqa:F811
 
     if other == S.Reals:
         from sympy.core.function import expand_complex
-        from sympy.solvers.solvers import denoms, solve_linear
-        from sympy.core.relational import Eq
+        from sympy.solvers.solvers import denoms
+        from sympy.core.relational import Eq, Ne
+        from sympy.polys.polytools import factor
         f = self.lamda.expr
         n = self.lamda.variables[0]
 
@@ -303,22 +321,21 @@ def intersection_sets(self, other): # noqa:F811
         elif ifree != {n}:
             return None
         else:
-            # univarite imaginary part in same variable
-            x, xis = zip(*[solve_linear(i, 0) for i in Mul.make_args(im) if n in i.free_symbols])
-            if x and all(i == n for i in x):
-                base_set -= FiniteSet(xis)
+            # Univariate imaginary part in the same variable: keep only
+            # the parameters where the imaginary part vanishes.
+            roots = _linear_roots(im.as_numer_denom()[0], n)
+            if roots:
+                base_set = Intersection(base_set, FiniteSet(*roots))
             else:
-                base_set -= ConditionSet(n, Eq(im, 0), S.Integers)
+                base_set = ConditionSet(n, Eq(im, 0), base_set)
         # exclude values that make denominators 0
         for i in denoms(f):
             if i.has(n):
-                sol = list(zip(*[solve_linear(i, 0) for i in Mul.make_args(im) if n in i.free_symbols]))
-                if sol != []:
-                    x, xis = sol
-                    if x and all(i == n for i in x):
-                        base_set -= FiniteSet(xis)
-                else:
-                    base_set -= ConditionSet(n, Eq(i, 0), S.Integers)
+                roots = _linear_roots(factor(i).as_numer_denom()[0], n)
+                if roots is None:
+                    base_set = ConditionSet(n, Ne(i, 0), base_set)
+                elif roots:
+                    base_set = base_set - FiniteSet(*roots)
         return imageset(lam, base_set)
 
     elif isinstance(other, Interval):
