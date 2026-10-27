@@ -308,20 +308,41 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
 
     # Global node connectivity
     if G.is_directed():
-        if not nx.is_weakly_connected(G):
+        if not nx.is_strongly_connected(G):
             return 0
-        iter_func = itertools.permutations
-        # It is necessary to consider both predecessors
-        # and successors for directed graphs
 
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
+        # Reuse the auxiliary digraph and the residual network
+        H = build_auxiliary_node_connectivity(G)
+        R = build_residual_network(H, "capacity")
+        kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    else:
-        if not nx.is_connected(G):
-            return 0
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+        # Algorithm 11 in [1] only applies to undirected graphs. For digraphs
+        # we use Even's algorithm: a minimum separator S has K nodes, so at
+        # least one of any K + 1 nodes is not in S, and the local node
+        # connectivity between it and some node on the other side of S (in
+        # one of the two directions) equals K.
+        nodes = list(G)
+        # Node connectivity is bounded by the in and out degrees (ignoring
+        # self-loops and parallel edges) and by n - 1.
+        K = len(nodes) - 1
+        for u in nodes:
+            K = min(K, len(set(G.pred[u]) - {u}), len(set(G.succ[u]) - {u}))
+        for i, v in enumerate(nodes):
+            if i > K:
+                break
+            for w in nodes[i + 1 :]:
+                if w not in G.succ[v]:
+                    kwargs["cutoff"] = K
+                    K = min(K, local_node_connectivity(G, v, w, **kwargs))
+                if v not in G.succ[w]:
+                    kwargs["cutoff"] = K
+                    K = min(K, local_node_connectivity(G, w, v, **kwargs))
+        return K
+
+    if not nx.is_connected(G):
+        return 0
+    iter_func = itertools.combinations
+    neighbors = G.neighbors
 
     # Reuse the auxiliary digraph and the residual network
     H = build_auxiliary_node_connectivity(G)
@@ -329,8 +350,9 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
     # Pick a node with minimum degree
-    # Node connectivity is bounded by degree.
-    v, K = min(G.degree(), key=itemgetter(1))
+    # Node connectivity is bounded by degree (ignoring self-loops and
+    # parallel edges).
+    v, K = min(((u, len(set(G[u]) - {u})) for u in G), key=itemgetter(1))
     # compute local node connectivity with all its non-neighbors nodes
     for w in set(G) - set(neighbors(v)) - {v}:
         kwargs["cutoff"] = K
