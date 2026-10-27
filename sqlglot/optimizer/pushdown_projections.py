@@ -106,6 +106,13 @@ def pushdown_projections(
                 scope_sql = scope.expression.sql(dialect=dialect)
                 raise OptimizeError(f"Invalid set operation due to column mismatch: {scope_sql}.")
 
+            if _is_multiset_set_operation(set_op):
+                # INTERSECT ALL / EXCEPT ALL compare whole rows with multiset semantics,
+                # so every projected column of both operands participates in the result.
+                referenced_columns[left] = {SELECT_ALL}
+                referenced_columns[right] = {SELECT_ALL}
+                continue
+
             referenced_columns[left] = parent_selections
 
             if re.is_star:
@@ -174,6 +181,10 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
 
     select_all = SELECT_ALL in parent_selections
 
+    # GROUP BY ALL derives its grouping keys from the non-aggregate projections, so
+    # removing an "unused" projection changes which columns the query groups by.
+    group_by_all = _is_group_by_all(scope.expression)
+
     for selection in scope.expression.selects:
         name = selection.alias_or_name
 
@@ -183,6 +194,7 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
             or name in order_refs
             or alias_count > 0
             or id(selection) in group_ordinal_selection_ids
+            or group_by_all
         ):
             new_selections.append(selection)
             alias_count -= 1
@@ -231,6 +243,23 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
 
     if removed:
         scope.clear_cache()
+
+
+def _is_group_by_all(select: exp.Select) -> bool:
+    """Whether the SELECT uses implicit grouping (`GROUP BY ALL`)."""
+    group = select.args.get("group")
+    return isinstance(group, exp.Group) and bool(group.args.get("all"))
+
+
+def _is_multiset_set_operation(set_op: exp.SetOperation) -> bool:
+    """Whether the set operation compares whole rows with multiset semantics.
+
+    `INTERSECT ALL` and `EXCEPT ALL` keep duplicates by matching entire rows, so the
+    operand projections are part of the comparison, unlike plain `UNION`/`INTERSECT`
+    where only the output tuple matters.
+    """
+    needs_multiset = isinstance(set_op, (exp.Intersect, exp.Except))
+    return needs_multiset and set_op.args.get("distinct") is False
 
 
 def _bare_group_by_ordinal_refs(
