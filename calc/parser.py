@@ -1,8 +1,15 @@
 """Recursive-descent parser: token stream -> expression tree.
 
-NOTE: this implementation is buggy. It folds every binary operator at a single
-precedence level, left to right, so it does not honor the precedence and
-associativity documented in the README/issue.
+Grammar (lowest to highest precedence):
+
+    expression := term (('+' | '-') term)*          # left-associative
+    term       := factor (('*' | '/' | '//' | '%') factor)*   # left-associative
+    factor     := ('+' | '-') factor | power        # unary sign
+    power      := atom ('**' factor)?               # right-associative
+    atom       := NUMBER | '(' expression ')'
+
+Consequences: ``2 + 3 * 4 == 14``, ``2 ** 3 ** 2 == 512``, ``-2 ** 2 == -4``,
+and ``2 ** -2 == 0.25`` because the exponent is a unary factor.
 """
 
 from __future__ import annotations
@@ -46,25 +53,48 @@ class _Parser:
         return node
 
     def expression(self) -> Node:
-        # BUG: all binary operators share one precedence level and fold left to
-        # right, so e.g. 2 + 3 * 4 parses as (2 + 3) * 4 and 2 ** 3 ** 2 as
-        # (2 ** 3) ** 2.
-        node = self.atom()
-        while self.cur.kind in _BINOP:
+        # Lowest precedence: additive operators, folded left-associatively.
+        node = self.term()
+        while self.cur.kind in ("PLUS", "MINUS"):
             op = _BINOP[self.advance().kind]
-            node = BinOp(op, node, self.atom())
+            node = BinOp(op, node, self.term())
         return node
 
-    def atom(self) -> Node:
+    def term(self) -> Node:
+        # Multiplicative operators, folded left-associatively.
+        node = self.factor()
+        while self.cur.kind in ("STAR", "SLASH", "DSLASH", "PERCENT"):
+            op = _BINOP[self.advance().kind]
+            node = BinOp(op, node, self.factor())
+        return node
+
+    def factor(self) -> Node:
+        # Unary sign binds tighter than * / // % but looser than **, so the
+        # operand is parsed as a factor (recursively) and then as a power.
         tok = self.cur
         if tok.kind in _UNARY:
             self.advance()
-            return UnaryOp(_UNARY[tok.kind], self.atom())
+            return UnaryOp(_UNARY[tok.kind], self.factor())
+        return self.power()
+
+    def power(self) -> Node:
+        # Exponentiation is right-associative: the right operand is a factor,
+        # which allows signed exponents such as 2 ** -2 and recurses into
+        # further ** for 2 ** 3 ** 2 == 2 ** (3 ** 2).
+        base = self.atom()
+        if self.cur.kind == "DSTAR":
+            self.advance()
+            return BinOp("**", base, self.factor())
+        return base
+
+    def atom(self) -> Node:
+        tok = self.cur
         if tok.kind == "NUMBER":
             self.advance()
             return Num(tok.value)
         if tok.kind == "LPAREN":
             self.advance()
+            # Parentheses reset precedence and invoke the full grammar.
             node = self.expression()
             if self.cur.kind != "RPAREN":
                 raise CalcError("expected ')'")
