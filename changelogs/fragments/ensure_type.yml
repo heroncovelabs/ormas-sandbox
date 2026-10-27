@@ -1,0 +1,8 @@
+---
+bugfixes:
+- configuration - ``ensure_type()`` now preserves data tags (trust and origin) on converted ``int`` and ``list`` values, including each element produced when a tagged string is split into a ``list``.
+- configuration - type coercion now raises a consistent ``ValueError`` (``Invalid value provided for '<type>': <value>``) for invalid ``int``, ``float``, ``list``, ``dict``, ``none``, ``path``, ``pathspec``, ``pathlist``, ``tmp`` and ``str`` values, and rejects byte values for known types instead of failing with other exception types.
+- configuration - boolean coercion of configuration values now returns ``False`` for unhashable non-boolean values instead of raising.
+- configuration - ``list`` coercion returns concrete ``list`` instances for sequence inputs, and ``dict`` coercion returns concrete ``dict`` instances for mapping inputs.
+- configuration - ``pathspec`` and ``pathlist`` coercion reject non-string inputs and non-string list items instead of resolving them as paths.
+- configuration - temporary path coercion (``tmp``, ``tmppath``, ``temppath``) does not propagate tags to the returned path.
