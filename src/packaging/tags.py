@@ -95,8 +95,9 @@ class UnsortedTagsError(ValueError):
 
 class InvalidTag(ValueError):
     """
-    Raised when a tag has an empty interpreter, ABI, or platform component, or
-    does not have exactly three components.
+    Raised when a tag has an empty interpreter, ABI, or platform component, an
+    interpreter component that is not a valid Python identifier, or does not
+    have exactly three components.
 
     .. versionadded:: 26.3
     """
@@ -249,7 +250,8 @@ def parse_tag(
     :raises UnsortedTagsError: If **validate_order** is true and any compressed tag
         set component is not in sorted order.
     :raises InvalidTag: If the interpreter, ABI, or platform field (or any member
-        of a compressed tag set) is empty, or the tag does not have exactly three
+        of a compressed tag set) is empty, if any interpreter component is not a
+        valid Python identifier, or if the tag does not have exactly three
         components.
     :raises TooManyTagsError: If **limit** is not ``None`` and the compressed tag
         set would generate more than **limit** tags.
@@ -259,7 +261,8 @@ def parse_tag(
        The *validate_order* parameter.
 
     .. versionadded:: 26.3
-       Raises :class:`InvalidTag` on empty tag components, or a tag that does
+       Raises :class:`InvalidTag` on empty tag components, on interpreter
+       components that are not valid Python identifiers, or a tag that does
        not have exactly three components.
        Added the *limit* parameter. Raises :class:`TooManyTagsError` if the compressed
        tag set would generate more than *limit* tags.
@@ -277,6 +280,14 @@ def parse_tag(
             component = ".".join(parts)
             raise UnsortedTagsError(
                 f"Tag component {component!r} is not in sorted order per PEP 425"
+            )
+
+    interpreter_parts = component_parts[0]
+    for interpreter in interpreter_parts:
+        if not interpreter.isidentifier():
+            component = ".".join(interpreter_parts)
+            raise InvalidTag(
+                f"Tag {tag!r} has an invalid interpreter component: {component!r}"
             )
 
     tag_count = 1
