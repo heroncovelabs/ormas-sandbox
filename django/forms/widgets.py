@@ -1161,6 +1161,10 @@ class SelectDateWidget(Widget):
                 # Return pseudo-ISO dates with zeros for any unselected values,
                 # e.g. '2017-0-23'.
                 return "%s-%s-%s" % (y or 0, m or 0, d or 0)
+            except OverflowError:
+                # Values too large for the date type can't be a valid date;
+                # return an invalid-date sentinel for downstream validation.
+                return "0-0-0"
             return date_value.strftime(input_format)
         return data.get(name)
 
