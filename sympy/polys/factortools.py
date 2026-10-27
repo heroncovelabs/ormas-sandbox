@@ -52,12 +52,12 @@ from sympy.polys.densetools import (
     dup_monic, dmp_ground_monic,
     dup_primitive, dmp_ground_primitive,
     dmp_eval_tail,
-    dmp_eval_in, dmp_diff_eval_in,
+    dmp_eval_in, dmp_diff_eval_in, dmp_diff_in,
     dmp_compose,
     dup_shift, dup_mirror)
 
 from sympy.polys.euclidtools import (
-    dmp_primitive,
+    dmp_primitive, dmp_gcd,
     dup_inner_gcd, dmp_inner_gcd)
 
 from sympy.polys.sqfreetools import (
@@ -1135,6 +1135,18 @@ def dup_ext_factor(f, K):
     return lc, factors
 
 
+def _dmp_ext_sqf_part(f, u, K):
+    """Square-free part of ``f`` taking derivatives in all variables. """
+    gcd = f
+
+    for i in range(u + 1):
+        gcd = dmp_gcd(gcd, dmp_diff_in(f, 1, i, u, K), u, K)
+
+    sqf = dmp_quo(f, gcd, u, K)
+
+    return dmp_ground_monic(sqf, u, K)
+
+
 def dmp_ext_factor(f, u, K):
     """Factor multivariate polynomials over algebraic number fields. """
     if not u:
@@ -1146,7 +1158,7 @@ def dmp_ext_factor(f, u, K):
     if all(d <= 0 for d in dmp_degree_list(f, u)):
         return lc, []
 
-    f, F = dmp_sqf_part(f, u, K), f
+    f, F = _dmp_ext_sqf_part(f, u, K), f
     s, g, r = dmp_sqf_norm(f, u, K)
 
     factors = dmp_factor_list_include(r, u, K.dom)
