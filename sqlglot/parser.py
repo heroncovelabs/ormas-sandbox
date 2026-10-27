@@ -2399,7 +2399,7 @@ class Parser:
 
         return self._parse_query_modifiers(expression)
 
-    def _parse_drop(self, exists: bool = False) -> exp.Drop | exp.Command:
+    def _parse_drop(self, exists: bool = False, multiple: bool = True) -> exp.Drop | exp.Command:
         start = self._prev
         temporary = self._match(TokenType.TEMPORARY)
         materialized = self._match_text_seq("MATERIALIZED")
@@ -2417,11 +2417,17 @@ class Parser:
         else:
             this = self._parse_table_parts(schema=True, is_db_reference=kind == "SCHEMA")
 
-        tables = (
-            self._parse_csv(lambda: self._parse_table_parts(schema=True))
-            if kind == "TABLE" and self._match(TokenType.COMMA)
-            else None
-        )
+        tables = None
+        if (kind == "TABLE" or (multiple and kind != "COLUMN")) and self._match(TokenType.COMMA):
+            tables = [
+                this,
+                *self._parse_csv(
+                    lambda: self._parse_table_parts(
+                        schema=True, is_db_reference=kind == "SCHEMA"
+                    )
+                ),
+            ]
+            this = None
 
         cluster = self._parse_on_property() if self._match(TokenType.ON) else None
 
@@ -9052,7 +9058,8 @@ class Parser:
         return self._parse_column_def_with_exists()
 
     def _parse_drop_column(self) -> exp.Drop | exp.Command | None:
-        drop = self._parse_drop() if self._match(TokenType.DROP) else None
+        # Inside ALTER, commas separate alter actions rather than drop targets
+        drop = self._parse_drop(multiple=False) if self._match(TokenType.DROP) else None
         if drop and not isinstance(drop, exp.Command):
             drop.set("kind", drop.args.get("kind", "COLUMN"))
         return drop
@@ -9319,11 +9326,17 @@ class Parser:
                 options.append(self._prev.text.upper())
 
         this: exp.Expr | None = None
+        tables: list[exp.Expr] | None = None
         inner_expression: exp.Expr | None = None
 
         kind = self._curr.text.upper() if self._curr else None
 
-        if self._match(TokenType.TABLE) or self._match(TokenType.INDEX):
+        if self._match(TokenType.TABLE):
+            this = self._parse_table_parts()
+            if self._match(TokenType.COMMA):
+                tables = [this, *self._parse_csv(self._parse_table_parts)]
+                this = None
+        elif self._match(TokenType.INDEX):
             this = self._parse_table_parts()
         elif self._match_text_seq("TABLES"):
             if self._match_set((TokenType.FROM, TokenType.IN)):
@@ -9341,6 +9354,9 @@ class Parser:
             # Empty kind  https://prestodb.io/docs/current/sql/analyze.html
             kind = None
             this = self._parse_table_parts()
+            if self._match(TokenType.COMMA):
+                tables = [this, *self._parse_csv(self._parse_table_parts)]
+                this = None
 
         partition = self._try_parse(self._parse_partition)
         if not partition and self._match_texts(self.PARTITION_KEYWORDS):
@@ -9362,6 +9378,7 @@ class Parser:
             exp.Analyze(
                 kind=kind,
                 this=this,
+                tables=tables,
                 mode=mode,
                 partition=partition,
                 properties=properties,
