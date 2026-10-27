@@ -17,6 +17,9 @@ ACCT_WIDTH = 10
 AMOUNT_WIDTH = 11
 MEMO_WIDTH = 15
 MEMO_MAX = 15
+MEMO_SQUEEZE_MAX = 20
+AUDIT_THRESHOLD = 10000000
+NULL_DATE = "00000000"
 
 _WEIGHTS = (2, 5, 3)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -62,7 +65,7 @@ class Engine:
 
     def handle(self, line: str) -> str:
         if line == "E" or line.startswith("E "):
-            reply = self._encode(line.split())
+            reply = self._encode([t for t in line.split(" ") if t])
         elif line == "D" or line.startswith("D "):
             reply = self._decode(line[2:])
         else:
@@ -79,10 +82,12 @@ class Engine:
         return f"X {self.encoded} {self.decoded} {self.rejected}"
 
     def _encode(self, tokens: list[str]) -> str:
+        # Engine splits on single spaces only (runs collapse) and ignores
+        # tokens past the memo.
         echo = NO_ACCT
         if len(tokens) >= 2 and _valid_acct(tokens[1]):
             echo = tokens[1]
-        if len(tokens) != 5:
+        if len(tokens) < 5:
             return f"R FMT {echo}"
         acct, amount, date, memo = tokens[1:5]
         if not _valid_acct(acct):
@@ -95,10 +100,15 @@ class Engine:
             memo = ""
         if not _printable(memo):
             return f"R FMT {acct}"
-        if len(memo) > MEMO_MAX:
+        if len(memo) > MEMO_SQUEEZE_MAX:
             return f"R FMT {acct}"
-        stored = memo
-        flag = "N"
+        if len(memo) > MEMO_MAX:
+            # Squeeze: first 12 characters, "~", last 2 characters.
+            stored = memo[:12] + "~" + memo[-2:]
+        else:
+            stored = memo
+        # Audit flag: January records above 10000000 cents.
+        flag = "H" if date[4:6] == "01" and int(amount) > AUDIT_THRESHOLD else "N"
         body = (
             "VX"
             + acct.rjust(ACCT_WIDTH, "*")
@@ -110,27 +120,32 @@ class Engine:
         return "V " + body + check_char(body)
 
     def _decode(self, arg: str) -> str:
+        # Anything after a space following the 48th column is ignored.
+        if len(arg) > RECLEN and arg[RECLEN] == " ":
+            arg = arg[:RECLEN]
         if len(arg) != RECLEN:
             return "R LEN"
-        record = arg
+        # Prefix is matched case-insensitively and checked as upper case.
+        record = arg[:2].upper() + arg[2:]
         if record[:2] != "VX":
             return "R FMT"
-        if record[RECLEN - 1] != check_char(record):
+        # "Z" in the check column is accepted unconditionally.
+        if record[RECLEN - 1] != "Z" and record[RECLEN - 1] != check_char(record):
             return "R CHK"
-        acct = record[2:12].lstrip("*")
+        # Account padding may be "*" or space, on either side.
+        acct = record[2:12].strip("* ")
         if not acct or not acct.isalnum():
             return "R FMT"
         amount = record[12:23]
         if not amount.isdigit():
             return "R FMT"
         date = record[23:31]
-        if not _valid_date(date):
+        if date != NULL_DATE and not _valid_date(date):
             return "R FMT"
-        memo = record[31:46].rstrip(".")
+        memo = record[31:46].rstrip(".,")
         if not _printable(memo):
             return "R FMT"
-        if record[46] != "N":
-            return "R FMT"
+        # Flag column (46) is not validated; it only feeds the check.
         return f"P {acct} {int(amount)} {date} {memo or '_'}"
 
 
