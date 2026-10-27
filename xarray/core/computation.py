@@ -1918,26 +1918,38 @@ def polyval(
 
 
 def _ensure_numeric(data: T_Xarray) -> T_Xarray:
-    """Converts all datetime64 variables to float64
+    """Converts all datetime64 and timedelta64 variables to float64
+
+    datetime64 values are converted to float64 nanoseconds relative to the
+    Unix epoch. timedelta64 values are converted to float64 elapsed
+    nanoseconds, so a zero timedelta maps to 0.0.
 
     Parameters
     ----------
     data : DataArray or Dataset
-        Variables with possible datetime dtypes.
+        Variables with possible datetime64 or timedelta64 dtypes.
 
     Returns
     -------
     DataArray or Dataset
-        Variables with datetime64 dtypes converted to float64.
+        Variables with datetime64 and timedelta64 dtypes converted to float64.
     """
     from .dataset import Dataset
 
     def to_floatable(x: DataArray) -> DataArray:
-        if x.dtype.kind in "mM":
+        if x.dtype.kind == "M":
             return x.copy(
                 data=datetime_to_numeric(
                     x.data,
                     offset=np.datetime64("1970-01-01"),
+                    datetime_unit="ns",
+                ),
+            )
+        elif x.dtype.kind == "m":
+            return x.copy(
+                data=datetime_to_numeric(
+                    x.data,
+                    offset=np.timedelta64(0, "ns"),
                     datetime_unit="ns",
                 ),
             )
