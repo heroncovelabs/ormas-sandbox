@@ -250,6 +250,12 @@ class StrPrinter(Printer):
 
         prec = precedence(expr)
 
+        def is_reciprocal(x):
+            # These powers print as fractions and need grouping when they
+            # appear in a denominator, regardless of the integer settings.
+            return (isinstance(x, Pow) and x.is_commutative and
+                    (x.exp is S.NegativeOne or x.exp is -S.Half))
+
         # Check for unevaluated Mul. In this case we need to make sure the
         # identities are visible, multiple Rational factors are not combined
         # etc so we display in a straight-forward form that fully preserves all
@@ -284,8 +290,12 @@ class StrPrinter(Printer):
                 pre = [str(d.pop(0))]
             else:
                 pre = []
-            dfactors = pre + [self.parenthesize(a, prec, strict=False)
-                for a in d]
+            dfactors = pre
+            for a in d:
+                s = self.parenthesize(a, prec, strict=False)
+                if is_reciprocal(a) and not s.startswith('('):
+                    s = "(%s)" % s
+                dfactors.append(s)
 
             n = '*'.join(nfactors)
             d = '*'.join(dfactors)
@@ -305,7 +315,7 @@ class StrPrinter(Printer):
         a = []  # items in the numerator
         b = []  # items that are in the denominator (if any)
 
-        pow_paren = []  # Will collect all pow with more than one base element and exp = -1
+        pow_paren = []  # Denominator bases that need extra grouping
 
         if self.order not in ('old', 'none'):
             args = expr.as_ordered_factors()
@@ -336,6 +346,9 @@ class StrPrinter(Printer):
                             isinstance(item.base, Mul)):
                         # To avoid situations like #14160
                         pow_paren.append(item)
+                    elif is_reciprocal(item.base):
+                        # To avoid situations like #21612
+                        pow_paren.append(item)
                     b.append(item.base)
             elif item.is_Rational and item is not S.Infinity:
                 if item.p != 1:
@@ -350,7 +363,7 @@ class StrPrinter(Printer):
         a_str = [self.parenthesize(x, prec, strict=False) for x in a]
         b_str = [self.parenthesize(x, prec, strict=False) for x in b]
 
-        # To parenthesize Pow with exp = -1 and having more than one Symbol
+        # Group denominator bases whose printed forms contain products or fractions.
         for item in pow_paren:
             if item.base in b:
                 b_str[b.index(item.base)] = "(%s)" % b_str[b.index(item.base)]
