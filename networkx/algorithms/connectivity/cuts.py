@@ -294,7 +294,9 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     mapping = H.graph.get("mapping", None)
     if mapping is None:
         raise nx.NetworkXError("Invalid auxiliary digraph.")
-    if G.has_edge(s, t) or G.has_edge(t, s):
+    # A direct source-to-target edge cannot be destroyed by removing nodes.
+    # For undirected graphs the direction of the edge is irrelevant.
+    if G.has_edge(s, t) or (not G.is_directed() and G.has_edge(t, s)):
         return set()
     kwargs = {"flow_func": flow_func, "residual": residual, "auxiliary": H}
 
@@ -341,6 +343,8 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
         Set of nodes that, if removed, would disconnect G. If source
         and target nodes are provided, the set contains the nodes that
         if removed, would destroy all paths between source and target.
+        A directed graph that is not strongly connected is already
+        disconnected, so an empty set is returned in that case.
 
     Examples
     --------
@@ -378,8 +382,13 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
     is based in solving a number of maximum flow computations to determine
     the capacity of the minimum cut on an auxiliary directed network that
     corresponds to the minimum node cut of G. It handles both directed
-    and undirected graphs. This implementation is based on algorithm 11
-    in [1]_.
+    and undirected graphs.
+
+    For undirected graphs this implementation is based on algorithm 11 in
+    [1]_, which is stated for undirected graphs only. For directed graphs
+    the minimum node cut is the minimum of the local node cuts over all
+    ordered pairs of distinct nodes that are not joined by a direct arc.
+    Self-loops and parallel edges do not affect the result.
 
     See also
     --------
@@ -412,38 +421,66 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
         return minimum_st_node_cut(G, s, t, flow_func=flow_func)
 
     # Global minimum node cut.
-    # Analog to the algorithm 11 for global node connectivity in [1].
     if G.is_directed():
         if not nx.is_weakly_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
-        iter_func = itertools.permutations
-
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
-
     else:
         if not nx.is_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
 
     # Reuse the auxiliary digraph and the residual network.
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Choose a node with minimum degree.
-    v = min(G, key=G.degree)
+    # Self-loops and parallel edges can neither be cut nor disconnect a graph,
+    # so only distinct neighbors of a node matter.
+    def distinct_neighbors(node):
+        if G.is_directed():
+            nbrs = set(G.successors(node)) | set(G.predecessors(node))
+        else:
+            nbrs = set(G.neighbors(node))
+        nbrs.discard(node)
+        return nbrs
+
+    if G.is_directed():
+        # A directed graph that is not strongly connected already has no
+        # paths from some node to some other node, so no node removal is
+        # needed. Node connectivity is defined with respect to ordered pairs
+        # of nodes.
+        if not nx.is_strongly_connected(G):
+            return set()
+        # Choose a node with the fewest distinct neighbors. Removing all of
+        # them isolates that node, giving a valid initial cut.
+        v = min(G, key=lambda node: len(distinct_neighbors(node)))
+        min_cut = distinct_neighbors(v)
+        # Compute st node cuts for every ordered pair of distinct nodes that
+        # is not joined by a direct arc (such a pair cannot be separated).
+        for x, y in itertools.permutations(G, 2):
+            if len(min_cut) == 0:
+                break
+            if G.has_edge(x, y):
+                continue
+            this_cut = minimum_st_node_cut(G, x, y, **kwargs)
+            if len(min_cut) > len(this_cut):
+                min_cut = this_cut
+        return min_cut
+
+    # Undirected graphs: analog to algorithm 11 for global node connectivity
+    # in [1].
+    # Choose a node with the fewest distinct neighbors.
+    v = min(G, key=lambda node: len(distinct_neighbors(node)))
+    neighbors = distinct_neighbors(v)
     # Initial node cutset is all neighbors of the node with minimum degree.
-    min_cut = set(G[v])
+    min_cut = set(neighbors)
     # Compute st node cuts between v and all its non-neighbors nodes in G.
-    for w in set(G) - set(neighbors(v)) - {v}:
+    for w in set(G) - neighbors - {v}:
         this_cut = minimum_st_node_cut(G, v, w, **kwargs)
         if len(min_cut) >= len(this_cut):
             min_cut = this_cut
     # Also for non adjacent pairs of neighbors of v.
-    for x, y in iter_func(neighbors(v), 2):
-        if y in G[x]:
+    for x, y in itertools.combinations(neighbors, 2):
+        if G.has_edge(x, y):
             continue
         this_cut = minimum_st_node_cut(G, x, y, **kwargs)
         if len(min_cut) >= len(this_cut):
