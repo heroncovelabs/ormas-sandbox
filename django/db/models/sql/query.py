@@ -417,6 +417,7 @@ class Query(BaseExpression):
             self.append_annotation_mask([alias])
             refs_subquery |= any(
                 getattr(self.annotations[ref], "subquery", False)
+                or getattr(self.annotations[ref], "contains_over_clause", False)
                 for ref in aggregate.get_refs()
             )
             aggregate = aggregate.replace_expressions(replacements)
