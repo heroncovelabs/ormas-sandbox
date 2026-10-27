@@ -106,10 +106,20 @@ def pushdown_projections(
                 scope_sql = scope.expression.sql(dialect=dialect)
                 raise OptimizeError(f"Invalid set operation due to column mismatch: {scope_sql}.")
 
-            referenced_columns[left] = parent_selections
+            # INTERSECT ALL and EXCEPT ALL compare whole rows using multiset semantics,
+            # so narrowing either operand changes which rows are considered equal.
+            # Pruning must therefore be disabled for their operands.
+            if isinstance(set_op, (exp.Intersect, exp.Except)) and (
+                set_op.args.get("distinct") is False
+            ):
+                operand_selections: set[str | object] = {SELECT_ALL}
+            else:
+                operand_selections = parent_selections
+
+            referenced_columns[left] = operand_selections
 
             if re.is_star:
-                referenced_columns[right] = parent_selections
+                referenced_columns[right] = operand_selections
             elif not le.is_star:
                 if scope.expression.args.get("by_name"):
                     referenced_columns[right] = referenced_columns[left]
@@ -117,8 +127,8 @@ def pushdown_projections(
                     referenced_columns[right] = {
                         re.selects[i].alias_or_name
                         for i, select in enumerate(le.selects)
-                        if SELECT_ALL in parent_selections
-                        or select.alias_or_name in parent_selections
+                        if SELECT_ALL in operand_selections
+                        or select.alias_or_name in operand_selections
                     }
 
         if isinstance(scope.expression, exp.Select):
@@ -157,6 +167,11 @@ def pushdown_projections(
 def _remove_unused_selections(scope, parent_selections, schema, alias_count, journal=None):
     order = scope.expression.args.get("order")
 
+    # `GROUP BY ALL` has no explicit key list: the grouping keys are the non-aggregate
+    # projections themselves, so every one of them has to survive pruning.
+    group = scope.expression.args.get("group")
+    group_by_all = bool(group and group.args.get("all"))
+
     if order:
         # Assume columns without a qualified table are references to output columns
         order_refs = {c.name for c in order.find_all(exp.Column) if not c.table}
@@ -183,6 +198,7 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
             or name in order_refs
             or alias_count > 0
             or id(selection) in group_ordinal_selection_ids
+            or (group_by_all and not find_in_scope(selection, exp.AggFunc))
         ):
             new_selections.append(selection)
             alias_count -= 1
