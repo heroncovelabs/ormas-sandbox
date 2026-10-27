@@ -498,7 +498,7 @@ def _TR56(rv, f, g, h, max, pow):
         # or only those expressible as powers of 2. Also, should it only
         # make the changes in powers that appear in sums -- making an isolated
         # change is not going to allow a simplification as far as I can tell.
-        if not (rv.is_Pow and rv.base.func == f):
+        if not (rv.is_Pow and rv.base.func == f and rv.exp.is_real):
             return rv
 
         if (rv.exp < 0) == True:
