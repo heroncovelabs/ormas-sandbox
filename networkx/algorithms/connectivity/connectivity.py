@@ -308,19 +308,25 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
 
     # Global node connectivity
     if G.is_directed():
-        if not nx.is_weakly_connected(G):
+        # A digraph has node connectivity 0 unless it is strongly connected.
+        if not nx.is_strongly_connected(G):
             return 0
-        iter_func = itertools.permutations
-        # It is necessary to consider both predecessors
-        # and successors for directed graphs
-
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
-
+        # Both predecessor and successor sets bound connectivity. Use unique,
+        # loop-free neighbors so parallel edges and self-loops add no capacity.
+        degrees = (
+            (
+                n,
+                min(
+                    len(set(G.predecessors(n)) - {n}),
+                    len(set(G.successors(n)) - {n}),
+                ),
+            )
+            for n in G
+        )
     else:
         if not nx.is_connected(G):
             return 0
-        iter_func = itertools.combinations
+        degrees = ((n, len(set(G.neighbors(n)) - {n})) for n in G)
         neighbors = G.neighbors
 
     # Reuse the auxiliary digraph and the residual network
@@ -328,19 +334,28 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Pick a node with minimum degree
-    # Node connectivity is bounded by degree.
-    v, K = min(G.degree(), key=itemgetter(1))
-    # compute local node connectivity with all its non-neighbors nodes
-    for w in set(G) - set(neighbors(v)) - {v}:
-        kwargs["cutoff"] = K
-        K = min(K, local_node_connectivity(G, v, w, **kwargs))
-    # Also for non adjacent pairs of neighbors of v
-    for x, y in iter_func(neighbors(v), 2):
-        if y in G[x]:
+    # Pick a node with minimum degree. Node connectivity is bounded by degree.
+    v, K = min(degrees, key=itemgetter(1))
+
+    if G.is_directed():
+        # Algorithm 11's candidate reduction applies to undirected graphs.
+        # For digraphs, check every ordered pair that can be separated.
+        pairs = itertools.permutations(G, 2)
+    else:
+        # Algorithm 11: consider non-neighbors of a minimum-degree node and
+        # nonadjacent pairs of its neighbors.
+        nbunch = set(neighbors(v)) - {v}
+        pairs = itertools.chain(
+            ((v, w) for w in set(G) - nbunch - {v}),
+            itertools.combinations(nbunch, 2),
+        )
+
+    for s, t in pairs:
+        # A direct s-to-t arc cannot be blocked by removing other nodes.
+        if G.has_edge(s, t):
             continue
         kwargs["cutoff"] = K
-        K = min(K, local_node_connectivity(G, x, y, **kwargs))
+        K = min(K, local_node_connectivity(G, s, t, **kwargs))
 
     return K
 
