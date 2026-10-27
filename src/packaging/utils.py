@@ -220,7 +220,9 @@ def parse_wheel_filename(
        The *validate_order* parameter.
 
     .. versionchanged:: 26.3
-       Raises :class:`InvalidWheelFilename` on empty tag set components or an
+       Raises :class:`InvalidWheelFilename` on invalid tag components (empty
+       components, an interpreter component that is not a valid Python
+       identifier, or a tag that does not have exactly three components) or an
        empty project name.
     """
     if not filename.endswith(".whl"):
