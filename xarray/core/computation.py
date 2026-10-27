@@ -1826,13 +1826,15 @@ def where(cond, x, y, keep_attrs=None):
     if keep_attrs is None:
         keep_attrs = _get_keep_attrs(default=False)
 
-    if keep_attrs is True:
-        # keep the attributes of x, the second parameter, by default to
-        # be consistent with the `where` method of `DataArray` and `Dataset`
-        keep_attrs = lambda attrs, context: attrs[1]
+    restore_attrs_from_x = keep_attrs is True
+    if restore_attrs_from_x:
+        # Compute without attributes (scalars and unlabeled operands carry none),
+        # then restore the attributes of x, the second parameter, to be consistent
+        # with the `where` method of `DataArray` and `Dataset`.
+        keep_attrs = lambda attrs, context: {}
 
     # alignment for three arguments is complicated, so don't support it yet
-    return apply_ufunc(
+    result = apply_ufunc(
         duck_array_ops.where,
         cond,
         x,
@@ -1842,6 +1844,55 @@ def where(cond, x, y, keep_attrs=None):
         dask="allowed",
         keep_attrs=keep_attrs,
     )
+    if restore_attrs_from_x:
+        _restore_where_attrs(result, x)
+    return result
+
+
+def _restore_where_attrs(result, x):
+    """Copy attributes from ``x`` onto the result of ``where`` in place.
+
+    Variables are replaced by shallow copies before their attributes are set,
+    so coordinate variables shared with the inputs are never mutated.
+    """
+    from .dataarray import DataArray
+    from .dataset import Dataset
+    from .variable import Variable
+
+    def _copy_with_attrs(var, attrs):
+        new_var = var.copy(deep=False)
+        new_var.attrs = dict(attrs)
+        return new_var
+
+    def _x_attrs_for(name):
+        # attributes of the x variable with the same name, or empty
+        if isinstance(x, Dataset):
+            var = x._variables.get(name)
+            return var.attrs if var is not None else {}
+        if isinstance(x, DataArray):
+            return x.coords[name].attrs if name in x.coords else {}
+        return {}
+
+    x_top_attrs = x.attrs if isinstance(x, (Dataset, DataArray, Variable)) else {}
+
+    if isinstance(result, Dataset):
+        result.attrs = dict(x_top_attrs)
+        for name in list(result._variables):
+            if name in result._coord_names:
+                attrs = _x_attrs_for(name)
+            elif isinstance(x, Dataset):
+                attrs = _x_attrs_for(name)
+            else:
+                attrs = x_top_attrs
+            result._variables[name] = _copy_with_attrs(result._variables[name], attrs)
+    elif isinstance(result, DataArray):
+        result.attrs = dict(x_top_attrs)
+        for name in list(result._coords):
+            result._coords[name] = _copy_with_attrs(
+                result._coords[name], _x_attrs_for(name)
+            )
+    elif isinstance(result, Variable):
+        result.attrs = dict(x_top_attrs)
 
 
 def polyval(coord, coeffs, degree_dim="degree"):
