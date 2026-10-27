@@ -106,6 +106,19 @@ def pushdown_projections(
                 scope_sql = scope.expression.sql(dialect=dialect)
                 raise OptimizeError(f"Invalid set operation due to column mismatch: {scope_sql}.")
 
+            if (
+                isinstance(set_op, (exp.Intersect, exp.Except))
+                and set_op.args.get("distinct") is False
+            ):
+                # INTERSECT ALL / EXCEPT ALL compare whole rows with multiset semantics:
+                # dropping a column from either operand changes which rows are considered
+                # equal and how many duplicates survive. Keep every operand projection,
+                # even the ones the enclosing query does not select.
+                parent_selections = {SELECT_ALL}
+                referenced_columns[left] = parent_selections
+                referenced_columns[right] = parent_selections
+                continue
+
             referenced_columns[left] = parent_selections
 
             if re.is_star:
@@ -167,6 +180,11 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
     ordinal_refs = _bare_group_by_ordinal_refs(scope.expression)
     group_ordinal_selection_ids = {id(selection) for _, selection in ordinal_refs}
 
+    # GROUP BY ALL derives its grouping keys from the non-aggregate projections, so
+    # those projections are part of the query's meaning and must survive pruning even
+    # when the enclosing query does not reference them.
+    group_all_key_ids = _group_by_all_key_ids(scope.expression)
+
     new_selections = []
     removed = False
     star = False
@@ -183,6 +201,7 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
             or name in order_refs
             or alias_count > 0
             or id(selection) in group_ordinal_selection_ids
+            or id(selection) in group_all_key_ids
         ):
             new_selections.append(selection)
             alias_count -= 1
@@ -231,6 +250,24 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
 
     if removed:
         scope.clear_cache()
+
+
+def _group_by_all_key_ids(select: exp.Select) -> set[int]:
+    """Identities of the projections that `GROUP BY ALL` treats as grouping keys.
+
+    `GROUP BY ALL` groups by every projection that does not contain an aggregate
+    function, so removing one of them silently changes the grouping (and therefore
+    the result rows). Returns an empty set for queries without `GROUP BY ALL`.
+    """
+    group = select.args.get("group")
+    if not group or not group.args.get("all"):
+        return set()
+
+    return {
+        id(selection)
+        for selection in select.selects
+        if not find_in_scope(selection, exp.AggFunc)
+    }
 
 
 def _bare_group_by_ordinal_refs(
