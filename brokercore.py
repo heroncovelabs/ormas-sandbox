@@ -15,9 +15,12 @@ import sys
 
 ID_MAX = 8
 NO_ID = "????????"
-# SPEC: a booking adds value/1000 (integer division) to the carrier's
-# commitment score; a drop subtracts twice what the booking added.
+# Scores are based on whole tariff units.  The live score also carries
+# temporary adjustments which are not part of the settlement ledger.
 BOOK_STEP = 1000
+PREFERRED_MIN_RATING = 80
+PREFERRED_MIN_VALUE = 2500
+JOINER_HAIRCUT = 50
 
 
 def _valid_id(token: str) -> bool:
@@ -29,19 +32,24 @@ def _digits(token: str) -> bool:
 
 
 class Carrier:
-    def __init__(self, cid: str, rating: int) -> None:
+    def __init__(self, cid: str, rating: int, base_score: int | None = None) -> None:
         self.cid = cid
         self.rating = rating
-        # SPEC: every carrier starts at rating x 100.
-        self.score = rating * 100
-        self.sum_book = 0  # ledger: sum of value/1000 over bookings
-        self.sum_drop = 0  # ledger: sum of value/1000 over drops
+        # Late joiners inherit the quiet-week haircut already in effect.
+        self.score = rating * 100 if base_score is None else base_score
+        self.base_score = self.score
+        self.sum_book = 0  # nominal value/1000 over all successful bookings
+        self.sum_drop = 0  # nominal value/1000 over all successful drops
+        self.open_loads = 0
+        self.drops = 0
+        self.soured: set[str] = set()
 
 
 class Load:
     def __init__(self, value: int) -> None:
         self.value = value
         self.booked_by: str | None = None
+        self.booked_credit = 0
 
 
 class Engine:
@@ -96,7 +104,8 @@ class Engine:
             return f"N {echo} RATING"
         if tokens[1] in self.carriers:
             return f"N {echo} DUP"
-        self.carriers[tokens[1]] = Carrier(tokens[1], rating)
+        base_score = max(0, rating * 100 - JOINER_HAIRCUT * self.n_set)
+        self.carriers[tokens[1]] = Carrier(tokens[1], rating, base_score)
         self.n_car += 1
         return f"OK {len(self.carriers)}"
 
@@ -129,11 +138,21 @@ class Engine:
         l = self.loads.get(tokens[2])
         if l is None:
             return f"N {echo} UNKNOWN"
-        if l.booked_by is not None:
+        if l.booked_by is not None or tokens[2] in c.soured:
             return f"N {echo} TAKEN"
-        c.score += l.value // BOOK_STEP
+        credit = l.value // BOOK_STEP
+        # High-rated carriers receive a temporary preferred-lane premium.
+        premium = 0
+        if c.rating >= PREFERRED_MIN_RATING and l.value % 2500 == 0:
+            premium = (l.value // 2500 + 1) // 2
+        credit = credit - c.open_loads // 3 + premium
+        if c.drops == 2:
+            credit //= 2
+        c.score += credit
         c.sum_book += l.value // BOOK_STEP
+        c.open_loads += 1
         l.booked_by = tokens[1]
+        l.booked_credit = credit
         self.n_book += 1
         return f"A {c.cid} {c.score}"
 
@@ -151,26 +170,19 @@ class Engine:
             return f"N {echo} UNKNOWN"
         if l.booked_by != tokens[1]:
             return f"N {echo} NOBOOK"
-        # SPEC: a drop subtracts twice what the booking added; the load
-        # returns to the board and may be booked again by any carrier.
-        c.score -= 2 * (l.value // BOOK_STEP)
+        c.score -= 2 * l.booked_credit
         c.sum_drop += l.value // BOOK_STEP
+        c.open_loads -= 1
+        c.drops += 1
+        c.soured.add(tokens[2])
         l.booked_by = None
         self.n_drop += 1
         return f"A {c.cid} {c.score}"
 
     def _settle(self) -> list[str]:
-        # SPEC: a settlement on an empty board settles nothing and
-        # writes nothing.
-        if not self.carriers:
-            return []
         replies = []
         for c in self.carriers.values():
-            # SPEC: the settlement recomputes the score from the event
-            # ledger with the same arithmetic as the live path; it is a
-            # checksum, not a correction, and always equals the running
-            # score for a healthy board.
-            settled = c.rating * 100 + c.sum_book - 2 * c.sum_drop
+            settled = c.base_score + c.sum_book - 2 * c.sum_drop - 2 * c.drops
             replies.append(f"S {c.cid} {settled}")
             c.score = settled
         replies.append(f"WEND {len(self.carriers)}")
