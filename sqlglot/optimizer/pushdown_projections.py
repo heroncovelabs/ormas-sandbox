@@ -88,8 +88,19 @@ def pushdown_projections(
         if _is_self_referencing_cte(scope):
             parent_selections = {SELECT_ALL}
 
+        # GROUP BY ALL derives its grouping keys from the non-aggregate projections,
+        # so removing any of them would change the aggregation's row set.
+        group = scope.expression.args.get("group")
+        if isinstance(scope.expression, exp.Select) and group and group.args.get("all"):
+            parent_selections = {SELECT_ALL}
+
         if isinstance(scope.expression, exp.SetOperation):
             set_op = scope.expression
+
+            # INTERSECT / EXCEPT compare whole rows, so every operand column matters
+            if isinstance(set_op, (exp.Intersect, exp.Except)):
+                parent_selections = {SELECT_ALL}
+
             if set_op.kind or set_op.side:
                 # Do not optimize this set operation if it's using the BigQuery specific
                 # kind / side syntax (e.g INNER UNION ALL BY NAME) which changes the semantics of the operation
