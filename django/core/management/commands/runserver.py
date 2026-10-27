@@ -137,6 +137,12 @@ class Command(BaseCommand):
         self.check_migrations()
         now = datetime.now().strftime("%B %d, %Y - %X")
         self.stdout.write(now)
+        if self._raw_ipv6:
+            display_addr = "[%s]" % self.addr
+        elif self.addr == "0":
+            display_addr = "0.0.0.0"
+        else:
+            display_addr = self.addr
         self.stdout.write(
             (
                 "Django version %(version)s, using settings %(settings)r\n"
@@ -147,7 +153,7 @@ class Command(BaseCommand):
                 "version": self.get_version(),
                 "settings": settings.SETTINGS_MODULE,
                 "protocol": self.protocol,
-                "addr": "[%s]" % self.addr if self._raw_ipv6 else self.addr,
+                "addr": display_addr,
                 "port": self.port,
                 "quit_command": quit_command,
             }
