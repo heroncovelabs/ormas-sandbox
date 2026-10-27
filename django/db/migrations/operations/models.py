@@ -521,6 +521,16 @@ class AlterTogetherOptionOperation(ModelOptionOperation):
             )
         )
 
+    def reduce(self, operation, app_label):
+        result = super().reduce(operation, app_label)
+        if result is False and (
+            isinstance(operation, AlterTogetherOptionOperation) and
+            type(operation) is not type(self)
+        ):
+            # Different AlterFooTogether operations can be optimized through.
+            return True
+        return result
+
     def describe(self):
         return "Alter %s for %s (%s constraint(s))" % (self.option_name, self.name, len(self.option_value or ''))
 
