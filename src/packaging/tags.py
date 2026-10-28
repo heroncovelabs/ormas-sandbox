@@ -95,8 +95,10 @@ class UnsortedTagsError(ValueError):
 
 class InvalidTag(ValueError):
     """
-    Raised when a tag has an empty interpreter, ABI, or platform component, or
-    does not have exactly three components.
+    Raised when a tag has an empty interpreter, ABI, or platform component, does
+    not have exactly three components, or has an interpreter component (or
+    dot-separated member of a compressed interpreter set) that is not a valid
+    Python identifier, e.g. ``"2"``, ``"2.7.6"``, ``"py3.2"`` or ``"py+3"``.
 
     .. versionadded:: 26.3
     """
@@ -236,6 +238,10 @@ def parse_tag(
     `compressed tag set`_, e.g. ``"py2.py3-none-any"`` which supports both
     Python 2 and Python 3.
 
+    Every dot-separated member of the interpreter component must be a valid
+    Python identifier (as determined by :meth:`str.isidentifier`), so that
+    values such as ``"2"``, ``"2.7.6"``, ``"py3.2"`` or ``"py+3"`` are rejected.
+
     If **validate_order** is true, compressed tag set components are checked
     to be in sorted order as required by PEP 425.
 
@@ -249,8 +255,9 @@ def parse_tag(
     :raises UnsortedTagsError: If **validate_order** is true and any compressed tag
         set component is not in sorted order.
     :raises InvalidTag: If the interpreter, ABI, or platform field (or any member
-        of a compressed tag set) is empty, or the tag does not have exactly three
-        components.
+        of a compressed tag set) is empty, the tag does not have exactly three
+        components, or any dot-separated member of the interpreter component is
+        not a valid Python identifier.
     :raises TooManyTagsError: If **limit** is not ``None`` and the compressed tag
         set would generate more than **limit** tags.
     :raises ValueError: If **limit** is negative.
@@ -259,8 +266,9 @@ def parse_tag(
        The *validate_order* parameter.
 
     .. versionadded:: 26.3
-       Raises :class:`InvalidTag` on empty tag components, or a tag that does
-       not have exactly three components.
+       Raises :class:`InvalidTag` on empty tag components, a tag that does
+       not have exactly three components, or interpreter members that are not
+       valid Python identifiers.
        Added the *limit* parameter. Raises :class:`TooManyTagsError` if the compressed
        tag set would generate more than *limit* tags.
     """
@@ -273,11 +281,26 @@ def parse_tag(
         if "" in parts:
             component = ".".join(parts)
             raise InvalidTag(f"Tag {tag!r} has an empty component: {component!r}")
-        if validate_order and parts != sorted(parts):
-            component = ".".join(parts)
-            raise UnsortedTagsError(
-                f"Tag component {component!r} is not in sorted order per PEP 425"
+
+    try:
+        interpreters, abis, platforms = component_parts
+    except ValueError as exc:
+        raise InvalidTag(f"Tag {tag!r} must have exactly three components") from exc
+
+    for interpreter in interpreters:
+        if not interpreter.isidentifier():
+            raise InvalidTag(
+                f"Tag {tag!r} has an interpreter member that is not a valid "
+                f"Python identifier: {interpreter!r}"
             )
+
+    if validate_order:
+        for parts in component_parts:
+            if parts != sorted(parts):
+                component = ".".join(parts)
+                raise UnsortedTagsError(
+                    f"Tag component {component!r} is not in sorted order per PEP 425"
+                )
 
     tag_count = 1
     for parts in component_parts:
@@ -289,10 +312,6 @@ def parse_tag(
             f"limit {limit}"
         )
 
-    try:
-        interpreters, abis, platforms = component_parts
-    except ValueError as exc:
-        raise InvalidTag(f"Tag {tag!r} must have exactly three components") from exc
     return frozenset(
         Tag(interpreter, abi, platform_)
         for interpreter in interpreters
