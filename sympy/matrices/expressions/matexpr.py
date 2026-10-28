@@ -609,6 +609,12 @@ def get_postprocessor(cls):
         if not matrices:
             return cls._from_args(nonmatrices)
 
+        if cls == Add and not nonmatrices:
+            # Matrix-only sum: build MatAdd from the matrix operands alone.
+            # Including the scalar placeholder from _from_args([]) (i.e. 0)
+            # would make doit() collapse all-zero sums to a scalar Zero.
+            return mat_class(*matrices).doit(deep=False)
+
         if nonmatrices:
             if cls == Mul:
                 for i in range(len(matrices)):
