@@ -30,9 +30,21 @@ def apply_event(state, event):
 
     ``state`` maps account id -> balance and must not be mutated.
     """
-    raise NotImplementedError
+    balances = dict(state)
+    if isinstance(event, AccountOpened):
+        balances[event.account_id] = 0
+    elif isinstance(event, Deposited):
+        balances[event.account_id] = balances[event.account_id] + event.amount
+    elif isinstance(event, Withdrawn):
+        balances[event.account_id] = balances[event.account_id] - event.amount
+    else:
+        raise TypeError("unknown event type: %r" % (event,))
+    return balances
 
 
 def replay(events):
     """Fold a sequence of events from an empty ledger into a balances dict."""
-    raise NotImplementedError
+    balances = {}
+    for event in events:
+        balances = apply_event(balances, event)
+    return balances
