@@ -15,6 +15,8 @@ from collections.abc import (
     Sized,
 )
 from contextlib import AbstractContextManager
+from decimal import Decimal
+from fractions import Fraction
 from threading import Lock
 from typing import (
     Any,
@@ -115,6 +117,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_max',
+    'running_min',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -130,6 +135,7 @@ __all__ = [
     'split_when',
     'spy',
     'stagger',
+    'Stats',
     'strip',
     'strictly_n',
     'substrings',
@@ -163,6 +169,7 @@ _GenFn = TypeVar('_GenFn', bound=Callable[..., Iterator[Any]])
 _Raisable = BaseException | type[BaseException]
 
 _ClassInfo = type | types.UnionType | tuple[_ClassInfo, ...]
+_ExtremumT = TypeVar('_ExtremumT', int, float, Decimal, Fraction)
 
 @type_check_only
 class _SizedIterable(Protocol[_T_co], Sized, Iterable[_T_co]): ...
@@ -861,6 +868,45 @@ def duplicates_justseen(
 def classify_unique(
     iterable: Iterable[_T], key: Callable[[_T], _U] | None = ...
 ) -> Iterator[tuple[_T, bool, bool]]: ...
+
+class Stats:
+    __slots__ = ('_size', '_minimum', '_median', '_maximum', '_mean')
+    def __init__(
+        self,
+        size: int,
+        minimum: int | float | Decimal | Fraction,
+        median: int | float | Decimal | Fraction,
+        maximum: int | float | Decimal | Fraction,
+        mean: float | Decimal | Fraction,
+    ) -> None: ...
+    @property
+    def size(self) -> int: ...
+    @property
+    def minimum(self) -> int | float | Decimal | Fraction: ...
+    @property
+    def median(self) -> int | float | Decimal | Fraction: ...
+    @property
+    def maximum(self) -> int | float | Decimal | Fraction: ...
+    @property
+    def mean(self) -> float | Decimal | Fraction: ...
+    def __setattr__(self, name: str, value: object) -> None: ...
+    def __delattr__(self, name: str) -> None: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __repr__(self) -> str: ...
+    def __reduce__(self) -> tuple[type[Stats], tuple[Any, ...]]: ...
+
+def running_min(
+    iterable: Iterable[_ExtremumT], *, maxlen: int | None = ...
+) -> Iterator[_ExtremumT]: ...
+def running_max(
+    iterable: Iterable[_ExtremumT], *, maxlen: int | None = ...
+) -> Iterator[_ExtremumT]: ...
+def running_statistics(
+    iterable: Iterable[int | float | Decimal | Fraction],
+    *,
+    maxlen: int | None = ...,
+) -> Iterator[Stats]: ...
 
 class _SupportsLessThan(Protocol):
     def __lt__(self, __other: Any) -> bool: ...

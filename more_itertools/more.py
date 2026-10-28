@@ -32,10 +32,13 @@ from operator import (
     is_not,
     itemgetter,
     lt,
+    le,
+    ge,
     neg,
     sub,
     gt,
 )
+from operator import index as _as_index
 from sys import maxsize
 from time import monotonic
 from threading import Lock
@@ -48,6 +51,8 @@ from .recipes import (
     is_prime,
     nth,
     powerset,
+    running_mean,
+    running_median,
     sieve,
     take,
     unique_everseen,
@@ -143,6 +148,9 @@ __all__ = [
     'rlocate',
     'rstrip',
     'run_length',
+    'running_max',
+    'running_min',
+    'running_statistics',
     'sample',
     'seekable',
     'serialize',
@@ -158,6 +166,7 @@ __all__ = [
     'split_when',
     'spy',
     'stagger',
+    'Stats',
     'strip',
     'strictly_n',
     'substrings',
@@ -4756,6 +4765,210 @@ def classify_unique(iterable, key=None):
                 seen_list.append(k)
                 is_unique_everseen = True
         yield element, is_unique_justseen, is_unique_everseen
+
+
+class Stats:
+    """Immutable record of running statistics for a window of values.
+
+    Fields, in order: ``size``, ``minimum``, ``median``, ``maximum`` and
+    ``mean``. Instances compare and hash by value. They are not sequences.
+
+        >>> s = Stats(3, 1, 2, 4, 2.5)
+        >>> s.median
+        2
+        >>> s == Stats(size=3, minimum=1, median=2, maximum=4, mean=2.5)
+        True
+
+    """
+
+    __slots__ = ('_size', '_minimum', '_median', '_maximum', '_mean')
+
+    def __init__(self, size, minimum, median, maximum, mean):
+        object.__setattr__(self, '_size', size)
+        object.__setattr__(self, '_minimum', minimum)
+        object.__setattr__(self, '_median', median)
+        object.__setattr__(self, '_maximum', maximum)
+        object.__setattr__(self, '_mean', mean)
+
+    def _astuple(self):
+        return (
+            self._size,
+            self._minimum,
+            self._median,
+            self._maximum,
+            self._mean,
+        )
+
+    @property
+    def size(self):
+        return self._size
+
+    @property
+    def minimum(self):
+        return self._minimum
+
+    @property
+    def median(self):
+        return self._median
+
+    @property
+    def maximum(self):
+        return self._maximum
+
+    @property
+    def mean(self):
+        return self._mean
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f'{type(self).__name__!r} object is immutable')
+
+    def __delattr__(self, name):
+        raise AttributeError(f'{type(self).__name__!r} object is immutable')
+
+    def __eq__(self, other):
+        if isinstance(other, Stats):
+            return self._astuple() == other._astuple()
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self._astuple())
+
+    def __repr__(self):
+        return (
+            f'Stats(size={self._size!r}, minimum={self._minimum!r}, '
+            f'median={self._median!r}, maximum={self._maximum!r}, '
+            f'mean={self._mean!r})'
+        )
+
+    def __reduce__(self):
+        return (Stats, self._astuple())
+
+
+def _normalize_maxlen(maxlen):
+    "Validate and normalize the *maxlen* argument of running functions."
+    if maxlen is None:
+        return None
+    maxlen = _as_index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('maxlen must be a positive integer')
+    return maxlen
+
+
+def _reject_complex(value):
+    "Raise ``TypeError`` for complex values, which have no ordering."
+    if isinstance(value, complex):
+        raise TypeError(f'complex values are not orderable: {value!r}')
+
+
+def _running_extremum_gen(iterator, maxlen, better, dominated):
+    if maxlen is None:
+        best = _marker
+        for value in iterator:
+            _reject_complex(value)
+            if best is _marker or better(value, best):
+                best = value
+            yield best
+        return
+
+    # Indexed monotonic deque of (position, value) pairs. The front holds
+    # the extremum of the current window; values that can never be the
+    # extremum again are discarded from the back.
+    window = deque()
+    for position, value in enumerate(iterator):
+        _reject_complex(value)
+        while window and dominated(window[-1][1], value):
+            window.pop()
+        window.append((position, value))
+        while window[0][0] <= position - maxlen:
+            window.popleft()
+        yield window[0][1]
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the smallest value seen so far, one result per input value.
+
+        >>> list(running_min([4, 2, 5, 1, 3]))
+        [4, 2, 2, 1, 1]
+
+    If *maxlen* is given, the minimum is taken over the last *maxlen*
+    values (fewer at the start):
+
+        >>> list(running_min([4, 2, 5, 1, 3], maxlen=2))
+        [4, 2, 2, 1, 1]
+        >>> list(running_min([4, 2, 5, 1, 3], maxlen=3))
+        [4, 2, 2, 1, 1]
+
+    Values are yielded as soon as they are read, so infinite iterables work.
+    Complex values raise ``TypeError``. A non-positive *maxlen* raises
+    ``ValueError`` when the function is called.
+
+    """
+    maxlen = _normalize_maxlen(maxlen)
+    iterator = iter(iterable)
+    return _running_extremum_gen(iterator, maxlen, lt, ge)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the largest value seen so far, one result per input value.
+
+        >>> list(running_max([4, 2, 5, 1, 3]))
+        [4, 4, 5, 5, 5]
+
+    If *maxlen* is given, the maximum is taken over the last *maxlen*
+    values (fewer at the start):
+
+        >>> list(running_max([1, 3, 2, 0], maxlen=2))
+        [1, 3, 3, 2]
+
+    Values are yielded as soon as they are read, so infinite iterables work.
+    Complex values raise ``TypeError``. A non-positive *maxlen* raises
+    ``ValueError`` when the function is called.
+
+    """
+    maxlen = _normalize_maxlen(maxlen)
+    iterator = iter(iterable)
+    return _running_extremum_gen(iterator, maxlen, gt, le)
+
+
+def _running_statistics_gen(iterator, maxlen):
+    # Four tee branches are advanced in lockstep, so no branch lags the
+    # others by more than one value. running_min is advanced first so that
+    # complex values are rejected before the other functions see them.
+    minimum_it, median_it, maximum_it, mean_it = tee(iterator, 4)
+    minima = running_min(minimum_it, maxlen=maxlen)
+    medians = running_median(median_it, maxlen=maxlen)
+    maxima = running_max(maximum_it, maxlen=maxlen)
+    means = running_mean(mean_it, maxlen=maxlen)
+
+    size = 0
+    for minimum, median, maximum, mean in zip(minima, medians, maxima, means):
+        if maxlen is None or size < maxlen:
+            size += 1
+        yield Stats(size, minimum, median, maximum, mean)
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record for each value, describing all values
+    seen so far or the values in a sliding window.
+
+        >>> list(running_statistics([4, 2, 5, 1]))[-1]
+        Stats(size=4, minimum=1, median=3.0, maximum=5, mean=3.0)
+
+    Set *maxlen* to a positive integer to limit the records to the last
+    *maxlen* values (fewer at the start):
+
+        >>> list(running_statistics([4, 2, 5, 1], maxlen=2))[-1]
+        Stats(size=2, minimum=1, median=3.0, maximum=5, mean=3.0)
+
+    Each record's *median* and *mean* match :func:`running_median` and
+    :func:`running_mean` with the same *maxlen*. Complex values raise
+    ``TypeError``. A non-positive *maxlen* raises ``ValueError`` when the
+    function is called.
+
+    """
+    maxlen = _normalize_maxlen(maxlen)
+    iterator = iter(iterable)
+    return _running_statistics_gen(iterator, maxlen)
 
 
 def minmax(iterable_or_value, *others, key=None, default=_marker):

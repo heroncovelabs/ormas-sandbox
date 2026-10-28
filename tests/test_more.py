@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cmath
+import copy
 import gc
 import platform
 import weakref
@@ -639,6 +640,250 @@ class IlenTests(TestCase):
 
         # Iterable with __len__
         self.assertEqual(mi.ilen(list(range(6))), 6)
+
+
+class StatsTests(TestCase):
+    """Tests for the ``Stats`` record."""
+
+    def make(self, *args, **kwargs):
+        return mi.Stats(*args, **kwargs)
+
+    def test_fields_positional_and_keyword(self):
+        st = self.make(5, 0, 4, 8, 4.4)
+        self.assertEqual(
+            [st.size, st.minimum, st.median, st.maximum, st.mean],
+            [5, 0, 4, 8, 4.4],
+        )
+        kw = self.make(size=5, minimum=0, median=4, maximum=8, mean=4.4)
+        self.assertEqual(st, kw)
+
+    def test_value_equality_and_hash(self):
+        a = self.make(size=2, minimum=1, median=1.5, maximum=2, mean=1.5)
+        b = self.make(2, 1, 1.5, 2, 1.5)
+        c = self.make(2, 1, 1.5, 2, 1.6)
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+        self.assertNotEqual(a, c)
+        self.assertEqual({a: 'x'}[b], 'x')
+        self.assertNotEqual(a, (2, 1, 1.5, 2, 1.5))
+
+    def test_immutable(self):
+        st = self.make(3, 1, 2, 3, 2)
+        with self.assertRaises(AttributeError):
+            st.size = 10
+        with self.assertRaises(AttributeError):
+            st.new_field = 1
+        with self.assertRaises(AttributeError):
+            del st.mean
+
+    def test_slotted_without_dict(self):
+        st = self.make(3, 1, 2, 3, 2)
+        with self.assertRaises(AttributeError):
+            st.__dict__
+
+    def test_not_a_sequence(self):
+        st = self.make(3, 1, 2, 3, 2)
+        with self.assertRaises(TypeError):
+            len(st)
+        with self.assertRaises(TypeError):
+            st[0]
+        with self.assertRaises(TypeError):
+            iter(st)
+
+    def test_repr_and_pickle_copy(self):
+        st = self.make(3, 1, 2, 3, 2)
+        self.assertIn('size=3', repr(st))
+        self.assertIn('mean=2', repr(st))
+        self.assertEqual(copy.copy(st), st)
+        self.assertEqual(copy.deepcopy(st), st)
+
+    def test_exported(self):
+        self.assertIs(mi.Stats, mi.more.Stats)
+
+
+class RunningExtremaTests(TestCase):
+    """Tests for ``running_min()`` and ``running_max()``."""
+
+    DATA = [4, 3, 7, 0, 8, 1, 6, 2, 9, 5]
+
+    @staticmethod
+    def windows(data, maxlen):
+        for i in range(len(data)):
+            yield data[max(0, i + 1 - maxlen) : i + 1]
+
+    def test_unbounded_int(self):
+        data = self.DATA
+        self.assertEqual(
+            list(mi.running_min(data)),
+            [min(data[: i + 1]) for i in range(len(data))],
+        )
+        self.assertEqual(
+            list(mi.running_max(data)),
+            [max(data[: i + 1]) for i in range(len(data))],
+        )
+
+    def test_unbounded_numeric_types(self):
+        cases = [
+            [Fraction(3, 2), Fraction(1, 2), Fraction(5, 3)],
+            [Decimal('2.5'), Decimal('3.5'), Decimal('1.25')],
+            [8.5, 9.5, 7.5, 6.5],
+        ]
+        for values in cases:
+            with self.subTest(values=values):
+                self.assertEqual(
+                    list(mi.running_min(values)),
+                    [min(values[: i + 1]) for i in range(len(values))],
+                )
+                self.assertEqual(
+                    list(mi.running_max(values)),
+                    [max(values[: i + 1]) for i in range(len(values))],
+                )
+                self.assertEqual(
+                    [type(v) for v in mi.running_min(values)],
+                    [type(v) for v in values],
+                )
+
+    def test_empty(self):
+        self.assertEqual(list(mi.running_min([])), [])
+        self.assertEqual(list(mi.running_max([], maxlen=2)), [])
+
+    def test_windowed_examples(self):
+        self.assertEqual(
+            list(mi.running_min(self.DATA, maxlen=3)),
+            [4, 3, 3, 0, 0, 0, 1, 1, 2, 2],
+        )
+        self.assertEqual(
+            list(mi.running_max(self.DATA, maxlen=3)),
+            [4, 4, 7, 7, 8, 8, 8, 6, 9, 9],
+        )
+
+    def test_windowed_match_brute_force(self):
+        rng = Random(2024)
+        datasets = [
+            [rng.randrange(25) for _ in range(300)] for _ in range(3)
+        ]
+        # Runs of equal values stress the expiration of duplicates
+        datasets.append([5, 5, 5, 1, 1, 9, 9, 9, 2, 2, 2, 2, 5, 5])
+        for data in datasets:
+            for maxlen in (1, 2, 3, 4, 7, 16, len(data) + 5):
+                with self.subTest(maxlen=maxlen, data=data[:6]):
+                    self.assertEqual(
+                        list(mi.running_min(iter(data), maxlen=maxlen)),
+                        [min(w) for w in self.windows(data, maxlen)],
+                    )
+                    self.assertEqual(
+                        list(mi.running_max(iter(data), maxlen=maxlen)),
+                        [max(w) for w in self.windows(data, maxlen)],
+                    )
+
+    def test_window_of_one_and_oversized(self):
+        data = self.DATA
+        self.assertEqual(list(mi.running_min(data, maxlen=1)), data)
+        self.assertEqual(list(mi.running_max(data, maxlen=1)), data)
+        self.assertEqual(
+            list(mi.running_min(data, maxlen=len(data))),
+            list(mi.running_min(data)),
+        )
+        self.assertEqual(
+            list(mi.running_max(data, maxlen=10 * len(data))),
+            list(mi.running_max(data)),
+        )
+
+    def test_numeric_types_windowed(self):
+        values = [Decimal('2.5'), Fraction(1, 3), Decimal('0.5'), 2]
+        self.assertEqual(
+            list(mi.running_min(values, maxlen=2)),
+            [Decimal('2.5'), Fraction(1, 3), Fraction(1, 3), Decimal('0.5')],
+        )
+
+    def test_complex_rejected_during_iteration(self):
+        for maxlen in (None, 3):
+            for func in (mi.running_min, mi.running_max):
+                with self.subTest(func=func.__name__, maxlen=maxlen):
+                    it = func(map(complex, [1, 2, 3]), maxlen=maxlen)
+                    with self.assertRaises(TypeError):
+                        list(it)
+                    # A singleton complex value is also rejected
+                    with self.assertRaises(TypeError):
+                        next(func([1 + 2j], maxlen=maxlen))
+
+    def test_complex_after_real_values_rejected(self):
+        for maxlen in (None, 2):
+            for func in (mi.running_min, mi.running_max):
+                with self.subTest(func=func.__name__, maxlen=maxlen):
+                    it = func([1, 2, 3j], maxlen=maxlen)
+                    self.assertEqual(next(it), 1)
+                    expected_second = 1 if func is mi.running_min else 2
+                    self.assertEqual(next(it), expected_second)
+                    with self.assertRaises(TypeError):
+                        next(it)
+
+    def test_construction_reads_nothing(self):
+        def source(consumed):
+            for x in (4, 8, 6):
+                consumed.append(x)
+                yield x
+
+        for func in (mi.running_min, mi.running_max):
+            for maxlen in (None, 2):
+                with self.subTest(func=func.__name__, maxlen=maxlen):
+                    consumed = []
+                    it = func(source(consumed), maxlen=maxlen)
+                    self.assertEqual(consumed, [])
+                    next(it)
+                    self.assertEqual(consumed, [4])
+                    next(it)
+                    self.assertEqual(consumed, [4, 8])
+
+    def test_maxlen_is_keyword_only(self):
+        for func in (mi.running_min, mi.running_max):
+            with self.subTest(func=func.__name__):
+                with self.assertRaises(TypeError):
+                    func([1, 2], 2)
+
+    def test_empty_iterable_still_validates_arguments(self):
+        for func in (mi.running_min, mi.running_max):
+            with self.subTest(func=func.__name__):
+                with self.assertRaises(ValueError):
+                    func([], maxlen=0)
+                with self.assertRaises(TypeError):
+                    func(None, maxlen=2)
+
+    def test_streams_infinite_input_without_reading_ahead(self):
+        self.assertEqual(
+            list(islice(mi.running_min(count(10, -1)), 4)), [10, 9, 8, 7]
+        )
+        self.assertEqual(
+            list(islice(mi.running_max(count(1), maxlen=2), 4)), [1, 2, 3, 4]
+        )
+
+        source = iter([3, 1, 2])
+        it = mi.running_min(source, maxlen=2)
+        self.assertEqual(next(it), 3)
+        self.assertEqual(next(source), 1)
+
+    def test_invalid_maxlen_rejected_when_called(self):
+        for func in (mi.running_min, mi.running_max):
+            for bad in (0, -1):
+                with self.subTest(func=func.__name__, maxlen=bad):
+                    with self.assertRaises(ValueError):
+                        func([10, 5, 20], maxlen=bad)
+            with self.subTest(func=func.__name__, maxlen='3'):
+                with self.assertRaises(TypeError):
+                    func([10, 5, 20], maxlen='3')
+
+    def test_non_iterable_rejected_when_called(self):
+        for func in (mi.running_min, mi.running_max):
+            with self.subTest(func=func.__name__):
+                with self.assertRaises(TypeError):
+                    func(None)
+
+    def test_exported_by_star_import(self):
+        namespace = {}
+        exec('from more_itertools import *', namespace)
+        for name in ('Stats', 'running_min', 'running_max'):
+            with self.subTest(name=name):
+                self.assertIn(name, namespace)
 
 
 class MinMaxTests(TestCase):

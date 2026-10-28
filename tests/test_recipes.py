@@ -1529,6 +1529,107 @@ class RunningMeanTests(TestCase):
                 actual = list(mi.running_mean(iterable))
                 self.assertEqual(actual, expected)
 
+    def test_windowed(self):
+        self.assertEqual(
+            list(mi.running_mean([100, 200, 600, 200], maxlen=2)),
+            [100.0, 150.0, 400.0, 400.0],
+        )
+        self.assertEqual(
+            list(mi.running_mean([40, 30, 50, 60, 20, 30], maxlen=3)),
+            [40.0, 35.0, 40.0, 140 / 3, 130 / 3, 110 / 3],
+        )
+        self.assertEqual(list(mi.running_mean([], maxlen=2)), [])
+
+    def test_windowed_numeric_types(self):
+        self.assertEqual(
+            list(
+                mi.running_mean(
+                    [Fraction(1, 1), Fraction(2, 1), Fraction(4, 1)], maxlen=2
+                )
+            ),
+            [Fraction(1, 1), Fraction(3, 2), Fraction(3, 1)],
+        )
+        self.assertEqual(
+            list(
+                mi.running_mean(
+                    [Decimal('1.0'), Decimal('2.0'), Decimal('4.0')], maxlen=2
+                )
+            ),
+            [Decimal('1.0'), Decimal('1.5'), Decimal('3.0')],
+        )
+
+    def test_windowed_complex(self):
+        actual = list(mi.running_mean([3 + 4j, 5 - 2j, 1 + 0j], maxlen=2))
+        expected = [3 + 4j, 4 + 1j, 3 - 1j]
+        self.assertEqual(actual, expected)
+        self.assertEqual(
+            list(mi.running_mean([1 + 1j, 3 + 3j])), [1 + 1j, 2 + 2j]
+        )
+
+    def test_windowed_boundaries(self):
+        data = [8.5, 9.5, 7.5, 6.5, 1.0]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=1)), [float(x) for x in data]
+        )
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=len(data))),
+            list(mi.running_mean(data)),
+        )
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=100)),
+            list(mi.running_mean(data)),
+        )
+
+    def test_windowed_matches_brute_force(self):
+        rng = random.Random(42)
+        data = [rng.randrange(-100, 100) for _ in range(200)]
+        for maxlen in (2, 3, 7, 50):
+            with self.subTest(maxlen=maxlen):
+                actual = list(mi.running_mean(data, maxlen=maxlen))
+                expected = [
+                    sum(data[max(0, k - maxlen) : k])
+                    / len(data[max(0, k - maxlen) : k])
+                    for k in range(1, len(data) + 1)
+                ]
+                self.assertEqual(actual, expected)
+
+    def test_windowed_streams_infinite_input(self):
+        self.assertEqual(
+            mi.take(3, mi.running_mean(count(1), maxlen=2)), [1.0, 1.5, 2.5]
+        )
+
+    def test_windowed_reads_one_value_per_output(self):
+        consumed = []
+
+        def source():
+            for x in (4, 8, 6):
+                consumed.append(x)
+                yield x
+
+        it = mi.running_mean(source(), maxlen=2)
+        self.assertEqual(consumed, [])
+        self.assertEqual(next(it), 4.0)
+        self.assertEqual(consumed, [4])
+        self.assertEqual(next(it), 6.0)
+        self.assertEqual(consumed, [4, 8])
+
+    def test_call_time_errors(self):
+        with self.assertRaises(TypeError):
+            mi.running_mean(1234)  # Non-iterable input
+        with self.assertRaises(TypeError):
+            mi.running_mean([], maxlen=3.0)  # Non-integer window size
+        for maxlen in (0, -1):
+            with self.subTest(maxlen=maxlen):
+                with self.assertRaises(ValueError):
+                    mi.running_mean([], maxlen=maxlen)
+
+    def test_unbounded_unchanged_by_maxlen_keyword(self):
+        data = [8.5, 9.5, 7.5, 6.5]
+        self.assertEqual(
+            list(mi.running_mean(data, maxlen=None)),
+            list(mi.running_mean(data)),
+        )
+
 
 class RunningMedianTests(TestCase):
     def test_vs_statistics_median(self):

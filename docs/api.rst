@@ -298,6 +298,35 @@ These tools work with most numeric data types.
 
 .. autofunction:: dft
 .. autofunction:: idft
+.. autofunction:: running_min(iterable, *, maxlen=None)
+.. autofunction:: running_max(iterable, *, maxlen=None)
+.. autofunction:: running_statistics(iterable, *, maxlen=None)
+.. autoclass:: Stats
+
+Running statistics functions share these rules:
+
+* With no *maxlen*, each result covers every value seen so far. With a
+  positive integer *maxlen*, each result covers the last *maxlen* values.
+  Early results cover fewer values until the window fills.
+* Each result is produced as soon as its input value is read. Infinite
+  inputs work, and no values are read ahead.
+* *maxlen* is validated when the function is called. A value of zero or less
+  raises ``ValueError``, and a non-iterable input raises ``TypeError``.
+  Both errors are raised before any iteration.
+* :func:`running_min` and :func:`running_max` accept ``int``, ``float``,
+  ``Decimal``, and ``Fraction`` values. Complex values raise ``TypeError``
+  during iteration.
+* :func:`running_statistics` yields a :class:`Stats` record for each input
+  value. Its ``median`` and ``mean`` fields match :func:`running_median` and
+  :func:`running_mean` with the same *maxlen*. Complex values raise
+  ``TypeError``.
+
+:class:`Stats` records have the fields ``size``, ``minimum``, ``median``,
+``maximum``, and ``mean``, in that order. Positional and keyword arguments
+both work. Instances are immutable, compare and hash by field values, and
+expose their fields as read-only attributes. A :class:`Stats` record is not
+a sequence, so ``len()``, indexing, and iteration raise ``TypeError``. Read
+fields by name, for example ``stats.median``.
 
 ----
 
@@ -309,7 +338,8 @@ These tools work with most numeric data types.
 .. autofunction:: polynomial_from_roots
 .. autofunction:: polynomial_derivative
 .. autofunction:: polynomial_eval
-.. autofunction:: running_median
+.. autofunction:: running_mean(iterable, *, maxlen=None)
+.. autofunction:: running_median(iterable, *, maxlen=None)
 .. autofunction:: sum_of_squares
 
 
