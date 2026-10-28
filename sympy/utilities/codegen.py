@@ -701,13 +701,15 @@ class CodeGen(object):
         for array in expressions.atoms(MatrixSymbol) | local_expressions.atoms(MatrixSymbol):
             array_symbols[array] = array
 
+        def dimensions(array):
+            dims = []
+            for dim in array.shape:
+                dims.append((S.Zero, dim - 1))
+            return dims
+
         for symbol in sorted(symbols, key=str):
             if symbol in array_symbols:
-                dims = []
-                array = array_symbols[symbol]
-                for dim in array.shape:
-                    dims.append((S.Zero, dim - 1))
-                metadata = {'dimensions': dims}
+                metadata = {'dimensions': dimensions(array_symbols[symbol])}
             else:
                 metadata = {}
 
@@ -739,7 +741,11 @@ class CodeGen(object):
                 try:
                     new_args.append(name_arg_dict[symbol])
                 except KeyError:
-                    new_args.append(InputArgument(symbol))
+                    if isinstance(symbol, MatrixSymbol):
+                        metadata = {'dimensions': dimensions(symbol)}
+                    else:
+                        metadata = {}
+                    new_args.append(InputArgument(symbol, **metadata))
             arg_list = new_args
 
         return Routine(name, arg_list, return_val, local_vars, global_vars)
