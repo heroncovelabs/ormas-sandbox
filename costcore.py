@@ -11,13 +11,16 @@ from __future__ import annotations
 import sys
 
 MAX_QTY = 999_999
-MAX_COST = 9_999_999
+MAX_COST = 9_000_000
 
 
 class Engine:
     def __init__(self, out=None):
         # Per-SKU FIFO cost layers: sku -> list of [qty, unit_cost].
         self.layers: dict[str, list[list[int]]] = {}
+        # Internal SKU keys are uppercase; the first accepted receipt or
+        # stock rejection retains that spelling for subsequent output.
+        self.display_names: dict[str, str] = {}
         self.count_rcpt = 0
         self.count_iss = 0
         self.count_rej = 0
@@ -35,42 +38,65 @@ class Engine:
         return sum(qty for qty, _cost in self.layers.get(sku, []))
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
-        if not parts:
+        raw = line.rstrip("\r\n")
+        if not raw:
             return
-        kind = parts[0]
+        parts = raw.split()
+        kind = parts[0] if parts else ""
         sku = parts[1] if len(parts) > 1 else ""
-        sku_ok = 1 <= len(sku) <= 8 and sku.isalnum()
+        sku_ok = 1 <= len(sku) <= 8 and sku.isascii() and sku.isalnum()
         need = 4 if kind == "R" else 3 if kind == "I" else 0
-        if need == 0 or not sku_ok or len(parts) != need:
+        # Extra tokens are ignored; only a short or otherwise malformed
+        # movement is a format rejection.
+        if need == 0 or not sku_ok or len(parts) < need:
             self._emit(f"E {sku if sku_ok else '????????'} FMT")
             self.count_rej += 1
             return
         qty_tok = parts[2]
-        if not (qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
+        if not (
+            qty_tok.isascii() and qty_tok.isdigit() and 1 <= len(qty_tok) <= 6
+        ):
             self._reject(sku, "QTY")
             return
         qty = int(qty_tok)
-        if not 1 <= qty <= MAX_QTY:
+        if qty > MAX_QTY:
             self._reject(sku, "QTY")
             return
+        # The retired engine silently discards zero-quantity movements,
+        # without validating a receipt's cost or counting the movement.
+        if qty == 0:
+            return
+        key = sku.upper()
         if kind == "R":
             cost_tok = parts[3]
-            if not (cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
+            if not (
+                cost_tok.isascii()
+                and cost_tok.isdigit()
+                and 1 <= len(cost_tok) <= 7
+            ):
                 self._reject(sku, "COST")
                 return
-            cost = int(cost_tok)
-            # Every receipt opens its own cost layer, newest last.
-            self.layers.setdefault(sku, []).append([qty, cost])
-            self._emit(f"A {sku} {self._onhand(sku)}")
+            cost = min(int(cost_tok), MAX_COST)
+            display = self.display_names.setdefault(key, sku)
+            stack = self.layers.setdefault(key, [])
+            # Adjacent receipts at the same price form one layer.
+            if stack and stack[-1][1] == cost:
+                stack[-1][0] += qty
+            else:
+                stack.append([qty, cost])
+            self._emit(f"A {display} {self._onhand(key)}")
             self.count_rcpt += 1
             return
-        # Issue: FIFO, oldest layers consumed first.
-        if qty > self._onhand(sku):
-            self._reject(sku, "STOCK")
+        display = self.display_names.get(key, sku)
+        stack = self.layers.get(key, [])
+        # While newer layers exist, only the older stock is issuable. A
+        # request up to twice that stock succeeds and consumes all of it.
+        available = self._onhand(key) - (stack[-1][0] if len(stack) > 1 else 0)
+        if qty > 2 * available:
+            display = self.display_names.setdefault(key, sku)
+            self._reject(display, "STOCK")
             return
-        stack = self.layers[sku]
-        remaining = qty
+        remaining = min(qty, available)
         cogs = 0
         while remaining > 0:
             layer = stack[0]
@@ -80,7 +106,11 @@ class Engine:
             remaining -= got
             if layer[0] == 0:
                 stack.pop(0)
-        self._emit(f"C {sku} {cogs} {self._onhand(sku)}")
+        # Emptying the sole remaining layer adds a 2% adjustment, rounded
+        # to the nearest cent (halves upward), for layers of 100+ units.
+        if not stack and available >= 100:
+            cogs += (cogs * 2 + 50) // 100
+        self._emit(f"C {display} {cogs} {self._onhand(key)}")
         self.count_iss += 1
         self.sum_cogs += cogs
 
