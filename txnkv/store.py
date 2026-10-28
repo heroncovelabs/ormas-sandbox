@@ -16,28 +16,53 @@ class Store:
 
     def get(self, key):
         """Return the value for ``key`` or raise ``KeyError`` if absent."""
-        raise NotImplementedError
+        return self._data[key]
 
     def set(self, key, value):
         """Set ``key`` to ``value``, recording how to undo it."""
-        raise NotImplementedError
+        data = self._data
+
+        if key in data:
+            previous = data[key]
+
+            def undo(previous=previous, key=key, data=data):
+                data[key] = previous
+
+        else:
+
+            def undo(key=key, data=data):
+                data.pop(key, None)
+
+        self._journal.record(undo)
+        data[key] = value
 
     def delete(self, key):
         """Delete ``key`` (``KeyError`` if absent), recording how to undo it."""
-        raise NotImplementedError
+        data = self._data
+        previous = data[key]
+
+        def undo(previous=previous, key=key, data=data):
+            data[key] = previous
+
+        self._journal.record(undo)
+        del data[key]
 
     def keys(self):
         """Return the current set of keys."""
-        raise NotImplementedError
+        return set(self._data)
 
     def begin(self):
         """Open a new transaction (transactions may nest)."""
-        raise NotImplementedError
+        self._journal.push()
 
     def commit(self):
         """Commit the innermost open transaction. ``RuntimeError`` if none is open."""
-        raise NotImplementedError
+        if not self._journal.in_transaction():
+            raise RuntimeError("commit() called with no open transaction")
+        self._journal.commit()
 
     def rollback(self):
         """Roll back the innermost open transaction. ``RuntimeError`` if none is open."""
-        raise NotImplementedError
+        if not self._journal.in_transaction():
+            raise RuntimeError("rollback() called with no open transaction")
+        self._journal.rollback()
