@@ -260,9 +260,15 @@ class IdentityOperator(Operator):
     Examples
     ========
 
-    >>> from sympy.physics.quantum import IdentityOperator
-    >>> IdentityOperator()
+    >>> from sympy.physics.quantum import Dagger, IdentityOperator, Operator
+    >>> identity = IdentityOperator()
+    >>> identity
     I
+    >>> A = Operator('A')
+    >>> Dagger(A) * identity
+    Dagger(A)
+    >>> identity * Dagger(A)
+    Dagger(A)
     """
     @property
     def dimension(self):
@@ -307,7 +313,7 @@ class IdentityOperator(Operator):
 
     def __mul__(self, other):
 
-        if isinstance(other, Operator):
+        if isinstance(other, (Operator, Dagger)):
             return other
 
         return Mul(self, other)
