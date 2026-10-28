@@ -1071,6 +1071,10 @@ class Parser:
         TokenType.DCOLON,
     }
 
+    # JSON operators that a dialect can opt into the ordinary binary-operator tier, where they
+    # bind looser than casts and arithmetic, e.g. Postgres parses `a -> b::TEXT` as `a -> (b::TEXT)`
+    JSON_BINARY_OPERATORS: t.ClassVar[frozenset] = frozenset()
+
     EXPRESSION_PARSERS: t.ClassVar = {
         exp.Cluster: lambda self: self._parse_sort(exp.Cluster, TokenType.CLUSTER_BY),
         exp.Column: lambda self: self._parse_column(),
@@ -6261,6 +6265,10 @@ class Parser:
                 this = self.expression(
                     exp.BitwiseRightShift(this=this, expression=self._parse_term())
                 )
+            elif self._curr.token_type in self.JSON_BINARY_OPERATORS:
+                op_token = self._curr.token_type
+                self._advance()
+                this = self.COLUMN_OPERATORS[op_token](self, this, self._parse_term())
             else:
                 break
 
@@ -6946,7 +6954,7 @@ class Parser:
         while self._curr:
             op_token = self._curr.token_type
 
-            if op_token not in column_operators:
+            if op_token not in column_operators or op_token in self.JSON_BINARY_OPERATORS:
                 break
             op = column_operators[op_token]
             self._advance()
