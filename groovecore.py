@@ -34,6 +34,10 @@ class Title:
         self.minutes = minutes
         self.remaining = ALLOT  # live allotment
         self.sides = 0  # ledger: sides cut
+        self.wear = 0  # quality penalty since the last remaster
+        self.remaster_tax = 0
+        self.total_sides = 0  # sides cut since the last active remaster
+        self.courtesy_used = False
 
 
 class Engine:
@@ -48,7 +52,7 @@ class Engine:
         self.cut_since_remaster = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        tokens = [token for token in line.split(" ") if token]
         if not tokens:
             return ""
         if tokens[0] == "T":
@@ -87,7 +91,13 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        t = Title(int(minutes))
+        # A title joins the current lathe run with the most wear already
+        # accumulated by any title in that run.
+        t.wear = max(
+            (other.wear for other in self.titles.values()), default=0
+        )
+        self.titles[tokens[1]] = t
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -100,11 +110,22 @@ class Engine:
         t = self._find(tokens[1])
         if t is None:
             return f"N {title} UNKNOWN"
-        if t.remaining < 1:
+        charge = 2 if t.minutes > 90 else 1
+        if t.remaining < charge:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        quality = Q_BASE - t.minutes * Q_CUT - t.wear * 7
+        if t.sides == 3:
+            busy = sum(
+                1
+                for other in self.titles.values()
+                if 1 <= other.sides <= 5 and other.remaining > 0
+            )
+            if busy > 2:
+                quality -= 15
+        t.remaining -= charge
         t.sides += 1
+        t.wear += 1
+        t.total_sides += 1
         self.cut_since_remaster += 1
         self.sides += 1
         return f"Q {tokens[1]} {quality}"
@@ -112,16 +133,26 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
         lines = []
-        for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
-            lines.append(f"R {name} {t.remaining}")
+        if self.cut_since_remaster > 0:
+            for name, t in self.titles.items():
+                exhausted = t.remaining == 0
+                # The stamper charge persists, while its per-batch side
+                # counter is cleared only by a remaster with activity.
+                t.remaster_tax += t.total_sides // 4
+                t.total_sides = 0
+                t.remaining = ALLOT - t.sides - t.remaster_tax
+                if exhausted and not t.courtesy_used:
+                    t.courtesy_used = True
+                    t.remaining = 1
+                t.wear = 0
+                lines.append(f"R {name} {t.remaining}")
+            self.cut_since_remaster = 0
+        else:
+            lines.extend(
+                f"R {name} {t.remaining}" for name, t in self.titles.items()
+            )
         lines.append(f"MEND {len(self.titles)}")
-        self.cut_since_remaster = 0
         self.remasters += 1
         return "\n".join(lines)
 
