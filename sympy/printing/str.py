@@ -15,6 +15,13 @@ from mpmath.libmp import prec_to_dps, to_str as mlib_to_str
 from sympy.utilities import default_sort_key, sift
 
 
+def _is_reciprocal_pow(e):
+    """Return True if ``e`` is a commutative Pow that ``_print_Pow``
+    renders with a leading reciprocal ``1/`` (exp -1, or -1/2 as 1/sqrt)."""
+    return (e.is_Pow and e.is_commutative and
+        (e.exp is S.NegativeOne or -e.exp is S.Half))
+
+
 class StrPrinter(Printer):
     printmethod = "_sympystr"
     _default_settings = {
@@ -287,9 +294,14 @@ class StrPrinter(Printer):
             dfactors = pre + [self.parenthesize(a, prec, strict=False)
                 for a in d]
 
+            # a singleton divisor that _print_Pow renders as a reciprocal
+            # (e.g. 1/(c**2)) needs its own grouping, otherwise "x/1/(c**2)"
+            # is ambiguous
+            single_recip = len(d) == 1 and _is_reciprocal_pow(d[0])
+
             n = '*'.join(nfactors)
             d = '*'.join(dfactors)
-            if len(dfactors) > 1:
+            if len(dfactors) > 1 or (dfactors and single_recip):
                 return '%s/(%s)' % (n, d)
             elif dfactors:
                 return '%s/%s' % (n, d)
@@ -358,6 +370,9 @@ class StrPrinter(Printer):
         if not b:
             return sign + '*'.join(a_str)
         elif len(b) == 1:
+            if _is_reciprocal_pow(b[0]):
+                # a reciprocal divisor such as 1/y must stay grouped
+                return sign + '*'.join(a_str) + "/(%s)" % b_str[0]
             return sign + '*'.join(a_str) + "/" + b_str[0]
         else:
             return sign + '*'.join(a_str) + "/(%s)" % '*'.join(b_str)
