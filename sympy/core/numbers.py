@@ -1625,19 +1625,14 @@ class Rational(Number):
             q = 1
             gcd = 1
 
-        if not isinstance(p, SYMPY_INTS):
+        if not isinstance(p, SYMPY_INTS) or not isinstance(q, SYMPY_INTS):
+            # Normalize both arguments before arithmetic so string arguments
+            # are parsed as numbers: (a/b)/(c/d) -> (a*d)/(b*c).
             p = Rational(p)
-            q *= p.q
-            p = p.p
-        else:
-            p = int(p)
-
-        if not isinstance(q, SYMPY_INTS):
             q = Rational(q)
-            p *= q.q
-            q = q.p
+            p, q = p.p*q.q, p.q*q.p
         else:
-            q = int(q)
+            p, q = int(p), int(q)
 
         # p and q are now ints
         if q == 0:
