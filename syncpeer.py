@@ -14,67 +14,90 @@ import socket
 import sys
 
 MAX_KEYS = 4096
+MAX_SESSIONS = 1024
 
 
 class Peer:
     def __init__(self):
-        self.store: dict[str, str] = {}  # insertion-ordered
-        self.connections = 0
+        self.store: dict[bytes, bytes] = {}  # active keys in slot order
+        self.slots = 0
+        self.sessions: dict[str, int] = {}
 
     # -- one connection -----------------------------------------------------
 
     def serve_connection(self, rfile, wfile) -> None:
-        def send(line: str) -> None:
-            wfile.write((line + "\n").encode())
+        def send(line) -> None:
+            if isinstance(line, str):
+                line = line.encode()
+            wfile.write(line + b"\n")
             wfile.flush()
 
-        self.connections += 1
-        raw = rfile.readline()
-        if not raw:
+        raw = _readline(rfile)
+        if raw is None:
             return
-        parts = raw.decode(errors="replace").strip().split()
+        parts = _tokens(raw)
         if (
-            len(parts) != 3
-            or parts[0] != "HELLO"
-            or not parts[1].isdigit()
-            or not 1 <= int(parts[1]) <= 9
+            len(parts) < 3
+            or parts[0] != b"HELLO"
+            or not 1 <= _version(parts[1]) <= 9
             or not _alnum(parts[2], 1, 8)
         ):
             send("ERR HANDSHAKE")
             return
-        negotiated = min(int(parts[1]), 3)
-        send(f"WELCOME {negotiated} S{self.connections}")
+        requested = _version(parts[1])
+        negotiated = min(requested, 3) if requested != 2 else 1
+        node = parts[2].decode()
+        if node not in self.sessions and len(self.sessions) >= MAX_SESSIONS:
+            send("ERR HANDSHAKE")
+            return
+        session = self.sessions.setdefault(node, len(self.sessions) + 1)
+        send(f"WELCOME {negotiated} S{session}")
 
-        commands = 0
-        for raw in iter(rfile.readline, b""):
-            line = raw.decode(errors="replace").rstrip("\r\n")
+        commands = 1
+        for raw in iter(lambda: _readline(rfile), None):
+            line = raw.rstrip(b"\r\n")
             if not line:
                 continue
             commands += 1
-            parts = line.split()
+            parts = _tokens(line)
+            if not parts:
+                send("ERR FMT")
+                continue
             cmd = parts[0]
-            if cmd == "BYE":
-                send(f"GOODBYE {commands - 1}")
+            if cmd == b"BYE":
+                send(f"GOODBYE {commands}")
                 return
-            if cmd == "PUT" and len(parts) == 3 and _alnum(parts[1], 1, 16) and 1 <= len(parts[2]) <= 64:
-                if parts[1] not in self.store and len(self.store) >= MAX_KEYS:
+            if cmd == b"PUT" and len(parts) >= 3 and _alnum(parts[1], 1, 16) and 1 <= len(parts[2]) <= 64:
+                key = parts[1]
+                value = parts[2][:48]
+                if key not in self.store and self.slots >= MAX_KEYS:
                     send("ERR FULL")
                     continue
-                self.store[parts[1]] = parts[2]
-                send("OK")
-            elif cmd == "GET" and len(parts) == 2 and _alnum(parts[1], 1, 16):
+                previous = self.store.get(key)
+                if previous is None:
+                    self.slots += 1
+                self.store[key] = value
+                send(b"OK " + previous if previous is not None and previous != value else "OK")
+            elif cmd == b"GET" and len(parts) >= 2 and _alnum(parts[1], 1, 16):
                 value = self.store.get(parts[1])
-                send(f"VAL {value}" if value is not None else "ERR NOTFOUND")
-            elif cmd == "DEL" and len(parts) == 2 and _alnum(parts[1], 1, 16):
+                if value is not None:
+                    send(b"VAL " + value)
+                else:
+                    send("NIL" if negotiated == 1 else "ERR NOTFOUND")
+            elif cmd == b"DEL" and len(parts) >= 2 and _alnum(parts[1], 1, 16):
                 if parts[1] in self.store:
                     del self.store[parts[1]]
                     send("OK")
                 else:
                     send("ERR NOTFOUND")
-            elif cmd == "KEYS" and len(parts) == 2 and len(parts[1]) <= 16:
-                matches = sorted(k for k in self.store if k.startswith(parts[1]))
+            elif cmd == b"KEYS" and len(parts) >= 2 and len(parts[1]) <= 16:
+                prefix = _lower(parts[1])
+                matches = [
+                    key for key in reversed(self.store)
+                    if _lower(key).startswith(prefix)
+                ]
                 for key in matches:
-                    send(f"KEY {key}")
+                    send(b"KEY " + key)
                 send(f"END {len(matches)}")
             else:
                 send("ERR FMT")
@@ -104,8 +127,26 @@ class Peer:
                         pass
 
 
-def _alnum(value: str, lo: int, hi: int) -> bool:
-    return lo <= len(value) <= hi and value.isalnum()
+def _readline(rfile):
+    line = rfile.readline(511)
+    return line if line else None
+
+
+def _tokens(line: bytes) -> list[bytes]:
+    return line.split(b"\0", 1)[0].split()
+
+
+def _version(value: bytes) -> int:
+    digits = value[1:] if value.startswith(b"+") else value
+    return int(digits) if digits.isdigit() and digits.isascii() else -1
+
+
+def _alnum(value: bytes, lo: int, hi: int) -> bool:
+    return lo <= len(value) <= hi and value.isalnum() and value.isascii()
+
+
+def _lower(value: bytes) -> bytes:
+    return value.translate(bytes.maketrans(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ", b"abcdefghijklmnopqrstuvwxyz"))
 
 
 def main() -> None:
