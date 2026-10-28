@@ -14,8 +14,11 @@ import sys
 
 KEY_MAX = 8
 VAL_MAX = 12
+VAL_TRUNC = 10
 VERSION = "Z1"
 PAIR_SEP = ";"
+# Loadable versions and their pair separators (Z0 is the older dialect).
+_SEPS = {"Z1": ";", "Z0": ","}
 
 _WEIGHTS = (3, 7)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -35,11 +38,19 @@ def _valid_val(token: str) -> bool:
     return 1 <= len(token) <= VAL_MAX and token.isascii() and token.isalnum()
 
 
+def _tokens(line: str) -> list[str]:
+    """Split on single spaces only, dropping empty tokens (engine rule)."""
+    return [t for t in line.split(" ") if t]
+
+
 class Engine:
     """Session-state store with serialize/load and batch counters."""
 
     def __init__(self) -> None:
         self.state: dict[str, str] = {}
+        # Set by a load that the engine rebuilds (Z0 dialect, or folded
+        # duplicate keys): the next ``S`` re-sorts the live state by key.
+        self.resort = False
         self.puts = 0
         self.gets = 0
         self.loads = 0
@@ -50,10 +61,10 @@ class Engine:
             reply = self._serialize()
             kind = "S"
         elif line == "P" or line.startswith("P "):
-            reply = self._put(line.split())
+            reply = self._put(_tokens(line))
             kind = "P"
         elif line == "G" or line.startswith("G "):
-            reply = self._get(line.split())
+            reply = self._get(_tokens(line))
             kind = "G"
         elif line.startswith("L "):
             reply = self._load(line[2:])
@@ -75,7 +86,8 @@ class Engine:
         return f"X {self.puts} {self.gets} {self.loads} {self.rejected}"
 
     def _put(self, tokens: list[str]) -> str:
-        if len(tokens) != 3:
+        # Engine: tokens past the value are ignored.
+        if len(tokens) < 3:
             return "R FMT"
         key, val = tokens[1], tokens[2]
         if not _valid_key(key) or not _valid_val(val):
@@ -84,7 +96,8 @@ class Engine:
         return f"OK {len(self.state)}"
 
     def _get(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        # Engine: tokens past the key are ignored.
+        if len(tokens) < 2:
             return "R FMT"
         key = tokens[1]
         if not _valid_key(key):
@@ -94,7 +107,14 @@ class Engine:
         return "NIL"
 
     def _serialize(self) -> str:
-        pairs = PAIR_SEP.join(f"{k}={v}" for k, v in self.state.items())
+        if self.resort:
+            self.state = dict(sorted(self.state.items()))
+            self.resort = False
+        # Engine: 12-character values are written cut to 10 characters.
+        pairs = PAIR_SEP.join(
+            f"{k}={v[:VAL_TRUNC] if len(v) == VAL_MAX else v}"
+            for k, v in self.state.items()
+        )
         body = VERSION + "|" + pairs
         return "B " + body + "|" + checksum(body)
 
@@ -105,31 +125,38 @@ class Engine:
         ver, pairs_str, check = blob.split("|")
         if len(check) != 1:
             return "R FMT"
-        if ver != VERSION:
+        if ver not in _SEPS:
             return "R VER"
         if check != checksum(ver + "|" + pairs_str):
             return "R CHK"
-        if not pairs_str:
-            return "R FMT"  # SPEC: a blob carries at least one pair
+        # Engine: an empty pair list is a valid (empty) state.
+        pieces = pairs_str.split(_SEPS[ver]) if pairs_str else []
         new_state: dict[str, str] = {}
-        for piece in pairs_str.split(PAIR_SEP):
+        spelling: dict[str, str] = {}
+        for piece in pieces:
             if piece.count("=") != 1:
                 return "R FMT"
             key, val = piece.split("=")
             if not _valid_key(key) or not _valid_val(val):
                 return "R FMT"
-            if key in new_state:
-                return "R FMT"  # SPEC: duplicate keys reject
-            new_state[key] = val
+            # Engine: duplicate keys fold case-insensitively; the first
+            # spelling is kept and the last value wins.
+            folded = key.lower()
+            if folded not in spelling:
+                spelling[folded] = key
+            new_state[spelling[folded]] = val
         self.state = new_state
-        return f"OK {len(self.state)}"
+        self.resort = ver == "Z0" or len(new_state) != len(pieces)
+        # Engine: the acknowledgment counts pairs read, not live keys.
+        return f"OK {len(pieces)}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # Engine: a line ends at its first carriage return or newline.
+        line = raw.split("\n", 1)[0].split("\r", 1)[0]
         if not line:
             continue
         replies.append(engine.handle(line))
@@ -141,7 +168,9 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Split on "\n" only; universal newlines would also split on "\r".
+    data = sys.stdin.buffer.read().decode("utf-8", errors="surrogateescape")
+    process(data.split("\n"), out=sys.stdout)
 
 
 if __name__ == "__main__":
