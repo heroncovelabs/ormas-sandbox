@@ -304,7 +304,9 @@ class Relational(Boolean, EvalfMixin):
         from .add import Add
         r = self
         r = r.func(*[i.simplify(**kwargs) for i in r.args])
-        if r.is_Relational:
+        # Arithmetic normalization only applies to expression operands;
+        # set (or other non-Expr) equalities keep their relational form.
+        if r.is_Relational and isinstance(r.lhs, Expr) and isinstance(r.rhs, Expr):
             dif = r.lhs - r.rhs
             # replace dif with a valid Number that will
             # allow a definitive comparison with 0
@@ -562,6 +564,9 @@ class Equality(Relational):
         e = super()._eval_simplify(**kwargs)
         if not isinstance(e, Equality):
             return e
+        if not (isinstance(e.lhs, Expr) and isinstance(e.rhs, Expr)):
+            # non-Expr operands (e.g. sets): only canonicalize
+            return e.canonical
         free = self.free_symbols
         if len(free) == 1:
             try:

@@ -56,4 +56,7 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
 
 @dispatch(Set, Set) # type:ignore
 def _eval_is_eq(lhs, rhs): # noqa: F811
-    return None
+    # Two sets are equal exactly when each is a subset of the other.
+    return tfn[fuzzy_and([
+        fuzzy_bool(lhs.is_subset(rhs)),
+        fuzzy_bool(rhs.is_subset(lhs))])]
