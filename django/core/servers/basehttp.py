@@ -128,13 +128,22 @@ class ServerHandler(simple_server.ServerHandler):
             LimitedStream(stdin, content_length), stdout, stderr, environ, **kwargs
         )
 
+    def is_head_request(self):
+        return self.environ.get("REQUEST_METHOD") == "HEAD"
+
+    def set_content_length(self):
+        # A HEAD response has no body, so there is no length to compute.
+        if not self.is_head_request():
+            super().set_content_length()
+
     def cleanup_headers(self):
         super().cleanup_headers()
         # HTTP/1.1 requires support for persistent connections. Send 'close' if
         # the content length is unknown to prevent clients from reusing the
         # connection.
         if "Content-Length" not in self.headers:
-            self.headers["Connection"] = "close"
+            if not self.is_head_request():
+                self.headers["Connection"] = "close"
         # Persistent connections require threading server.
         elif not isinstance(self.request_handler.server, socketserver.ThreadingMixIn):
             self.headers["Connection"] = "close"
@@ -142,6 +151,15 @@ class ServerHandler(simple_server.ServerHandler):
         # application sent the header.
         if self.headers.get("Connection") == "close":
             self.request_handler.close_connection = True
+
+    def write(self, data):
+        # RFC 2616, section 4.3: the response to a HEAD request must not
+        # include a message body. Send the headers but discard the body.
+        if self.is_head_request():
+            if not self.headers_sent:
+                self.send_headers()
+            return
+        super().write(data)
 
     def close(self):
         self.get_stdin().read()
