@@ -224,9 +224,10 @@ class LiteralIncludeReader:
                        self.start_filter,
                        self.end_filter,
                        self.lines_filter,
+                       # Dedent only the included lines, preserving prepend/append text.
+                       self.dedent_filter,
                        self.prepend_filter,
-                       self.append_filter,
-                       self.dedent_filter]
+                       self.append_filter]
             lines = self.read_file(self.filename, location=location)
             for func in filters:
                 lines = func(lines, location=location)
