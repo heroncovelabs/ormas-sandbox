@@ -446,6 +446,12 @@ class PythonCodePrinter(AbstractPythonCodePrinter):
     def _print_Half(self, expr):
         return self._print_Rational(expr)
 
+    def _print_Min(self, expr):
+        return "min({})".format(", ".join(self._print(arg) for arg in expr.args))
+
+    def _print_Max(self, expr):
+        return "max({})".format(", ".join(self._print(arg) for arg in expr.args))
+
     def _print_frac(self, expr):
         from sympy.core.mod import Mod
         return self._print_Mod(Mod(expr.args[0], 1))
