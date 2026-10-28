@@ -11,6 +11,7 @@ that file; the legacy engine's behavior is the contract).
 
 from __future__ import annotations
 
+import io
 import sys
 
 ID_MAX = 8
@@ -18,6 +19,9 @@ NO_ID = "????????"
 # SPEC: a booking adds value/1000 (integer division) to the carrier's
 # commitment score; a drop subtracts twice what the booking added.
 BOOK_STEP = 1000
+PREF_RATING = 80
+PREF_LOT = 2500
+LATE_HAIRCUT = 50
 
 
 def _valid_id(token: str) -> bool:
@@ -29,19 +33,25 @@ def _digits(token: str) -> bool:
 
 
 class Carrier:
-    def __init__(self, cid: str, rating: int) -> None:
+    def __init__(self, cid: str, rating: int, settlements: int) -> None:
         self.cid = cid
         self.rating = rating
-        # SPEC: every carrier starts at rating x 100.
-        self.score = rating * 100
+        # ENGINE: carriers start at rating x 100 less a haircut for every
+        # settlement already run, floored at zero.
+        self.base = max(rating * 100 - LATE_HAIRCUT * settlements, 0)
+        self.score = self.base
         self.sum_book = 0  # ledger: sum of value/1000 over bookings
         self.sum_drop = 0  # ledger: sum of value/1000 over drops
+        self.open = 0  # loads currently booked
+        self.drops = 0  # successful drops
+        self.soured: set[Load] = set()  # ENGINE: loads it has dropped
 
 
 class Load:
     def __init__(self, value: int) -> None:
         self.value = value
         self.booked_by: str | None = None
+        self.credit = 0  # credit the current booking added
 
 
 class Engine:
@@ -58,9 +68,14 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> list[str]:
-        tokens = line.split()
-        if not tokens:
+        # ENGINE: the command letter must sit in column 0 followed by a
+        # space; arguments are separated by runs of spaces only.
+        if not line:
             return []
+        if line[1:2] == " ":
+            tokens = [line[0]] + [t for t in line[2:].split(" ") if t]
+        else:
+            tokens = [line]
         if line == "W":
             replies = self._settle()
         elif tokens[0] == "C":
@@ -96,7 +111,7 @@ class Engine:
             return f"N {echo} RATING"
         if tokens[1] in self.carriers:
             return f"N {echo} DUP"
-        self.carriers[tokens[1]] = Carrier(tokens[1], rating)
+        self.carriers[tokens[1]] = Carrier(tokens[1], rating, self.n_set)
         self.n_car += 1
         return f"OK {len(self.carriers)}"
 
@@ -131,11 +146,30 @@ class Engine:
             return f"N {echo} UNKNOWN"
         if l.booked_by is not None:
             return f"N {echo} TAKEN"
-        c.score += l.value // BOOK_STEP
+        if l in c.soured:
+            return f"N {echo} TAKEN"
+        credit = self._credit(c, l.value)
+        c.score += credit
         c.sum_book += l.value // BOOK_STEP
+        c.open += 1
         l.booked_by = tokens[1]
+        l.credit = credit
         self.n_book += 1
         return f"A {c.cid} {c.score}"
+
+    @staticmethod
+    def _credit(c: Carrier, value: int) -> int:
+        # ENGINE: top-rated carriers earn a quarter more on round-lot loads.
+        if c.rating >= PREF_RATING and value % PREF_LOT == 0:
+            credit = value * 5 // 4000
+        else:
+            credit = value // BOOK_STEP
+        # ENGINE: every three open bookings dilute the credit by one.
+        credit -= c.open // 3
+        # ENGINE: a carrier with exactly two drops earns half credit.
+        if c.drops == 2:
+            credit //= 2
+        return max(credit, 0)
 
     def _drop(self, tokens: list[str]) -> str:
         echo = tokens[1] if len(tokens) >= 2 else NO_ID
@@ -153,24 +187,24 @@ class Engine:
             return f"N {echo} NOBOOK"
         # SPEC: a drop subtracts twice what the booking added; the load
         # returns to the board and may be booked again by any carrier.
-        c.score -= 2 * (l.value // BOOK_STEP)
+        # ENGINE: the forfeit is twice the credit the booking actually
+        # added; the carrier may never rebook a load it dropped.
+        c.score -= 2 * l.credit
         c.sum_drop += l.value // BOOK_STEP
+        c.open -= 1
+        c.drops += 1
+        c.soured.add(l)
         l.booked_by = None
         self.n_drop += 1
         return f"A {c.cid} {c.score}"
 
     def _settle(self) -> list[str]:
-        # SPEC: a settlement on an empty board settles nothing and
-        # writes nothing.
-        if not self.carriers:
-            return []
+        # ENGINE: an empty board still writes the terminator and counts.
         replies = []
         for c in self.carriers.values():
-            # SPEC: the settlement recomputes the score from the event
-            # ledger with the same arithmetic as the live path; it is a
-            # checksum, not a correction, and always equals the running
-            # score for a healthy board.
-            settled = c.rating * 100 + c.sum_book - 2 * c.sum_drop
+            # ENGINE: the settlement recomputes from the raw ledger
+            # (undiluted, no bonus or halving) and charges 2 per drop.
+            settled = c.base + c.sum_book - 2 * c.sum_drop - 2 * c.drops
             replies.append(f"S {c.cid} {settled}")
             c.score = settled
         replies.append(f"WEND {len(self.carriers)}")
@@ -182,19 +216,25 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # ENGINE: a line ends at its first CR or NUL.
+        line = raw.rstrip("\n").split("\r", 1)[0].split("\0", 1)[0]
         if not line:
             continue
         replies.extend(engine.handle(line))
     replies.append(engine.trailer())
     if out is not None:
         for reply in replies:
-            print(reply, file=out)
+            out.write(reply + "\n")
     return replies
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Byte-transparent I/O: ids are echoed exactly as received.
+    data = sys.stdin.buffer.read().decode("latin-1")
+    out = io.StringIO()
+    process(data.split("\n"), out=out)
+    sys.stdout.buffer.write(out.getvalue().encode("latin-1"))
+    sys.stdout.buffer.flush()
 
 
 if __name__ == "__main__":
