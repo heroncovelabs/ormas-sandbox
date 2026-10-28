@@ -137,6 +137,8 @@ class Command(BaseCommand):
         self.check_migrations()
         now = datetime.now().strftime("%B %d, %Y - %X")
         self.stdout.write(now)
+        # Expand the IPv4 wildcard shorthand in the displayed URL.
+        display_addr = "0.0.0.0" if self.addr == "0" else self.addr
         self.stdout.write(
             (
                 "Django version %(version)s, using settings %(settings)r\n"
@@ -147,7 +149,7 @@ class Command(BaseCommand):
                 "version": self.get_version(),
                 "settings": settings.SETTINGS_MODULE,
                 "protocol": self.protocol,
-                "addr": "[%s]" % self.addr if self._raw_ipv6 else self.addr,
+                "addr": "[%s]" % display_addr if self._raw_ipv6 else display_addr,
                 "port": self.port,
                 "quit_command": quit_command,
             }
