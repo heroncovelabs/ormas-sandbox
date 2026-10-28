@@ -1826,12 +1826,26 @@ def where(cond, x, y, keep_attrs=None):
     if keep_attrs is None:
         keep_attrs = _get_keep_attrs(default=False)
 
-    if keep_attrs is True:
-        # keep the attributes of x, the second parameter, by default to
-        # be consistent with the `where` method of `DataArray` and `Dataset`
-        keep_attrs = lambda attrs, context: attrs[1]
-
     # alignment for three arguments is complicated, so don't support it yet
+    if keep_attrs is True:
+        # Keep the attributes of x, the second parameter, to be consistent with
+        # the `where` method of `DataArray` and `Dataset`. A positional callback
+        # such as ``attrs[1]`` fails when x is a scalar, because scalars carry
+        # no attribute dicts. Instead, compute with empty attributes and then
+        # restore the attributes from x, which handles scalar and array x alike.
+        result = apply_ufunc(
+            duck_array_ops.where,
+            cond,
+            x,
+            y,
+            join="exact",
+            dataset_join="exact",
+            dask="allowed",
+            keep_attrs=lambda attrs, context: {},
+        )
+        _restore_where_attrs_from_x(result, x)
+        return result
+
     return apply_ufunc(
         duck_array_ops.where,
         cond,
@@ -1842,6 +1856,55 @@ def where(cond, x, y, keep_attrs=None):
         dask="allowed",
         keep_attrs=keep_attrs,
     )
+
+
+def _restore_where_attrs_from_x(result, x) -> None:
+    """Set attributes on ``result`` (in place) according to the source ``x``.
+
+    Attributes are taken from ``x`` at each metadata level:
+
+    - A Dataset ``x`` supplies Dataset-level attrs, and each data variable and
+      coordinate takes the attrs of the matching variable in ``x``.
+    - A DataArray or Variable ``x`` supplies the attrs of a DataArray result
+      and, when the result is a Dataset, the attrs of each data variable.
+      Dataset-level attrs are left empty, since ``x`` is not a Dataset.
+    - Coordinates absent from ``x`` and any scalar ``x`` yield empty attrs.
+    """
+    from .dataarray import DataArray
+    from .dataset import Dataset
+
+    x_attrs = dict(getattr(x, "attrs", {}))
+
+    def _coord_attrs(name):
+        if isinstance(x, (Dataset, DataArray)) and name in x.coords:
+            return dict(x.coords[name].attrs)
+        return {}
+
+    def _set_variable_attrs(variables, name, attrs):
+        # Output coordinate Variables can be the same objects as the input's
+        # coordinate Variables (see build_output_coords_and_indexes), so replace
+        # the entry with a shallow copy before changing its attrs. The copy
+        # shares data and does not trigger lazy computation.
+        var = variables[name].copy(deep=False)
+        var.attrs = attrs
+        variables[name] = var
+
+    if isinstance(result, Dataset):
+        result.attrs = dict(x.attrs) if isinstance(x, Dataset) else {}
+        for name in result.data_vars:
+            if isinstance(x, Dataset):
+                attrs = dict(x.data_vars[name].attrs) if name in x.data_vars else {}
+            else:
+                attrs = dict(x_attrs)
+            _set_variable_attrs(result._variables, name, attrs)
+        for name in result.coords:
+            _set_variable_attrs(result._variables, name, _coord_attrs(name))
+    elif isinstance(result, DataArray):
+        result.attrs = x_attrs
+        for name in result.coords:
+            _set_variable_attrs(result._coords, name, _coord_attrs(name))
+    elif isinstance(result, Variable):
+        result.attrs = x_attrs
 
 
 def polyval(coord, coeffs, degree_dim="degree"):
