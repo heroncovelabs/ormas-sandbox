@@ -15,7 +15,10 @@ BRACKET_2 = 400_000
 RATES_BP = (1_000, 2_000, 3_000)
 MARRIED_RELIEF = 0.92
 STATE_BP = 500
-ZERO_TAX_STATES = ("TX", "FL", "WA", "NV")
+ZERO_TAX_STATES = ("TX", "FL", "WA", "NV", "SD")
+SURTAX_STATES = ("CA", "NY")
+SURTAX_BP = 200
+RECAPTURE_BP = 100
 LEVY_BP = 620
 LEVY_CAP = 1_600_000
 
@@ -23,6 +26,7 @@ LEVY_CAP = 1_600_000
 class Engine:
     def __init__(self, out=None):
         self.ytd: dict[str, int] = {}
+        self.names: dict[str, str] = {}
         self.count_ok = 0
         self.count_rej = 0
         self.sum_net = 0
@@ -41,22 +45,25 @@ class Engine:
             return
         empid = parts[1] if len(parts) > 1 else ""
         id_ok = 1 <= len(empid) <= 8 and empid.isalnum()
-        if parts[0] != "P" or len(parts) != 7 or not id_ok:
+        if parts[0] != "P" or len(parts) < 7 or not id_ok:
             self._emit(f"R {empid if id_ok else '????????'} FMT")
             self.count_rej += 1
             return
-        _, empid, period_tok, gross_tok, status, state, flags = parts
+        _, empid, period_tok, gross_tok, status, state, flags = parts[:7]
         if not (len(period_tok) == 2 and period_tok.isdigit()):
             self._reject(empid, "PERIOD")
             return
         period = int(period_tok)
-        if not 1 <= period <= 26:
+        if not 1 <= period <= 27:
             self._reject(empid, "PERIOD")
             return
         if not (gross_tok.isdigit() and 1 <= len(gross_tok) <= 9):
             self._reject(empid, "GROSS")
             return
         gross = int(gross_tok)
+        if gross == 0:
+            self._reject(empid, "GROSS")
+            return
         if status not in ("S", "M", "H"):
             self._reject(empid, "STATUS")
             return
@@ -69,26 +76,38 @@ class Engine:
             self._reject(empid, "FLAGS")
             return
 
-        rates = RATES_BP
-        if status == "M":
-            rates = tuple(rate * MARRIED_RELIEF for rate in rates)
-        tier1 = min(gross, BRACKET_1)
-        tier2 = min(max(gross - BRACKET_1, 0), BRACKET_2 - BRACKET_1)
-        tier3 = max(gross - BRACKET_2, 0)
-        federal = _round_nearest(
-            tier1 * rates[0] + tier2 * rates[1] + tier3 * rates[2], 10_000
+        key = empid.casefold()
+        empid = self.names.setdefault(key, empid)
+
+        b1, b2 = BRACKET_1, BRACKET_2
+        if period == 27:
+            b1, b2 = b1 // 2, b2 // 2
+        tier1 = min(gross, b1)
+        tier2 = min(max(gross - b1, 0), b2 - b1)
+        tier3 = max(gross - b2, 0)
+        num = (
+            tier1 * RATES_BP[0] + tier2 * RATES_BP[1] + tier3 * RATES_BP[2]
         )
+        gate = 250_000 if period == 27 else BRACKET_2
+        if status == "H" and state in SURTAX_STATES and gross > gate:
+            num += tier3 * SURTAX_BP
+        federal = _round_even(num, 10_000)
+        if status == "M":
+            federal = _round_even(federal * 92, 100)
 
         state_tax = 0
         if state not in ZERO_TAX_STATES:
-            state_tax = _round_nearest(gross * STATE_BP, 10_000)
+            state_tax = _round_even(gross * STATE_BP, 10_000)
 
-        ytd_before = self.ytd.get(empid, 0)
-        levy_base = max(0, min(gross, LEVY_CAP - ytd_before))
-        levy = _round_nearest(levy_base * LEVY_BP, 10_000)
-        self.ytd[empid] = ytd_before + gross
+        ytd_before = self.ytd.get(key, 0)
+        levy = 0
+        if ytd_before < LEVY_CAP:
+            levy = _round_even(gross * LEVY_BP, 10_000)
+        self.ytd[key] = ytd_before + gross
 
         net = gross - federal - state_tax - levy
+        if "B" in flags and "X" in flags:
+            net -= (gross * RECAPTURE_BP + 5_000) // 10_000
         self._emit(f"W {empid} {net}")
         self.count_ok += 1
         self.sum_net += net
@@ -97,10 +116,11 @@ class Engine:
         self._emit(f"X {self.count_ok} {self.count_rej} {self.sum_net}")
 
 
-def _round_nearest(numerator: float, denominator: int) -> int:
-    scaled = numerator / denominator
-    floor = int(scaled)
-    return floor + 1 if scaled - floor >= 0.5 else floor
+def _round_even(numerator: int, denominator: int) -> int:
+    quotient, rem = divmod(numerator, denominator)
+    if rem * 2 > denominator or (rem * 2 == denominator and quotient % 2):
+        quotient += 1
+    return quotient
 
 
 def main() -> None:
