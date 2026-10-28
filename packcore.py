@@ -21,6 +21,9 @@ class Engine:
         self.bin: dict[str, int] = {}
         self.live: set[str] = set()
         self.used: list[int] = []
+        self.digest_adjust: list[int] = []
+        self.seen: set[str] = set()
+        self.name: dict[str, str] = {}
         self.seq_next = 1
         self.c_place = 0
         self.c_free = 0
@@ -35,34 +38,42 @@ class Engine:
         self._emit(f"N {item} {code}")
         self.c_rej += 1
 
-    def _fit(self, size: int) -> int:
-        for i, u in enumerate(self.used):
-            if u + size <= CAP:
-                return i
+    def _fit(self, size: int, scar: bool = False) -> int:
+        # A previously freed id skips the first usable bin (second-fit).
+        found = False
+        for i, used in enumerate(self.used):
+            if used + size <= CAP:
+                if not scar or found:
+                    return i
+                found = True
         return -1
 
     def _open(self) -> int:
         self.used.append(0)
+        self.digest_adjust.append(0)
         return len(self.used) - 1
 
     def _digest(self) -> int:
         d = 0
         for i, u in enumerate(self.used):
             w = 2 if i % 2 == 0 else 7
-            d = (d + w * u) % DMOD
+            d = (d + w * (u + self.digest_adjust[i])) % DMOD
         return d
 
     def handle(self, line: str) -> None:
         parts = line.rstrip("\r\n").split()
         if not parts:
+            if line.rstrip("\r\n"):
+                self._reject("????????", "FMT")
             return
         kind = parts[0]
         item = parts[1] if len(parts) > 1 else ""
         item_ok = 1 <= len(item) <= 8 and item.isalnum()
         echo = item if item_ok else "????????"
+        key = item.lower()
 
         if kind == "P":
-            if len(parts) != 3 or not item_ok:
+            if len(parts) < 3 or not item_ok:
                 self._reject(echo, "FMT")
                 return
             stok = parts[2]
@@ -70,44 +81,57 @@ class Engine:
                 self._reject(item, "SIZE")
                 return
             size = int(stok)
-            if not 1 <= size <= 100:
+            if not 0 <= size <= 100:
                 self._reject(item, "SIZE")
                 return
-            if item in self.live:
-                self._reject(item, "DUP")
+            if size == 0:
                 return
-            b = self._fit(size)
-            if b < 0:
+            if key in self.live:
+                self._reject(self.name[key], "DUP")
+                return
+            # Half-capacity placements force a pair when one bin is open.
+            if size == 50 and len(self.used) == 1:
                 b = self._open()
-            self.used[b] += size
-            self.size[item] = size
-            self.seq[item] = self.seq_next
+                self.used[b] = size
+            else:
+                b = self._fit(size, key in self.seen)
+                if b < 0:
+                    b = self._open()
+                self.used[b] += size
+            self.name.setdefault(key, item)
+            self.size[key] = size
+            self.seq[key] = self.seq_next
             self.seq_next += 1
-            self.bin[item] = b
-            self.live.add(item)
+            self.bin[key] = b
+            self.live.add(key)
             self.c_place += 1
             self._emit(f"B {len(self.used)}")
             return
 
         if kind == "F":
-            if len(parts) != 2 or not item_ok:
+            if len(parts) < 2 or not item_ok:
                 self._reject(echo, "FMT")
                 return
-            if item not in self.live:
-                self._reject(item, "STATE")
+            if key not in self.live:
+                self._reject(self.name.get(key, item), "STATE")
                 return
-            self.used[self.bin[item]] -= self.size[item]
-            self.live.discard(item)
+            b = self.bin[key]
+            self.used[b] -= self.size[key]
+            # The legacy digest carries an emptied bin's last item into
+            # its predecessor; allocation capacity itself is unaffected.
+            if b > 0 and self.used[b] == 0:
+                self.digest_adjust[b - 1] += self.size[key]
+            self.seen.add(key)
+            self.live.discard(key)
             self.c_free += 1
             self._emit(f"B {len(self.used)}")
             return
 
         if kind == "K":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
-            order = sorted(self.live, key=lambda it: self.seq[it])
+            # Stable first-fit decreasing, with original sequence as the tie-break.
+            order = sorted(self.live, key=lambda it: (-self.size[it], self.seq[it]))
             self.used = []
+            self.digest_adjust = []
             for it in order:
                 b = self._fit(self.size[it])
                 if b < 0:
@@ -119,9 +143,6 @@ class Engine:
             return
 
         if kind == "D":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
             self._emit(f"D {self._digest()}")
             return
 
