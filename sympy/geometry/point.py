@@ -32,6 +32,7 @@ from sympy.matrices import Matrix
 from sympy.core.numbers import Float
 from sympy.core.evaluate import global_evaluate
 from sympy.core.add import Add
+from sympy.core.mul import Mul
 from sympy.utilities.iterables import uniq
 from sympy.utilities.misc import filldedent, func_name, Undecidable
 
@@ -213,6 +214,12 @@ class Point(GeometryEntity):
         sympy.geometry.point.Point.translate
 
         """
+        if isinstance(other, Mul):
+            # e.g. Float(2)*Point(1, 1) is an unevaluated Mul
+            points = [a for a in other.args if isinstance(a, Point)]
+            if len(points) == 1:
+                factor = Mul(*[a for a in other.args if a is not points[0]])
+                other = points[0]*factor
         try:
             s, o = Point._normalize_dimension(self, Point(other, evaluate=False))
         except TypeError:
@@ -277,6 +284,10 @@ class Point(GeometryEntity):
         factor = sympify(factor)
         coords = [simplify(x*factor) for x in self.args]
         return Point(coords, evaluate=False)
+
+    def __rmul__(self, factor):
+        """Multiply a factor by point's coordinates."""
+        return self.__mul__(factor)
 
     def __neg__(self):
         """Negate the point."""
