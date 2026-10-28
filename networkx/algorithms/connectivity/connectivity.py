@@ -185,7 +185,13 @@ def local_node_connectivity(
         flow_func = default_flow_func
 
     if auxiliary is None:
-        H = build_auxiliary_node_connectivity(G)
+        if G.is_multigraph() or nx.number_of_selfloops(G):
+            simple_G = nx.DiGraph() if G.is_directed() else nx.Graph()
+            simple_G.add_nodes_from(G)
+            simple_G.add_edges_from((u, v) for u, v in G.edges() if u != v)
+            H = build_auxiliary_node_connectivity(simple_G)
+        else:
+            H = build_auxiliary_node_connectivity(G)
     else:
         H = auxiliary
 
@@ -308,20 +314,33 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
 
     # Global node connectivity
     if G.is_directed():
-        if not nx.is_weakly_connected(G):
+        if not nx.is_strongly_connected(G):
             return 0
-        iter_func = itertools.permutations
-        # It is necessary to consider both predecessors
-        # and successors for directed graphs
+        # Algorithm 11 is for undirected graphs. For directed graphs, the
+        # global minimum occurs at an ordered nonadjacent pair, or is n-1
+        # for a complete digraph.
+        simple_G = nx.DiGraph()
+        simple_G.add_nodes_from(G)
+        simple_G.add_edges_from((u, v) for u, v in G.edges() if u != v)
+        H = build_auxiliary_node_connectivity(simple_G)
+        R = build_residual_network(H, "capacity")
+        kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
+        K = len(simple_G) - 1
+        for x, y in itertools.permutations(simple_G, 2):
+            if not simple_G.has_edge(x, y):
+                kwargs["cutoff"] = K
+                K = min(K, local_node_connectivity(simple_G, x, y, **kwargs))
+        return K
 
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
+    if not nx.is_connected(G):
+        return 0
 
-    else:
-        if not nx.is_connected(G):
-            return 0
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+    if G.is_multigraph() or nx.number_of_selfloops(G):
+        # Vertex connectivity depends only on the loop-free simple graph.
+        simple_G = nx.Graph()
+        simple_G.add_nodes_from(G)
+        simple_G.add_edges_from((u, v) for u, v in G.edges() if u != v)
+        return node_connectivity(simple_G, flow_func=flow_func)
 
     # Reuse the auxiliary digraph and the residual network
     H = build_auxiliary_node_connectivity(G)
@@ -332,11 +351,11 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
     # Node connectivity is bounded by degree.
     v, K = min(G.degree(), key=itemgetter(1))
     # compute local node connectivity with all its non-neighbors nodes
-    for w in set(G) - set(neighbors(v)) - {v}:
+    for w in set(G) - set(G.neighbors(v)) - {v}:
         kwargs["cutoff"] = K
         K = min(K, local_node_connectivity(G, v, w, **kwargs))
     # Also for non adjacent pairs of neighbors of v
-    for x, y in iter_func(neighbors(v), 2):
+    for x, y in itertools.combinations(G.neighbors(v), 2):
         if y in G[x]:
             continue
         kwargs["cutoff"] = K
