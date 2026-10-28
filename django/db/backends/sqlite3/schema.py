@@ -324,10 +324,18 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
 
     def add_field(self, model, field):
         """Create a field on a model."""
-        # Fields with default values cannot by handled by ALTER TABLE ADD
-        # COLUMN statement because DROP DEFAULT is not supported in
-        # ALTER TABLE.
-        if not field.null or self.effective_default(field) is not None:
+        # Implicit many-to-many fields are stored in their own table.
+        if field.many_to_many and field.remote_field.through._meta.auto_created:
+            return self.create_model(field.remote_field.through)
+        # Primary keys and unique fields require recreating the table.
+        # Non-nullable fields and fields with defaults also require recreating
+        # the table to populate existing rows and drop the temporary default.
+        if (
+            field.primary_key or
+            field.unique or
+            not field.null or
+            self.effective_default(field) is not None
+        ):
             self._remake_table(model, create_field=field)
         else:
             super().add_field(model, field)
