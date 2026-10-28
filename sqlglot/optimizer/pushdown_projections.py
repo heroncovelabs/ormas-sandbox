@@ -106,6 +106,13 @@ def pushdown_projections(
                 scope_sql = scope.expression.sql(dialect=dialect)
                 raise OptimizeError(f"Invalid set operation due to column mismatch: {scope_sql}.")
 
+            if set_op.args.get("distinct") is False:
+                # ALL set operations compare whole rows with multiset semantics, so every
+                # projection participates in row equality and must be kept in both operands.
+                referenced_columns[left] = {SELECT_ALL}
+                referenced_columns[right] = {SELECT_ALL}
+                continue
+
             referenced_columns[left] = parent_selections
 
             if re.is_star:
@@ -167,6 +174,14 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
     ordinal_refs = _bare_group_by_ordinal_refs(scope.expression)
     group_ordinal_selection_ids = {id(selection) for _, selection in ordinal_refs}
 
+    # GROUP BY ALL derives its grouping keys from the non-aggregate projections, so
+    # dropping one of them would silently change what the aggregation groups by.
+    group = scope.expression.args.get("group")
+    group_by_all = group is not None and group.args.get("all") is True
+    group_by_all_selection_ids = (
+        _group_by_all_key_selection_ids(scope.expression) if group_by_all else set()
+    )
+
     new_selections = []
     removed = False
     star = False
@@ -183,6 +198,7 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
             or name in order_refs
             or alias_count > 0
             or id(selection) in group_ordinal_selection_ids
+            or id(selection) in group_by_all_selection_ids
         ):
             new_selections.append(selection)
             alias_count -= 1
@@ -229,8 +245,46 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
                     record(journal, node, "this")
                 node.set("this", str(pos))
 
+    # GROUP BY ALL derives its keys from the surviving non-aggregate projections,
+    # so the clause may no longer group by the same columns. Expand it explicitly.
+    if group_by_all:
+        _expand_group_by_all(scope.expression)
+        removed = True
+
+    if journal is not None and group_by_all and scope.expression.args.get("group") is not None:
+        record(journal, scope.expression.args["group"], "all")
+
     if removed:
         scope.clear_cache()
+
+
+def _expand_group_by_all(select: exp.Select) -> None:
+    """Replace `GROUP BY ALL` with the grouping keys its projections implicitly define."""
+    group = select.args.get("group")
+    keys = []
+    for selection in select.selects:
+        if find_in_scope(selection, exp.AggFunc):
+            continue
+
+        if isinstance(selection, exp.Alias):
+            keys.append(selection.this.copy())
+        elif isinstance(selection, exp.Column):
+            keys.append(selection.copy())
+        else:
+            keys.append(exp.column(selection.alias_or_name, copy=False))
+
+    if keys:
+        group.set("expressions", keys)
+        group.set("all", None)
+    else:
+        select.set("group", None)
+
+
+def _group_by_all_key_selection_ids(select: exp.Select) -> set[int]:
+    """Ids of the projections that `GROUP BY ALL` implicitly uses as grouping keys."""
+    return {
+        id(selection) for selection in select.selects if not find_in_scope(selection, exp.AggFunc)
+    }
 
 
 def _bare_group_by_ordinal_refs(
