@@ -1,8 +1,15 @@
 """Recursive-descent parser: token stream -> expression tree.
 
-NOTE: this implementation is buggy. It folds every binary operator at a single
-precedence level, left to right, so it does not honor the precedence and
-associativity documented in the README/issue.
+Grammar, lowest to highest precedence:
+
+    expression := term ((PLUS | MINUS) term)*           # left-associative
+    term       := factor ((STAR | SLASH | DSLASH | PERCENT) factor)*  # left-assoc.
+    factor     := (PLUS | MINUS) factor | power         # unary prefix
+    power      := atom (DSTAR factor)?                  # right-associative
+    atom       := NUMBER | LPAREN expression RPAREN
+
+Unary minus binds looser than ``**`` (so ``-2 ** 2`` is ``-(2 ** 2)``), while
+the exponent of ``**`` is a full factor (so ``2 ** -2`` is valid).
 """
 
 from __future__ import annotations
@@ -20,6 +27,8 @@ _BINOP = {
     "PERCENT": "%",
     "DSTAR": "**",
 }
+_ADD_OPS = ("PLUS", "MINUS")
+_MUL_OPS = ("STAR", "SLASH", "DSLASH", "PERCENT")
 _UNARY = {"PLUS": "+", "MINUS": "-"}
 
 
@@ -46,20 +55,37 @@ class _Parser:
         return node
 
     def expression(self) -> Node:
-        # BUG: all binary operators share one precedence level and fold left to
-        # right, so e.g. 2 + 3 * 4 parses as (2 + 3) * 4 and 2 ** 3 ** 2 as
-        # (2 ** 3) ** 2.
-        node = self.atom()
-        while self.cur.kind in _BINOP:
+        node = self.term()
+        while self.cur.kind in _ADD_OPS:
             op = _BINOP[self.advance().kind]
-            node = BinOp(op, node, self.atom())
+            node = BinOp(op, node, self.term())
         return node
 
-    def atom(self) -> Node:
+    def term(self) -> Node:
+        node = self.factor()
+        while self.cur.kind in _MUL_OPS:
+            op = _BINOP[self.advance().kind]
+            node = BinOp(op, node, self.factor())
+        return node
+
+    def factor(self) -> Node:
         tok = self.cur
         if tok.kind in _UNARY:
             self.advance()
-            return UnaryOp(_UNARY[tok.kind], self.atom())
+            return UnaryOp(_UNARY[tok.kind], self.factor())
+        return self.power()
+
+    def power(self) -> Node:
+        base = self.atom()
+        if self.cur.kind == "DSTAR":
+            self.advance()
+            # The exponent is a factor: it allows signed exponents and, via
+            # recursion through power(), makes ** right-associative.
+            return BinOp("**", base, self.factor())
+        return base
+
+    def atom(self) -> Node:
+        tok = self.cur
         if tok.kind == "NUMBER":
             self.advance()
             return Num(tok.value)
