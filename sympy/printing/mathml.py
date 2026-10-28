@@ -779,26 +779,25 @@ class MathMLPresentationPrinter(MathMLPrinterBase):
 
         mname = self.dom.createElement('mi')
         mname.appendChild(self.dom.createTextNode(name))
+        if style == 'bold':
+            mname.setAttribute('mathvariant', 'bold')
         if len(supers) == 0:
             if len(subs) == 0:
                 x.appendChild(self.dom.createTextNode(name))
             else:
-                msub = self.dom.createElement('msub')
-                msub.appendChild(mname)
-                msub.appendChild(join(subs))
-                x.appendChild(msub)
+                x = self.dom.createElement('msub')
+                x.appendChild(mname)
+                x.appendChild(join(subs))
         else:
             if len(subs) == 0:
-                msup = self.dom.createElement('msup')
-                msup.appendChild(mname)
-                msup.appendChild(join(supers))
-                x.appendChild(msup)
+                x = self.dom.createElement('msup')
+                x.appendChild(mname)
+                x.appendChild(join(supers))
             else:
-                msubsup = self.dom.createElement('msubsup')
-                msubsup.appendChild(mname)
-                msubsup.appendChild(join(subs))
-                msubsup.appendChild(join(supers))
-                x.appendChild(msubsup)
+                x = self.dom.createElement('msubsup')
+                x.appendChild(mname)
+                x.appendChild(join(subs))
+                x.appendChild(join(supers))
         return x
 
     def _print_MatrixSymbol(self, sym):
