@@ -863,6 +863,19 @@ def polynomial_from_roots(roots):
     return poly
 
 
+def _has_negative_bounds(start, stop):
+    """Return True if *start* or *stop* is a negative integer."""
+    for bound in (start, stop):
+        if bound is None:
+            continue
+        try:
+            if bound < 0:
+                return True
+        except TypeError:  # non-numeric bounds raise later, as before
+            continue
+    return False
+
+
 def iter_index(iterable, value, start=0, stop=None):
     """Yield the index of each place in *iterable* that *value* occurs,
     beginning with index *start* and ending before index *stop*.
@@ -891,17 +904,23 @@ def iter_index(iterable, value, start=0, stop=None):
     seq_index = getattr(iterable, 'index', None)
     if seq_index is None:
         # Slow path for general iterables
-        iterator = islice(iterable, start, stop)
-        for i, element in enumerate(iterator, start):
-            if element is value or element == value:
-                yield i
-    else:
-        # Fast path for sequences
-        stop = len(iterable) if stop is None else stop
-        i = start - 1
-        with suppress(ValueError):
-            while True:
-                yield (i := seq_index(value, i + 1, stop))
+        if _has_negative_bounds(start, stop):
+            # Negative bounds require from-the-end semantics, which need the
+            # length up front, so consume the iterable into a sequence.
+            iterable = tuple(iterable)
+            seq_index = iterable.index
+        else:
+            iterator = islice(iterable, start, stop)
+            for i, element in enumerate(iterator, start):
+                if element is value or element == value:
+                    yield i
+            return
+    # Fast path for sequences
+    stop = len(iterable) if stop is None else stop
+    i = start - 1
+    with suppress(ValueError):
+        while True:
+            yield (i := seq_index(value, i + 1, stop))
 
 
 def sieve(n):
