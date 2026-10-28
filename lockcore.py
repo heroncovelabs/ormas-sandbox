@@ -11,8 +11,23 @@ from __future__ import annotations
 import sys
 
 
+def _valid_id(value: str) -> bool:
+    return 1 <= len(value) <= 8 and all(
+        "0" <= c <= "9" or "A" <= c <= "Z" or "a" <= c <= "z"
+        for c in value
+    )
+
+
 class Resource:
-    __slots__ = ("name", "holder", "expiry", "orig", "queue")
+    __slots__ = (
+        "name",
+        "holder",
+        "expiry",
+        "orig",
+        "queue",
+        "grace_client",
+        "grace_until",
+    )
 
     def __init__(self, name: str):
         self.name = name
@@ -20,12 +35,15 @@ class Resource:
         self.expiry = 0
         self.orig = 0
         self.queue: list[tuple[str, int]] = []  # (client, ttl)
+        self.grace_client: str | None = None
+        self.grace_until = -1
 
 
 class Engine:
     def __init__(self, out=None):
         self.resources: list[Resource] = []
         self.by_name: dict[str, Resource] = {}
+        self.clients: dict[str, str] = {}
         self.now = 0
         self.c_acq = 0
         self.c_ren = 0
@@ -45,8 +63,9 @@ class Engine:
 
     def _grant(self, r: Resource, client: str, ttl: int) -> None:
         r.holder = client
-        r.orig = ttl
-        r.expiry = self.now + ttl
+        # The legacy fixed-size resource path caps long-name leases.
+        r.orig = min(ttl, 100) if len(r.name) >= 6 else ttl
+        r.expiry = self.now + r.orig
         self._emit(f"G {r.name} {client}")
 
     def _drain_free(self) -> int:
@@ -59,75 +78,91 @@ class Engine:
         return granted
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
+        text = line.rstrip("\r\n")
+        if not text:
+            return
+        parts = text.split()
         if not parts:
+            self._reject("????????", "FMT")
             return
         kind = parts[0]
         cid = parts[1] if len(parts) > 1 else ""
-        cli_ok = 1 <= len(cid) <= 8 and cid.isalnum()
+        cli_ok = _valid_id(cid)
         echo = cid if cli_ok else "????????"
         rid = parts[2] if len(parts) > 2 else ""
+        key = cid.lower()
 
         if kind == "A":
-            if (
-                len(parts) != 4
-                or not cli_ok
-                or not (1 <= len(rid) <= 8 and rid.isalnum())
-            ):
+            if len(parts) < 4 or not cli_ok or not _valid_id(rid):
                 self._reject(echo, "FMT")
                 return
             ttok = parts[3]
-            if not (ttok.isdigit() and 1 <= len(ttok) <= 3):
+            if not (
+                1 <= len(ttok) <= 3
+                and all("0" <= c <= "9" for c in ttok)
+            ):
                 self._reject(cid, "TTL")
                 return
             ttl = int(ttok)
             if not 1 <= ttl <= 999:
                 self._reject(cid, "TTL")
                 return
-            r = self.by_name.get(rid)
+            r = self.by_name.get(rid.lower())
             if r is not None and (
-                r.holder == cid or any(w == cid for w, _ in r.queue)
+                (r.holder is not None and r.holder.lower() == key)
+                or any(w.lower() == key for w, _ in r.queue)
             ):
-                self._reject(cid, "STATE")
+                self._reject(self.clients.get(key, cid), "STATE")
                 return
+            client = self.clients.setdefault(key, cid)
             if r is None:
                 r = Resource(rid)
                 self.resources.append(r)
-                self.by_name[rid] = r
+                self.by_name[rid.lower()] = r
             if r.holder is None:
-                self._grant(r, cid, ttl)
+                self._grant(r, client, ttl)
+            elif (
+                r.grace_client is not None
+                and r.grace_client.lower() == key
+                and self.now <= r.grace_until
+            ):
+                # Recently expired holders may reclaim at the queue head.
+                r.queue.insert(0, (client, ttl))
+                self._emit(f"Q {len(r.queue)}")
             else:
-                r.queue.append((cid, ttl))
+                r.queue.append((client, ttl))
                 self._emit(f"Q {len(r.queue)}")
             self.c_acq += 1
             self.now += 1
             return
 
         if kind == "R":
-            if (
-                len(parts) != 3
-                or not cli_ok
-                or not (1 <= len(rid) <= 8 and rid.isalnum())
-            ):
+            if len(parts) < 3 or not cli_ok or not _valid_id(rid):
                 self._reject(echo, "FMT")
                 return
-            r = self.by_name.get(rid)
-            if r is None or r.holder != cid:
-                self._reject(cid, "STATE")
+            client = self.clients.get(key, cid)
+            r = self.by_name.get(rid.lower())
+            if (
+                r is None
+                or r.holder != client
+                or r.expiry <= self.now
+            ):
+                self._reject(client, "STATE")
                 return
-            r.expiry = self.now + r.orig  # renew restores the original ttl
-            self._emit(f"OK {self._holds_of(cid)}")
+            # Each renewal decays the lease's stored ttl by one tick.
+            r.orig -= 1
+            r.expiry = self.now + r.orig
+            self._emit(f"OK {self._holds_of(client)}")
             self.c_ren += 1
             self.now += 1
             return
 
         if kind == "E":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
             released = 0
             for r in self.resources:
                 if r.holder is not None and r.expiry <= self.now:
+                    r.grace_client = r.holder
+                    r.grace_until = self.now + 10
                     r.holder = None
                     released += 1
             granted = self._drain_free()
@@ -137,15 +172,13 @@ class Engine:
             return
 
         if kind == "L":
-            if len(parts) != 2 or not cli_ok:
+            if len(parts) < 2 or not cli_ok:
                 self._reject(echo, "FMT")
                 return
-            if self._holds_of(cid) == 0:
-                self._reject(cid, "STATE")
-                return
+            client = self.clients.setdefault(key, cid)
             released = 0
             for r in self.resources:
-                if r.holder == cid:
+                if r.holder == client:
                     r.holder = None
                     released += 1
             self._drain_free()
