@@ -867,6 +867,25 @@ def iter_index(iterable, value, start=0, stop=None):
     """Yield the index of each place in *iterable* that *value* occurs,
     beginning with index *start* and ending before index *stop*.
 
+    Negative *start* and *stop* count from the end, as with ``list.index``.
+    """
+    if (
+        not hasattr(iterable, 'index')
+        and (
+            (start is not None and start < 0)
+            or (stop is not None and stop < 0)
+        )
+    ):
+        iterable = list(iterable)
+    if start is None:
+        start = 0
+    return _iter_index(iterable, value, start, stop)
+
+
+def _iter_index(iterable, value, start=0, stop=None):
+    """Yield the index of each place in *iterable* that *value* occurs,
+    beginning with index *start* and ending before index *stop*.
+
 
     >>> list(iter_index('AABCADEAF', 'A'))
     [0, 1, 4, 7]
