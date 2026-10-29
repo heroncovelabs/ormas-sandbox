@@ -47,6 +47,9 @@ class DenseNDimArray(NDimArray):
         if syindex is not None:
             return syindex
 
+        if not self.shape and isinstance(index, int) and index == 0:
+            return self._array[0]
+
         if isinstance(index, tuple) and any([isinstance(i, slice) for i in index]):
 
             def slice_expand(s, dim):
@@ -98,6 +101,24 @@ class DenseNDimArray(NDimArray):
 
     def __iter__(self):
         return self._array.__iter__()
+
+    def __len__(self):
+        """
+        Overload common function len(). Returns number of elements in array.
+        Rank-0 arrays (scalars) hold a single element, so their length is 1.
+
+        Examples
+        ========
+
+        >>> from sympy import MutableDenseNDimArray
+        >>> a = MutableDenseNDimArray.zeros(2, 3)
+        >>> len(a)
+        6
+
+        """
+        if not self.shape:
+            return 1
+        return self._loop_size
 
     def reshape(self, *newshape):
         """
