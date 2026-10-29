@@ -844,6 +844,15 @@ class AddIndex(IndexOperation):
             kwargs,
         )
 
+    def reduce(self, operation, app_label):
+        if (
+            isinstance(operation, RemoveIndex)
+            and self.model_name_lower == operation.model_name_lower
+            and self.index.name == operation.name
+        ):
+            return []
+        return super().reduce(operation, app_label)
+
     def describe(self):
         if self.index.expressions:
             return "Create index %s on %s on model %s" % (
