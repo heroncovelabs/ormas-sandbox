@@ -9,20 +9,33 @@ contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 # Standard freight classes, published table.
 CLASSES = frozenset(
     (50, 55, 60, 65, 70, 77, 85, 92, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500)
 )
-DIM_DIVISOR = 5000
+DIM_DIVISOR = 5500
 SERVICES = ("G", "X", "P")
 SURCHARGE_PCT = {"G": 0, "X": 50, "P": 25}
+
+
+def _split(line: str) -> list[str]:
+    """Split on blanks, tabs and CR/LF only (not other Unicode whitespace)."""
+    return [t for t in re.split(r"[ \t\r\n]+", line) if t]
 
 
 def _round_half_up(numerator: int, denominator: int) -> int:
     quotient, remainder = divmod(numerator, denominator)
     if 2 * remainder >= denominator:
+        return quotient + 1
+    return quotient
+
+
+def _round_half_even(numerator: int, denominator: int) -> int:
+    quotient, remainder = divmod(numerator, denominator)
+    if 2 * remainder > denominator or (2 * remainder == denominator and quotient % 2):
         return quotient + 1
     return quotient
 
@@ -38,11 +51,12 @@ def zone_rate(zone: int) -> int:
 
 class Shipment:
     def __init__(self, line: str):
-        self.tokens = line.split()
+        self.tokens = _split(line)
         self.shipid = "?"
         if (
             len(self.tokens) >= 2
             and 1 <= len(self.tokens[1]) <= 10
+            and self.tokens[1].isascii()
             and self.tokens[1].isalnum()
         ):
             self.shipid = self.tokens[1]
@@ -59,7 +73,7 @@ class Shipment:
         if tok[0] != "S":
             self.error = "FMT"
             return
-        if len(tok) != 9:
+        if len(tok) < 9:
             self.error = "FMT"
             return
         if self.shipid == "?":
@@ -68,6 +82,9 @@ class Shipment:
         zone, cls, weight = tok[2], tok[3], tok[4]
         dims = tok[5:8]
         svc = tok[8]
+        if not all(t.isascii() for t in tok[2:8]):
+            self.error = "FMT"
+            return
         if (
             not (len(zone) == 2 and zone.isdigit())
             or not (len(cls) == 3 and cls.isdigit())
@@ -88,10 +105,11 @@ class Shipment:
         if self.cls not in CLASSES:
             self.error = "CLASS"
             return
-        if self.weight == 0:
+        has_zero_dim = self.length == 0 or self.width == 0 or self.height == 0
+        if self.weight == 0 and has_zero_dim:
             self.error = "WEIGHT"
             return
-        if self.length == 0 or self.width == 0 or self.height == 0:
+        if has_zero_dim:
             self.error = "DIM"
             return
         if self.svc not in SERVICES:
@@ -100,14 +118,23 @@ class Shipment:
 
     def compute(self) -> None:
         volume = self.length * self.width * self.height
-        dim_weight = _ceil_div(volume, DIM_DIVISOR)
+        dim_weight = _round_half_up(volume, DIM_DIVISOR)
         billable = max(self.weight, dim_weight)
         base = billable * zone_rate(self.zone)
-        class_multiplied = _round_half_up(base * self.cls, 100)
+        cls = self.cls
+        if dim_weight > self.weight and cls < 60:
+            cls = 70
         pct = SURCHARGE_PCT[self.svc]
-        charge = class_multiplied
-        if pct:
-            charge += _round_half_up(class_multiplied * pct, 100)
+        if self.svc == "X" and 40 <= self.zone <= 49 and billable > 750:
+            pct = 65
+        if self.svc == "P":
+            class_multiplied = _round_half_up(base * cls, 100)
+            charge = class_multiplied + _round_half_even(class_multiplied * pct, 100)
+        else:
+            with_surcharge = _round_half_up(base * (100 + pct), 100)
+            charge = _round_half_up(with_surcharge * cls, 100)
+        if self.zone == 99:
+            charge += 12500
         self.charge = charge
 
     def emit(self) -> str:
@@ -121,7 +148,7 @@ def process(lines: list[str]) -> list[str]:
     accepted = rejected = total = 0
     for raw in lines:
         line = raw.rstrip("\r\n")
-        if not line.split():
+        if not _split(line):
             continue
         shipment = Shipment(line)
         shipment.parse()
@@ -137,7 +164,8 @@ def process(lines: list[str]) -> list[str]:
 
 
 def main() -> None:
-    for line in process(sys.stdin.readlines()):
+    data = sys.stdin.buffer.read().decode("utf-8", "replace")
+    for line in process(data.split("\n")):
         print(line)
 
 
