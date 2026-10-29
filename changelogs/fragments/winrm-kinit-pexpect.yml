@@ -1,0 +1,3 @@
+bugfixes:
+  - winrm - use the standard library subprocess module to run kinit in a new session and supply the password through stdin, ensuring consistent Kerberos authentication on macOS and with high file descriptor counts regardless of optional dependencies.
+  - winrm - limit the kinit process environment to PATH and the temporary KRB5CCNAME credentials cache, and redact passwords from Kerberos authentication errors.
