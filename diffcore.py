@@ -3,9 +3,10 @@
 Replaces the retired legacy binary (see ``legacy/README.md``). Reads
 store commands on stdin (``B`` sets the working value, ``S`` stores a
 snapshot of it, ``T`` restores a snapshot into the working value and
-reports its digest), writes one reply per command and an ``X`` trailer
-at EOF. Format reference: ``docs/SPEC.md`` (note the drift warning at
-the top of that file; the legacy engine's behavior is the contract).
+reports its digest), writes replies for commands that change state or
+report a result, and writes an ``X`` trailer at EOF. Format reference:
+``docs/SPEC.md`` (note the drift warning at the top of that file; the
+legacy engine's behavior is the contract).
 """
 
 from __future__ import annotations
@@ -44,12 +45,14 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str | None:
+        # The engine tokenizes on ASCII spaces only.
+        tokens = [token for token in line.split(" ") if token]
         if line == "B" or line.startswith("B "):
-            reply = self._set(line.split())
+            reply = self._set(tokens)
         elif line == "S" or line.startswith("S "):
             reply = self._store()
         elif line == "T" or line.startswith("T "):
-            reply = self._restore(line.split())
+            reply = self._restore(tokens)
         else:
             reply = "E FMT"
         if reply is not None and reply.startswith("E "):
@@ -59,22 +62,22 @@ class Engine:
     def trailer(self) -> str:
         return f"X {self.sets} {self.stores} {self.restores} {self.rejected}"
 
-    def _set(self, tokens: list[str]) -> str:
+    def _set(self, tokens: list[str]) -> str | None:
         # Extra trailing tokens are tolerated and ignored.
         if len(tokens) < 2:
             return "E FMT"
         val = tokens[1]
         if not _valid_val(val):
             return "E VAL"
+        if val == self.value:
+            return None
         self.value = val
         self.sets += 1
         return "OK"
 
     def _is_full(self) -> bool:
-        # SPEC: the first snapshot is FULL, and every fourth snapshot is
-        # stored FULL so a delta chain stays short (snapshots 4, 8, ...).
-        count = len(self.snaps)
-        return count == 0 or (count + 1) % FULL_EVERY == 0
+        # The cadence uses zero-based indices: 0, 4, 8, ... are FULL.
+        return len(self.snaps) % FULL_EVERY == 0
 
     def _store(self) -> str:
         if self._is_full():
@@ -94,15 +97,21 @@ class Engine:
         snap = self.snaps[idx]
         if snap[0] == "F":
             return snap[1]
-        # SPEC: a delta applies against the previous snapshot's
-        # reconstructed value, honoring the recorded length; positions
-        # beyond the base fill with the pad character.
+        # Delta changes are measured against the last stored working
+        # value, but replay starts from the block's FULL snapshot. Only
+        # the first delta in a block applies its recorded length; later
+        # deltas retain the FULL's tail and grow to fit changed positions.
         _, newlen, changes = snap
-        base = self._reconstruct(idx - 1)
-        return "".join(
-            changes.get(p, base[p] if p < len(base) else PAD)
-            for p in range(newlen)
-        )
+        full_idx = idx - idx % FULL_EVERY
+        value = list(self.snaps[full_idx][1])
+        if idx == full_idx + 1:
+            value = value[:newlen]
+            value.extend(PAD * (newlen - len(value)))
+        for pos, char in changes.items():
+            if pos >= len(value):
+                value.extend(PAD * (pos + 1 - len(value)))
+            value[pos] = char
+        return "".join(value)
 
     def _restore(self, tokens: list[str]) -> str:
         # Extra trailing tokens are tolerated and ignored.
@@ -115,9 +124,8 @@ class Engine:
         if idx >= len(self.snaps):
             return "E IDX"
         self.value = self._reconstruct(idx)
-        # SPEC: the restored value becomes the working value the next
-        # snapshot builds on.
-        self.base = self.value
+        # Restores change the working value. Delta comparisons continue
+        # to use the value captured by the most recent store.
         self.restores += 1
         return f"V {digest(self.value)}"
 
@@ -126,7 +134,8 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # C-string termination and the first CR/LF end the command.
+        line = raw.split("\x00", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
         if not line:
             continue
         reply = engine.handle(line)
@@ -140,7 +149,13 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Match the reference's 65536-byte fgets buffer and byte-oriented
+    # parsing, including CR and non-UTF-8 input.
+    lines = [
+        raw.decode("latin1")
+        for raw in iter(lambda: sys.stdin.buffer.readline(65535), b"")
+    ]
+    process(lines, out=sys.stdout)
 
 
 if __name__ == "__main__":
