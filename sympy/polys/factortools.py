@@ -1146,6 +1146,17 @@ def dmp_ext_factor(f, u, K):
     if all(d <= 0 for d in dmp_degree_list(f, u)):
         return lc, []
 
+    # factors not involving the main variable are lost by dmp_sqf_part,
+    # so they are extracted (and factored) separately as the content
+    cont, f = dmp_primitive(f, u, K)
+    lc2, cfactors = dmp_ext_factor(cont, u - 1, K)
+    cfactors = [([g], k) for g, k in cfactors]
+    lc *= lc2*dmp_ground_LC(f, u, K)
+    f = dmp_ground_monic(f, u, K)
+
+    if dmp_degree(f, u) <= 0:
+        return lc, cfactors
+
     f, F = dmp_sqf_part(f, u, K), f
     s, g, r = dmp_sqf_norm(f, u, K)
 
@@ -1162,7 +1173,7 @@ def dmp_ext_factor(f, u, K):
             h = dmp_compose(h, H, u, K)
             factors[i] = h
 
-    return lc, dmp_trial_division(F, factors, u, K)
+    return lc, cfactors + dmp_trial_division(F, factors, u, K)
 
 
 def dup_gf_factor(f, K):
