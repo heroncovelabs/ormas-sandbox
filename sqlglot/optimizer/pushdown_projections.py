@@ -106,6 +106,13 @@ def pushdown_projections(
                 scope_sql = scope.expression.sql(dialect=dialect)
                 raise OptimizeError(f"Invalid set operation due to column mismatch: {scope_sql}.")
 
+            if isinstance(set_op, (exp.Intersect, exp.Except)) and not set_op.args.get("distinct"):
+                # INTERSECT ALL / EXCEPT ALL compare whole rows with multiset semantics, so
+                # prunning a column from either operand changes which rows are matched.
+                referenced_columns[left] = {SELECT_ALL}
+                referenced_columns[right] = {SELECT_ALL}
+                continue
+
             referenced_columns[left] = parent_selections
 
             if re.is_star:
@@ -174,6 +181,11 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
 
     select_all = SELECT_ALL in parent_selections
 
+    # GROUP BY ALL derives its grouping keys from the non-aggregate projections, so
+    # pruning any of those projections silently changes which columns are grouped by.
+    group = scope.expression.args.get("group")
+    group_by_all = bool(group and group.args.get("all"))
+
     for selection in scope.expression.selects:
         name = selection.alias_or_name
 
@@ -183,6 +195,7 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
             or name in order_refs
             or alias_count > 0
             or id(selection) in group_ordinal_selection_ids
+            or (group_by_all and not find_in_scope(selection, exp.AggFunc))
         ):
             new_selections.append(selection)
             alias_count -= 1
