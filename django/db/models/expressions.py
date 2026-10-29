@@ -1299,6 +1299,10 @@ class When(Expression):
         template_params = extra_context
         sql_params = []
         condition_sql, condition_params = compiler.compile(self.condition)
+        # A condition that matches every row compiles to an empty string. Signal
+        # an unconditional branch to Case() by returning an empty SQL string.
+        if not condition_sql:
+            return "", ()
         template_params["condition"] = condition_sql
         sql_params.extend(condition_params)
         result_sql, result_params = compiler.compile(self.result)
@@ -1388,9 +1392,15 @@ class Case(SQLiteNumericMixin, Expression):
                 case_sql, case_params = compiler.compile(case)
             except EmptyResultSet:
                 continue
+            if not case_sql:
+                # An unconditional branch (its condition matches every row)
+                # becomes the effective default; later branches are unreachable.
+                default_sql, default_params = compiler.compile(case.result)
+                break
             case_parts.append(case_sql)
             sql_params.extend(case_params)
-        default_sql, default_params = compiler.compile(self.default)
+        else:
+            default_sql, default_params = compiler.compile(self.default)
         if not case_parts:
             return default_sql, default_params
         case_joiner = case_joiner or self.case_joiner
