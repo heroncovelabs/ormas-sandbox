@@ -90,6 +90,12 @@ def pushdown_projections(
 
         if isinstance(scope.expression, exp.SetOperation):
             set_op = scope.expression
+
+            # INTERSECT / EXCEPT compare whole rows, so every operand column matters
+            # (even with ALL, since multiset semantics are computed over full rows)
+            if isinstance(set_op, (exp.Intersect, exp.Except)):
+                parent_selections = {SELECT_ALL}
+
             if set_op.kind or set_op.side:
                 # Do not optimize this set operation if it's using the BigQuery specific
                 # kind / side syntax (e.g INNER UNION ALL BY NAME) which changes the semantics of the operation
@@ -167,6 +173,11 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
     ordinal_refs = _bare_group_by_ordinal_refs(scope.expression)
     group_ordinal_selection_ids = {id(selection) for _, selection in ordinal_refs}
 
+    # GROUP BY ALL groups by every non-aggregate projection, so those are implicit
+    # grouping keys and can't be pruned without changing the aggregation
+    group = scope.expression.args.get("group")
+    group_by_all = bool(group and group.args.get("all"))
+
     new_selections = []
     removed = False
     star = False
@@ -183,6 +194,11 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
             or name in order_refs
             or alias_count > 0
             or id(selection) in group_ordinal_selection_ids
+            or (
+                group_by_all
+                and not selection.is_star
+                and not find_in_scope(selection, exp.AggFunc)
+            )
         ):
             new_selections.append(selection)
             alias_count -= 1
