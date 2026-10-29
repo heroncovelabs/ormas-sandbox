@@ -18,6 +18,9 @@ MIN_HI = 120  # longest registrable side, minutes
 ALLOT = 6  # groove allotment per title, sides of lacquer
 Q_BASE = 1000  # quality base
 Q_CUT = 3  # quality lost per minute of runtime (long sides cut shallower)
+Q_WEAR = 7  # quality lost per side of wear since the last remaster
+Q_CONTENTION = 15
+LONGPLAY_MIN = 90  # longer sides consume two live allotments
 NO_TITLE = "????????"
 
 
@@ -30,10 +33,14 @@ def _digits(token: str) -> bool:
 
 
 class Title:
-    def __init__(self, minutes: int) -> None:
+    def __init__(self, minutes: int, wear: int = 0) -> None:
         self.minutes = minutes
         self.remaining = ALLOT  # live allotment
         self.sides = 0  # ledger: sides cut
+        self.wear = wear
+        self.batch_sides = 0
+        self.stamper_tax = 0
+        self.courtesy_used = False
 
 
 class Engine:
@@ -48,7 +55,10 @@ class Engine:
         self.cut_since_remaster = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        # The wire parser terminates at CR, LF, or NUL and separates tokens
+        # on ASCII spaces. Other whitespace remains part of a token.
+        line = line.split("\0", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
+        tokens = [token for token in line.split(" ") if token]
         if not tokens:
             return ""
         if tokens[0] == "T":
@@ -87,7 +97,9 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        # A new title inherits the busiest title's current lathe wear.
+        wear = max((t.wear for t in self.titles.values()), default=0)
+        self.titles[tokens[1]] = Title(int(minutes), wear)
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -100,11 +112,20 @@ class Engine:
         t = self._find(tokens[1])
         if t is None:
             return f"N {title} UNKNOWN"
-        if t.remaining < 1:
+        cost = 2 if t.minutes > LONGPLAY_MIN else 1
+        if t.remaining < cost:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        quality = Q_BASE - t.minutes * Q_CUT - t.wear * Q_WEAR
+        active = sum(
+            0 < other.sides < ALLOT and other.remaining > 0
+            for other in self.titles.values()
+        )
+        if (t.sides + 1) % 4 == 0 and active >= 3:
+            quality -= Q_CONTENTION
+        t.remaining -= cost
         t.sides += 1
+        t.wear += 1
+        t.batch_sides += 1
         self.cut_since_remaster += 1
         self.sides += 1
         return f"Q {tokens[1]} {quality}"
@@ -112,13 +133,19 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
         lines = []
         for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
+            if self.cut_since_remaster:
+                if t.batch_sides >= 4:
+                    t.stamper_tax += 1
+                # Courtesy is based on the live budget before reconciliation.
+                if t.remaining == 0 and not t.courtesy_used:
+                    t.remaining = 1
+                    t.courtesy_used = True
+                else:
+                    t.remaining = ALLOT - t.sides - t.stamper_tax
+                t.wear = 0
+                t.batch_sides = 0
             lines.append(f"R {name} {t.remaining}")
         lines.append(f"MEND {len(self.titles)}")
         self.cut_since_remaster = 0
@@ -144,7 +171,9 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Keep carriage returns within their LF-delimited input records.
+    lines = sys.stdin.buffer.read().decode("utf-8", errors="surrogateescape").split("\n")
+    process(lines, out=sys.stdout)
 
 
 if __name__ == "__main__":
