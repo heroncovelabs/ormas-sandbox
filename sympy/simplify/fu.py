@@ -501,6 +501,10 @@ def _TR56(rv, f, g, h, max, pow):
         if not (rv.is_Pow and rv.base.func == f):
             return rv
 
+        # only real exponents can be ordered; complex or unknown-reality
+        # exponents (e.g. I or a symbol with no real assumption) are kept
+        if rv.exp.is_real is not True:
+            return rv
         if (rv.exp < 0) == True:
             return rv
         if (rv.exp > max) == True:
