@@ -311,7 +311,7 @@ class Relational(Boolean, EvalfMixin):
             v = None
             if dif.is_comparable:
                 v = dif.n(2)
-            elif dif.equals(0):  # XXX this is expensive
+            elif hasattr(dif, 'equals') and dif.equals(0):  # XXX this is expensive
                 v = S.Zero
             if v is not None:
                 r = r.func._eval_relation(v, S.Zero)
@@ -319,7 +319,7 @@ class Relational(Boolean, EvalfMixin):
             # If there is only one symbol in the expression,
             # try to write it on a simplified form
             free = list(filter(lambda x: x.is_real is not False, r.free_symbols))
-            if len(free) == 1:
+            if len(free) == 1 and hasattr(r.lhs - r.rhs, 'as_coeff_add'):
                 try:
                     from sympy.solvers.solveset import linear_coeffs
                     x = free.pop()
@@ -563,7 +563,7 @@ class Equality(Relational):
         if not isinstance(e, Equality):
             return e
         free = self.free_symbols
-        if len(free) == 1:
+        if len(free) == 1 and hasattr(e.lhs - e.rhs, 'as_coeff_add'):
             try:
                 x = free.pop()
                 m, b = linear_coeffs(
