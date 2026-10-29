@@ -123,6 +123,14 @@ class Mod(Function):
             for arg in p.args:
                 both_l[isinstance(arg, cls)].append(arg)
 
+            # Integer factors can be reduced modulo an integer divisor.
+            if q.is_integer and all(arg.is_integer for arg in p.args):
+                reduced = [doit(arg, q) for arg in non_mod_l]
+                reduced = [arg if value is None else value
+                           for arg, value in zip(non_mod_l, reduced)]
+                if reduced != non_mod_l:
+                    return cls(Mul(*(reduced + mod_l)), q)
+
             if mod_l and all(inner.args[1] == q for inner in mod_l):
                 # finding distributive term
                 non_mod_l = [cls(x, q) for x in non_mod_l]
