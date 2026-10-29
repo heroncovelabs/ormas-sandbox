@@ -27,6 +27,8 @@ __all__ = ['HtmlFormatter']
 
 
 def webify(color):
+    if color == 'transparent':
+        return color
     if color.startswith('calc') or color.startswith('var'):
         return color
     else:
