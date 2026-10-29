@@ -28,20 +28,37 @@ def _digits(token: str) -> bool:
     return token.isascii() and token.isdigit()
 
 
+# ENGINE: carriers registered after N settlements start N x 50 below
+# rating x 100 (never below zero).
+LATE_HAIRCUT = 50
+# ENGINE: every third open booking dilutes each new booking's credit by 1.
+DILUTION_STEP = 3
+# ENGINE: rating >= 80 on a load whose value is a multiple of 2500
+# credits value x 5/4 / 1000 live; the settlement ledger ignores it.
+PREFERRED_RATING = 80
+PREFERRED_LANE = 2500
+# ENGINE: the settlement charges a flat 2 per drop on top of the ledger.
+SETTLE_DROP_FEE = 2
+
+
 class Carrier:
-    def __init__(self, cid: str, rating: int) -> None:
+    def __init__(self, cid: str, rating: int, start: int) -> None:
         self.cid = cid
         self.rating = rating
-        # SPEC: every carrier starts at rating x 100.
-        self.score = rating * 100
+        self.start = start
+        self.score = start
         self.sum_book = 0  # ledger: sum of value/1000 over bookings
         self.sum_drop = 0  # ledger: sum of value/1000 over drops
+        self.drops = 0
+        self.open = 0  # loads currently booked by this carrier
+        self.soured: set[str] = set()  # loads this carrier has dropped
 
 
 class Load:
     def __init__(self, value: int) -> None:
         self.value = value
         self.booked_by: str | None = None
+        self.credit = 0  # live credit of the current booking
 
 
 class Engine:
@@ -58,10 +75,12 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> list[str]:
-        tokens = line.split()
-        if not tokens:
-            return []
-        if line == "W":
+        # ENGINE: tokens are separated by spaces only, and a line with
+        # leading whitespace (or nothing but whitespace) is unrecognized.
+        tokens = [t for t in line.split(" ") if t]
+        if line[0] == " " or not tokens:
+            replies = [f"N {NO_ID} FMT"]
+        elif line == "W":
             replies = self._settle()
         elif tokens[0] == "C":
             replies = [self._carrier(tokens)]
@@ -96,7 +115,8 @@ class Engine:
             return f"N {echo} RATING"
         if tokens[1] in self.carriers:
             return f"N {echo} DUP"
-        self.carriers[tokens[1]] = Carrier(tokens[1], rating)
+        start = max(0, rating * 100 - LATE_HAIRCUT * self.n_set)
+        self.carriers[tokens[1]] = Carrier(tokens[1], rating, start)
         self.n_car += 1
         return f"OK {len(self.carriers)}"
 
@@ -129,10 +149,19 @@ class Engine:
         l = self.loads.get(tokens[2])
         if l is None:
             return f"N {echo} UNKNOWN"
-        if l.booked_by is not None:
+        if l.booked_by is not None or tokens[2] in c.soured:
             return f"N {echo} TAKEN"
-        c.score += l.value // BOOK_STEP
+        if c.rating >= PREFERRED_RATING and l.value % PREFERRED_LANE == 0:
+            credit = l.value * 5 // (4 * BOOK_STEP)
+        else:
+            credit = l.value // BOOK_STEP
+        credit = max(0, credit - c.open // DILUTION_STEP)
+        if c.drops == 2:
+            credit //= 2
+        c.score += credit
         c.sum_book += l.value // BOOK_STEP
+        c.open += 1
+        l.credit = credit
         l.booked_by = tokens[1]
         self.n_book += 1
         return f"A {c.cid} {c.score}"
@@ -151,26 +180,27 @@ class Engine:
             return f"N {echo} UNKNOWN"
         if l.booked_by != tokens[1]:
             return f"N {echo} NOBOOK"
-        # SPEC: a drop subtracts twice what the booking added; the load
-        # returns to the board and may be booked again by any carrier.
-        c.score -= 2 * (l.value // BOOK_STEP)
+        # A drop subtracts twice what the booking added; the load returns
+        # to the board, but the engine never rebooks it to this carrier.
+        c.score -= 2 * l.credit
         c.sum_drop += l.value // BOOK_STEP
+        c.drops += 1
+        c.open -= 1
+        c.soured.add(tokens[2])
         l.booked_by = None
+        l.credit = 0
         self.n_drop += 1
         return f"A {c.cid} {c.score}"
 
     def _settle(self) -> list[str]:
-        # SPEC: a settlement on an empty board settles nothing and
-        # writes nothing.
-        if not self.carriers:
-            return []
+        # ENGINE: an empty board still writes WEND 0 and counts the run.
         replies = []
         for c in self.carriers.values():
-            # SPEC: the settlement recomputes the score from the event
-            # ledger with the same arithmetic as the live path; it is a
-            # checksum, not a correction, and always equals the running
-            # score for a healthy board.
-            settled = c.rating * 100 + c.sum_book - 2 * c.sum_drop
+            # ENGINE: the settlement recomputes the score from the plain
+            # ledger (no dilution, preferred lane or drop halving) plus a
+            # flat fee per drop, and the result replaces the live score.
+            settled = (c.start + c.sum_book - 2 * c.sum_drop
+                       - SETTLE_DROP_FEE * c.drops)
             replies.append(f"S {c.cid} {settled}")
             c.score = settled
         replies.append(f"WEND {len(self.carriers)}")
