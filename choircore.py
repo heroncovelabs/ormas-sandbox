@@ -7,6 +7,19 @@ the concert seating, ``W`` runs a reseat audit), writes reply lines and
 an ``X`` trailer at EOF.
 Format reference: ``docs/SPEC.md`` (note the drift warning at the top
 of that file; the legacy engine's behavior is the contract).
+
+Engine behavior that differs from the spec:
+- consecutive rehearsals (no absence in between) earn +2 on top of the
+  row credit;
+- a singer with 3 or more recorded absences "wavers": rehearsal credit
+  is halved until they sit in the front three of a concert;
+- level standings are seated most recent rehearsal first, then by
+  enrollment order (a reseat audit forgets the recency);
+- once a concert has been held, a newcomer starts at row times the
+  number of wavering singers;
+- a concert with nobody enrolled still prints ``CEND 0``;
+- the reseat audit replays the ledger with the plain spec arithmetic
+  and forgets the rehearsal recency.
 """
 
 from __future__ import annotations
@@ -16,6 +29,8 @@ import sys
 ID_MAX = 8
 ROWS = ("1", "2", "3", "4")
 NO_SINGER = "????????"
+STREAK_BONUS = 2
+WAVER_ABSENCES = 3
 
 
 def _valid_id(token: str) -> bool:
@@ -27,6 +42,10 @@ class Singer:
         self.row = row
         self.index = index  # enrollment order
         self.standing = 0  # bench standing (never printed)
+        self.streak = 0  # consecutive rehearsals since the last absence
+        self.missed = 0  # recorded absences
+        self.wavering = False
+        self.stamp = 0  # sequence of the last rehearsal (0: none)
 
 
 class Engine:
@@ -35,6 +54,7 @@ class Engine:
     def __init__(self, out=None) -> None:
         self.singers: dict[str, Singer] = {}
         self.order: list[str] = []  # enrollment order
+        self.clock = 0  # rehearsal sequence, for recency stamps
         self.ledger: list[tuple[str, str]] = []  # full event ledger
         self.enrolled = 0
         self.rehearsals = 0
@@ -83,7 +103,12 @@ class Engine:
         if tokens[1] in self.singers:
             self._reject(singer, "DUP")
             return
-        self.singers[tokens[1]] = Singer(int(tokens[2]), len(self.order))
+        sg = Singer(int(tokens[2]), len(self.order))
+        if self.concerts:
+            sg.standing = sg.row * sum(
+                1 for other in self.singers.values() if other.wavering
+            )
+        self.singers[tokens[1]] = sg
         self.order.append(tokens[1])
         self.ledger.append(("E", tokens[1]))
         self.enrolled += 1
@@ -101,7 +126,13 @@ class Engine:
         if sg is None:
             self._reject(singer, "UNKNOWN")
             return
-        sg.standing += sg.row
+        credit = sg.row + (STREAK_BONUS if sg.streak else 0)
+        if sg.wavering:
+            credit //= 2
+        sg.standing += credit
+        sg.streak += 1
+        self.clock += 1
+        sg.stamp = self.clock
         self.ledger.append(("P", tokens[1]))
         self.rehearsals += 1
         self._emit(f"P {tokens[1]}")
@@ -119,6 +150,10 @@ class Engine:
             self._reject(singer, "UNKNOWN")
             return
         sg.standing = max(0, sg.standing - 2 * sg.row)
+        sg.streak = 0
+        sg.missed += 1
+        if sg.missed >= WAVER_ABSENCES:
+            sg.wavering = True
         self.ledger.append(("A", tokens[1]))
         self.absences += 1
         self._emit(f"A {tokens[1]}")
@@ -133,17 +168,18 @@ class Engine:
         if len(tokens) != 1:
             self._reject(NO_SINGER, "FMT")
             return
-        if self.singers:
-            names = self._seating(
-                {name: sg.standing for name, sg in self.singers.items()}
-            )
-            for name in names:
-                self._emit(f"C {name}")
-            self._emit(f"CEND {len(names)}")
-            # The first three seats carried the concert.
-            for name in names[:3]:
-                self.singers[name].standing = 0
-        # A concert with no singers enrolled prints no seating.
+        names = sorted(
+            self.order,
+            key=lambda n: (-self.singers[n].standing, -self.singers[n].stamp),
+        )
+        for name in names:
+            self._emit(f"C {name}")
+        self._emit(f"CEND {len(names)}")
+        # The first three seats carried the concert.
+        for name in names[:3]:
+            sg = self.singers[name]
+            sg.standing = 0
+            sg.wavering = False
         self.ledger.append(("C", ""))
         self.concerts += 1
 
@@ -151,8 +187,8 @@ class Engine:
         if len(tokens) != 1:
             self._reject(NO_SINGER, "FMT")
             return
-        # Recompute every standing from the full ledger, replacing the
-        # live values (the reseat mirrors the bench, it never moves it).
+        # Recompute every standing from the full ledger with the plain
+        # arithmetic, replacing the live values.
         replay: dict[str, int] = {}
         for kind, name in self.ledger:
             if kind == "E":
@@ -166,6 +202,7 @@ class Engine:
                     replay[reset] = 0
         for name, standing in replay.items():
             self.singers[name].standing = standing
+            self.singers[name].stamp = 0
         self.reseats += 1
         self._emit(f"WOK {sum(1 for st in replay.values() if st > 0)}")
 
