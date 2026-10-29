@@ -125,6 +125,18 @@ class TocTree:
                         para = addnodes.compact_paragraph('', '', reference)
                         item = nodes.list_item('', para)
                         toc = nodes.bullet_list('', item)
+                    elif ref in ('genindex', 'modindex', 'search'):
+                        std = self.env.domains['std']
+                        ref, labelid, default_title = std.data['labels'][ref]
+                        if title is None:
+                            title = default_title
+                        anchorname = '#' + labelid if labelid else ''
+                        reference = nodes.reference('', '', internal=True,
+                                                    refuri=ref, anchorname=anchorname,
+                                                    *[nodes.Text(title)])
+                        para = addnodes.compact_paragraph('', '', reference)
+                        item = nodes.list_item('', para)
+                        toc = nodes.bullet_list('', item)
                     elif ref == 'self':
                         # 'self' refers to the document from which this
                         # toctree originates
