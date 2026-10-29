@@ -333,14 +333,18 @@ def _check_homomorphism(domain, codomain, images):
             # both indices
             while i < len(r):
                 power = r_arr[j][1]
-                if isinstance(domain, PermutationGroup) and r[i] in gens:
-                    s = domain.generators[gens.index(r[i])]
+                if isinstance(domain, PermutationGroup):
+                    # r[i] is a generator or its inverse; the sign is
+                    # already carried by ``power``
+                    letter = r[i] if r[i] in gens else r[i]**-1
+                    s = domain.generators[gens.index(letter)]
+                    w = w*images[s]**power
                 else:
                     s = r[i]
-                if s in images:
-                    w = w*images[s]**power
-                elif s**-1 in images:
-                    w = w*images[s**-1]**power
+                    if s in images:
+                        w = w*images[s]**power
+                    elif s**-1 in images:
+                        w = w*images[s**-1]**power
                 i += abs(power)
                 j += 1
             return w
