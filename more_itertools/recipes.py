@@ -75,7 +75,11 @@ __all__ = [
     'repeatfunc',
     'roundrobin',
     'running_mean',
+    'running_max',
     'running_median',
+    'running_min',
+    'running_statistics',
+    'Stats',
     'sieve',
     'sliding_window',
     'subslices',
@@ -1408,8 +1412,19 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _running_mean_windowed(iterator, maxlen):
+    window = deque()
+    total = 0
+    for x in iterator:
+        window.append(x)
+        total += x
+        if len(window) > maxlen:
+            total -= window.popleft()
+        yield total / len(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of all values seen so far or in a sliding window.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1434,138 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+
+    Set *maxlen* to a positive integer to average only the last
+    *maxlen* values.
     """
-    return map(truediv, accumulate(iterable), count(1))
+    iterator = iter(iterable)
+    if maxlen is None:
+        return map(truediv, accumulate(iterator), count(1))
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return _running_mean_windowed(iterator, maxlen)
+
+
+def _running_extreme(iterator, maxlen, better):
+    window = deque()  # (position, value), values monotonic
+    pos = 0
+    for x in iterator:
+        x < x  # noqa: B015  -- rejects unorderable types such as complex
+        while window and not better(window[-1][1], x):
+            window.pop()
+        window.append((pos, x))
+        if maxlen is not None and window[0][0] <= pos - maxlen:
+            window.popleft()
+        pos += 1
+        yield window[0][1]
+
+
+def _extreme(iterable, maxlen, better):
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return _running_extreme(iterator, maxlen, better)
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the minimum of all values seen so far or in a sliding window.
+
+    >>> list(running_min([4, 3, 7, 0, 8], maxlen=2))
+    [4, 3, 3, 0, 0]
+
+    Supports int, float, Decimal and Fraction, but not complex numbers.
+    """
+    return _extreme(iterable, maxlen, lambda old, new: old < new)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the maximum of all values seen so far or in a sliding window.
+
+    >>> list(running_max([4, 3, 7, 0, 8], maxlen=2))
+    [4, 4, 7, 7, 8]
+
+    Supports int, float, Decimal and Fraction, but not complex numbers.
+    """
+    return _extreme(iterable, maxlen, lambda old, new: old > new)
+
+
+class Stats:
+    """Summary statistics of a set of values."""
+
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+
+    def __init__(self, size, minimum, median, maximum, mean):
+        _set = object.__setattr__
+        _set(self, 'size', size)
+        _set(self, 'minimum', minimum)
+        _set(self, 'median', median)
+        _set(self, 'maximum', maximum)
+        _set(self, 'mean', mean)
+
+    def __setattr__(self, name, value):
+        raise AttributeError('Stats is immutable')
+
+    def __delattr__(self, name):
+        raise AttributeError('Stats is immutable')
+
+    def _key(self):
+        return (self.size, self.minimum, self.median, self.maximum, self.mean)
+
+    def __eq__(self, other):
+        if not isinstance(other, Stats):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self):
+        return hash(self._key())
+
+    def __repr__(self):
+        return (
+            f'Stats(size={self.size!r}, minimum={self.minimum!r}, '
+            f'median={self.median!r}, maximum={self.maximum!r}, '
+            f'mean={self.mean!r})'
+        )
+
+
+def _running_statistics(iterator, maxlen):
+    box = [None]
+
+    def feed():
+        while True:
+            yield box[0]
+
+    mins = running_min(feed(), maxlen=maxlen)
+    maxs = running_max(feed(), maxlen=maxlen)
+    medians = running_median(feed(), maxlen=maxlen)
+    means = running_mean(feed(), maxlen=maxlen)
+    size = 0
+    for x in iterator:
+        box[0] = x
+        size += 1
+        if maxlen is not None and size > maxlen:
+            size = maxlen
+        lo = next(mins)
+        hi = next(maxs)
+        yield Stats(size, lo, next(medians), hi, next(means))
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield :class:`Stats` of all values seen so far or in a sliding window.
+
+    >>> list(running_statistics([4, 3], maxlen=2))[1]
+    Stats(size=2, minimum=3, median=3.5, maximum=4, mean=3.5)
+
+    Supports int, float, Decimal and Fraction, but not complex numbers.
+    """
+    iterator = iter(iterable)
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return _running_statistics(iterator, maxlen)
 
 
 def random_derangement(iterable):
