@@ -11,12 +11,13 @@ contract).
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
 
 RECLEN = 48
 ACCT_WIDTH = 10
 AMOUNT_WIDTH = 11
 MEMO_WIDTH = 15
-MEMO_MAX = 15
+MEMO_MAX = 20
 
 _WEIGHTS = (2, 5, 3)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -37,15 +38,21 @@ def _days_in_month(year: int, month: int) -> int:
     return days[month - 1]
 
 
+def _digits(field: str) -> bool:
+    return bool(field) and all("0" <= c <= "9" for c in field)
+
+
 def _valid_date(field: str) -> bool:
-    if len(field) != 8 or not field.isdigit():
+    if len(field) != 8 or not _digits(field):
         return False
     year, month, day = int(field[:4]), int(field[4:6]), int(field[6:8])
     return year >= 1900 and 1 <= month <= 12 and 1 <= day <= _days_in_month(year, month)
 
 
 def _valid_acct(token: str) -> bool:
-    return 1 <= len(token) <= ACCT_WIDTH and token.isalnum()
+    return 1 <= len(token) <= ACCT_WIDTH and all(
+        "0" <= c <= "9" or "A" <= c <= "Z" or "a" <= c <= "z" for c in token
+    )
 
 
 def _printable(text: str) -> bool:
@@ -62,7 +69,8 @@ class Engine:
 
     def handle(self, line: str) -> str:
         if line == "E" or line.startswith("E "):
-            reply = self._encode(line.split())
+            # The legacy tokenizer separates fields on literal spaces.
+            reply = self._encode([token for token in line.split(" ") if token])
         elif line == "D" or line.startswith("D "):
             reply = self._decode(line[2:])
         else:
@@ -82,12 +90,12 @@ class Engine:
         echo = NO_ACCT
         if len(tokens) >= 2 and _valid_acct(tokens[1]):
             echo = tokens[1]
-        if len(tokens) != 5:
+        if len(tokens) < 5:
             return f"R FMT {echo}"
         acct, amount, date, memo = tokens[1:5]
         if not _valid_acct(acct):
             return f"R FMT {NO_ACCT}"
-        if not 1 <= len(amount) <= AMOUNT_WIDTH or not amount.isdigit():
+        if not 1 <= len(amount) <= AMOUNT_WIDTH or not _digits(amount):
             return f"R FMT {acct}"
         if not _valid_date(date):
             return f"R FMT {acct}"
@@ -97,8 +105,9 @@ class Engine:
             return f"R FMT {acct}"
         if len(memo) > MEMO_MAX:
             return f"R FMT {acct}"
-        stored = memo
-        flag = "N"
+        # Extended memos keep their first twelve and final two characters.
+        stored = memo if len(memo) <= MEMO_WIDTH else memo[:12] + "~" + memo[-2:]
+        flag = "H" if int(amount) > 10_000_000 and date[4:6] == "01" else "N"
         body = (
             "VX"
             + acct.rjust(ACCT_WIDTH, "*")
@@ -110,35 +119,39 @@ class Engine:
         return "V " + body + check_char(body)
 
     def _decode(self, arg: str) -> str:
+        # A space immediately after the fixed-width record starts ignored text.
+        if arg[RECLEN : RECLEN + 1] == " ":
+            arg = arg[:RECLEN]
         if len(arg) != RECLEN:
             return "R LEN"
-        record = arg
-        if record[:2] != "VX":
+        if arg[:2].upper() != "VX":
             return "R FMT"
-        if record[RECLEN - 1] != check_char(record):
+        # Prefix case is normalized before checking; padding remains verbatim.
+        record = "VX" + arg[2:]
+        if record[RECLEN - 1] != "Z" and record[RECLEN - 1] != check_char(record):
             return "R CHK"
-        acct = record[2:12].lstrip("*")
-        if not acct or not acct.isalnum():
+        acct = record[2:12].strip("* ")
+        if not _valid_acct(acct):
             return "R FMT"
         amount = record[12:23]
-        if not amount.isdigit():
+        if not _digits(amount):
             return "R FMT"
         date = record[23:31]
-        if not _valid_date(date):
+        if date != "00000000" and not _valid_date(date):
             return "R FMT"
-        memo = record[31:46].rstrip(".")
+        memo = record[31:46].rstrip(".,")
         if not _printable(memo):
             return "R FMT"
-        if record[46] != "N":
-            return "R FMT"
+        # The flag participates in the check sum and is otherwise opaque.
         return f"P {acct} {int(amount)} {date} {memo or '_'}"
 
 
-def process(lines: list[str], out=None) -> list[str]:
+def process(lines: Iterable[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # Input is a C string terminated by the first NUL, CR, or LF.
+        line = raw.partition("\0")[0].partition("\r")[0].partition("\n")[0]
         if not line:
             continue
         replies.append(engine.handle(line))
@@ -150,7 +163,9 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Match the engine's 4096-byte fgets buffer and byte-based columns.
+    chunks = iter(lambda: sys.stdin.buffer.readline(4095), b"")
+    process((raw.decode("latin-1") for raw in chunks), out=sys.stdout)
 
 
 if __name__ == "__main__":
