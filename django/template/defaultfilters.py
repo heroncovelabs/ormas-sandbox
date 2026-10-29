@@ -187,7 +187,7 @@ def floatformat(text, arg=-1):
 
     # Avoid conversion to scientific notation by accessing `sign`, `digits`,
     # and `exponent` from Decimal.as_tuple() directly.
-    rounded_d = d.quantize(exp, ROUND_HALF_UP, Context(prec=prec))
+    rounded_d = d.quantize(exp, ROUND_HALF_UP, Context(prec=max(1, prec)))
     sign, digits, exponent = rounded_d.as_tuple()
     digits = [str(digit) for digit in reversed(digits)]
     while len(digits) <= abs(exponent):
