@@ -11,6 +11,7 @@ contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 ID_MAX = 8
@@ -18,18 +19,31 @@ BODY_MAX = 20
 DIGEST_MOD = 97
 CHECKSUM_MOD = 1000000007
 _WEIGHTS = (4, 9)
+_LINE_END = re.compile(r"[\x00\r\n]")
 
 
 def digest(body: str) -> int:
-    """Weighted byte sum of the stored body, weights cycling 4, 9."""
-    total = sum(ord(c) * _WEIGHTS[i % 2] for i, c in enumerate(body))
+    """Weighted byte sum of the stored body, weights cycling 4, 9.
+
+    Engine: byte 0 is skipped; byte 1 weighs 4, byte 2 weighs 9, ...
+    """
+    total = sum(ord(c) * _WEIGHTS[(i - 1) % 2] for i, c in enumerate(body) if i >= 1)
     return total % DIGEST_MOD
 
 
 def migrate(body: str) -> str:
-    """Migrate a v1 body to v2 (both the lazy read path and the bulk
-    sweep apply the same transform)."""
+    """Lazy-read migration of a clean v1 body to v2: uppercase only."""
     return body.upper()
+
+
+def sweep_migrate(body: str) -> str:
+    """Bulk-sweep migration (also used when reading a dirty-rewritten v1
+    document): uppercase, strip trailing digits, and a full-length body
+    loses its last two characters."""
+    body = body.upper().rstrip("0123456789")
+    if len(body) >= BODY_MAX:
+        body = body[: BODY_MAX - 2]
+    return body
 
 
 def _valid_id(token: str) -> bool:
@@ -44,25 +58,29 @@ class Engine:
     """Document vault with lazy/bulk migration and batch counters."""
 
     def __init__(self) -> None:
-        # doc id -> (version, body)
+        # case-folded doc id -> (version, body)
         self.docs: dict[str, tuple[int, str]] = {}
+        # case-folded doc ids whose v1 body was rewritten in place by a v1 write
+        self.dirty: set[str] = set()
         self.writes = 0
         self.reads = 0
         self.migrated = 0
         self.rejected = 0
 
     def handle(self, line: str) -> str:
+        # The engine splits on spaces only; extra trailing tokens are ignored.
+        tokens = [t for t in line.split(" ") if t]
         if line == "W" or line.startswith("W "):
-            reply = self._write(line.split())
+            reply = self._write(tokens)
             kind = "W"
         elif line == "G" or line.startswith("G "):
-            reply = self._read(line.split())
+            reply = self._read(tokens)
             kind = "G"
         elif line == "M" or line.startswith("M "):
-            reply = self._sweep(line.split())
+            reply = self._sweep(tokens)
             kind = "M"
         elif line == "C" or line.startswith("C "):
-            reply = self._checksum(line.split())
+            reply = self._checksum(tokens)
             kind = "C"
         else:
             reply = "R ???????? FMT"
@@ -83,7 +101,7 @@ class Engine:
         return c1, len(self.docs) - c1
 
     def _write(self, tokens: list[str]) -> str:
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return "R ???????? FMT"
         doc, vtok, body = tokens[1], tokens[2], tokens[3]
         if not _valid_id(doc):
@@ -93,42 +111,49 @@ class Engine:
         if not _valid_body(body):
             return f"R {doc} BODY"
         ver = int(vtok)
-        if doc in self.docs and ver < self.docs[doc][0]:
-            return f"R {doc} VER"  # SPEC: version downgrades are rejected
-        self.docs[doc] = (ver, body)
+        key = doc.lower()
+        # Engine: downgrades are accepted; a v1 write over a stored v1
+        # document marks it dirty, any other write leaves it clean.
+        if ver == 1 and key in self.docs and self.docs[key][0] == 1:
+            self.dirty.add(key)
+        else:
+            self.dirty.discard(key)
+        self.docs[key] = (ver, body)
         c1, c2 = self._counts()
         return f"OK {c1} {c2}"
 
     def _read(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return "R ???????? FMT"
         doc = tokens[1]
         if not _valid_id(doc):
             return "R ???????? FMT"
-        if doc not in self.docs:
+        key = doc.lower()
+        if key not in self.docs:
             return "NIL"
-        ver, body = self.docs[doc]
+        ver, body = self.docs[key]
         if ver == 1:
-            body = migrate(body)
-            self.docs[doc] = (2, body)
+            if key in self.dirty:
+                body = sweep_migrate(body)
+                self.dirty.discard(key)
+            else:
+                body = migrate(body)
+            self.docs[key] = (2, body)
             self.migrated += 1
         return f"D {digest(body)}"
 
     def _sweep(self, tokens: list[str]) -> str:
-        if len(tokens) != 1:
-            return "R ???????? FMT"
         count = 0
         for doc, (ver, body) in self.docs.items():
             if ver != 1:
                 continue
-            self.docs[doc] = (2, migrate(body))
+            self.docs[doc] = (2, sweep_migrate(body))
             count += 1
+        self.dirty.clear()
         self.migrated += count
         return f"M {count}"
 
     def _checksum(self, tokens: list[str]) -> str:
-        if len(tokens) != 1:
-            return "R ???????? FMT"
         total = sum(digest(body) for _, body in self.docs.values())
         return f"C {total % CHECKSUM_MOD}"
 
@@ -137,7 +162,9 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # The engine treats each line as a C string: it ends at the first
+        # NUL, CR, or LF.
+        line = _LINE_END.split(raw, 1)[0]
         if not line:
             continue
         replies.append(engine.handle(line))
@@ -149,7 +176,9 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Raw bytes: no universal-newline translation, no decode errors.
+    data = sys.stdin.buffer.read().decode("latin-1")
+    process(data.split("\n"), out=sys.stdout)
 
 
 if __name__ == "__main__":
