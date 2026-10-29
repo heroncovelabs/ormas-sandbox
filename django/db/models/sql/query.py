@@ -441,17 +441,32 @@ class Query(BaseExpression):
         """
         if not self.annotation_select:
             return {}
-        existing_annotations = [
-            annotation
+        existing_annotations = {
+            alias: annotation
             for alias, annotation in self.annotations.items()
             if alias not in added_aggregate_names
-        ]
+        }
+        # Existing usage of aggregation can be determined by the presence of
+        # selected aggregates but also by filters against aliased aggregates.
+        # Unselected aliases are only relevant when they are referenced by the
+        # aggregates being computed.
+        aggregate_refs = set()
+        for name in added_aggregate_names:
+            aggregate_refs |= self.annotations[name].get_refs()
+        _, having, qualify = self.where.split_having_qualify()
+        has_existing_aggregation = (
+            any(
+                getattr(annotation, "contains_aggregate", True)
+                for alias, annotation in existing_annotations.items()
+                if alias in self.annotation_select or alias in aggregate_refs
+            )
+            or having
+        )
         # Decide if we need to use a subquery.
         #
-        # Existing annotations would cause incorrect results as get_aggregation()
-        # must produce just one result and thus must not use GROUP BY. But we
-        # aren't smart enough to remove the existing annotations from the
-        # query, so those would force us to use GROUP BY.
+        # Existing aggregations would cause incorrect results as
+        # get_aggregation() must produce just one result and thus must not use
+        # GROUP BY.
         #
         # If the query has limit or distinct, or uses set operations, then
         # those operations must be done in a subquery so that the query
@@ -460,7 +475,8 @@ class Query(BaseExpression):
         if (
             isinstance(self.group_by, tuple)
             or self.is_sliced
-            or existing_annotations
+            or has_existing_aggregation
+            or qualify
             or self.distinct
             or self.combinator
         ):
@@ -482,16 +498,21 @@ class Query(BaseExpression):
                 # query is grouped by the main model's primary key. However,
                 # clearing the select clause can alter results if distinct is
                 # used.
-                has_existing_aggregate_annotations = any(
-                    annotation
-                    for annotation in existing_annotations
-                    if getattr(annotation, "contains_aggregate", True)
-                )
-                if inner_query.default_cols and has_existing_aggregate_annotations:
+                if inner_query.default_cols and has_existing_aggregation:
                     inner_query.group_by = (
                         self.model._meta.pk.get_col(inner_query.get_initial_alias()),
                     )
                 inner_query.default_cols = False
+                if not qualify:
+                    # Mask existing annotations that are not referenced by
+                    # aggregates to be pushed to the outer query unless
+                    # filtering against window functions is involved as it
+                    # requires complex realising.
+                    annotation_mask = set()
+                    for name in added_aggregate_names:
+                        annotation_mask.add(name)
+                        annotation_mask |= inner_query.annotations[name].get_refs()
+                    inner_query.set_annotation_mask(annotation_mask)
 
             relabels = {t: "subquery" for t in inner_query.alias_map}
             relabels[None] = "subquery"
@@ -525,6 +546,19 @@ class Query(BaseExpression):
             self.select = ()
             self.default_cols = False
             self.extra = {}
+            if existing_annotations:
+                # Inline reference to existing annotations and mask them as
+                # they are unnecessary given only the summarized aggregations
+                # are requested.
+                replacements = {
+                    Ref(alias, annotation): annotation
+                    for alias, annotation in existing_annotations.items()
+                }
+                for name in added_aggregate_names:
+                    self.annotations[name] = self.annotations[name].replace_expressions(
+                        replacements
+                    )
+                self.set_annotation_mask(added_aggregate_names)
 
         empty_set_result = [
             expression.empty_result_set_value
