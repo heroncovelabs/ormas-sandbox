@@ -45,4 +45,24 @@ class Contains(BooleanFunction):
             isinstance(i, (Eq, Ne))])
 
     def as_set(self):
+        """
+        Return the set operand when the element is a symbol.
+
+        Raises
+        ======
+
+        NotImplementedError
+            If the element is not a symbol.
+
+        Examples
+        ========
+
+        >>> from sympy import Symbol, S, Contains
+        >>> x = Symbol('x')
+        >>> Contains(x, S.Reals).as_set()
+        Reals
+        """
+        x, s = self.args
+        if x.is_Symbol:
+            return s
         raise NotImplementedError()
