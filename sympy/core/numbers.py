@@ -1625,19 +1625,23 @@ class Rational(Number):
             q = 1
             gcd = 1
 
+        # Normalize each non-integer operand through Rational first, then
+        # combine the numerator/denominator components by cross-multiplication
+        # so that the result does not depend on the order of the operands.
         if not isinstance(p, SYMPY_INTS):
             p = Rational(p)
-            q *= p.q
-            p = p.p
+            pn, pd = p.p, p.q
         else:
-            p = int(p)
+            pn, pd = int(p), 1
 
         if not isinstance(q, SYMPY_INTS):
             q = Rational(q)
-            p *= q.q
-            q = q.p
+            qn, qd = q.p, q.q
         else:
-            q = int(q)
+            qn, qd = int(q), 1
+
+        p = pn*qd
+        q = pd*qn
 
         # p and q are now ints
         if q == 0:
