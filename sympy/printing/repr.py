@@ -141,6 +141,16 @@ class ReprPrinter(Printer):
     def _print_EmptySequence(self, expr):
         return 'EmptySequence'
 
+    def _print_dict(self, expr):
+        return "{%s}" % ", ".join(
+            "%s: %s" % (self._print(key), self._print(value))
+            for key, value in expr.items())
+
+    def _print_set(self, expr):
+        if not expr:
+            return "set()"
+        return "{%s}" % self.reprify(expr, ", ")
+
     def _print_list(self, expr):
         return "[%s]" % self.reprify(expr, ", ")
 
