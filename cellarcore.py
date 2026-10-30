@@ -27,7 +27,7 @@ def _is_num(tok: str, maxlen: int) -> bool:
 class Wheel:
     __slots__ = (
         "wid", "cls", "state", "lay_seq", "settle", "rack",
-        "taps_since_grade",
+        "taps_since_grade", "ltaps", "lshifts", "anytap", "turns", "ntap", "nshift", "base", "skip", "last_rack", "slump_turn",
     )
 
     def __init__(self, wid: str, cls: int, lay_seq: int):
@@ -38,15 +38,26 @@ class Wheel:
         self.settle = cls
         self.rack = None
         self.taps_since_grade = 0
+        self.ltaps = 0
+        self.anytap = False
+        self.lshifts = 0
+        self.turns = 0
+        self.ntap = 0
+        self.nshift = 0
+        self.base = 0
+        self.skip = False
+        self.last_rack = None
+        self.slump_turn = -1
 
 
 class Rack:
-    __slots__ = ("rid", "span", "open_seq", "order")
+    __slots__ = ("rid", "span", "open_seq", "order", "drops")
 
     def __init__(self, rid: str, span: int, open_seq: int):
         self.rid = rid
         self.span = span
         self.open_seq = open_seq
+        self.drops = 0
         self.order: list[Wheel] = []   # standing order, front first
 
 
@@ -63,6 +74,7 @@ class Engine:
         self.rack_list: list[Rack] = []   # opening order
         self.sill: list[Wheel] = []       # arrival order
         self.lay_seq = 0
+        self.demoted = 0
         self.turn_no = 0
         self.grade_no = 0
         self.cLAY = self.cRACK = self.cBED = self.cTAP = 0
@@ -103,6 +115,10 @@ class Engine:
             srt.insert(pos, w)
         rack.order = srt
 
+    @staticmethod
+    def _gkey(w: Wheel) -> int:
+        return w.cls - 4 * w.ltaps - (1 if w.anytap else 0)
+
     # -------------------------------------------------------- commands
     def _cmd_LAY(self, parts: list[str]) -> None:
         wid, ctok = parts[1], parts[2]
@@ -113,11 +129,16 @@ class Engine:
         if not 1 <= cls <= 999:
             self._reject(parts, "RNG")
             return
-        if wid in self.wheels:
+        if wid in self.wheels and self.wheels[wid].state != RETIRED:
             self._reject(parts, "DUP")
             return
         self.lay_seq += 1
         w = Wheel(wid, cls, self.lay_seq)
+        old = self.wheels.get(wid)
+        if old is not None:
+            w.ltaps = old.ltaps
+            w.lshifts = old.lshifts
+            w.anytap = old.anytap
         self.wheels[wid] = w
         self.sill.append(w)
         self.cLAY += 1
@@ -137,7 +158,7 @@ class Engine:
             return
         r = Rack(rid, span, len(self.rack_list) + 1)
         self.racks[rid] = r
-        self.rack_list.append(r)
+        self.rack_list.insert(len(self.rack_list) - self.demoted, r)
         self.cRACK += 1
         self._emit(f"OK {len(self.rack_list)}")
 
@@ -158,6 +179,9 @@ class Engine:
             self._reject(parts, "FULL")
             return
         self.sill.remove(w)
+        if w.last_rack is r and w.slump_turn == self.turn_no:
+            w.settle = w.cls - (1 if w.anytap else 0)
+        w.last_rack = None
         self._insert(r, w)
         w.state = RACKED
         w.rack = r
@@ -176,7 +200,12 @@ class Engine:
         if w.state == RETIRED:
             self._reject(parts, "STATE")
             return
-        w.settle -= 3
+        w.settle -= (3 + 2 * (w.turns % 2) + (0 if w.anytap else 1)
+                     + (4 if w.ntap else 0))
+        w.ntap += 1
+        w.anytap = True
+        if w.state == RACKED:
+            w.ltaps += 1
         w.taps_since_grade += 1
         self.cTAP += 1
         self._emit(f"OK {w.wid}")
@@ -197,7 +226,10 @@ class Engine:
         if len(r.order) >= r.span:
             self._reject(parts, "FULL")
             return
-        w.settle -= 5
+        w.settle -= 5 + 2 * (w.turns % 2) + (4 if w.nshift else 0)
+        w.nshift += 1
+        w.skip = False
+        w.lshifts += 1
         w.rack.order.remove(w)
         self._insert(r, w)
         w.rack = r
@@ -208,17 +240,31 @@ class Engine:
         self.turn_no += 1
         self.cTURN += 1
         self._emit(f"TR {self.turn_no}")
-        for r in self.rack_list:
+        for r in list(self.rack_list):
+            for w in r.order:
+                w.turns += 1
+                w.ntap = 0
+                w.skip = w.nshift >= 3
+                w.nshift = 0
+                w.base = w.cls - 3 * w.ltaps - 5 * w.lshifts - (w.turns - 1)
+                w.settle = w.base - (1 if w.anytap else 0)
             pre = list(r.order)
-            slumped = [w for w in pre if w.settle <= 0]
+            slumped = [w for w in pre if w.base <= 7]
             if slumped:
-                r.order = [w for w in r.order if w.settle > 0]
+                r.order = [w for w in r.order if w.base > 7]
             self._relist(r)
             self._emit(f"RK {r.rid}")
             for w in r.order:
                 self._emit(f"W {w.wid}")
+            r.drops += len(slumped)
+            if slumped and r.drops - len(slumped) < 3 <= r.drops:
+                self.rack_list.remove(r)
+                self.rack_list.append(r)
+                self.demoted += 1
             for w in slumped:
                 w.state = SILL
+                w.last_rack = r
+                w.slump_turn = self.turn_no
                 w.rack = None
                 self.sill.append(w)
                 self._emit(f"DN {w.wid}")
@@ -234,14 +280,16 @@ class Engine:
         for w in pool:
             pos = len(graded)
             for i, o in enumerate(graded):
-                if self._wins(w, w.settle, o, o.settle):
+                if self._wins(w, self._gkey(w), o, self._gkey(o)):
                     pos = i
                     break
             graded.insert(pos, w)
         for w in graded:
             self._emit(f"G {w.wid}")
         for w in graded:
-            if w.taps_since_grade >= 4:
+            if w.skip:
+                w.skip = False
+            elif w.ltaps >= 4:
                 w.rack.order.remove(w)
                 w.rack = None
                 w.state = RETIRED
