@@ -304,7 +304,8 @@ class Relational(Boolean, EvalfMixin):
         from .add import Add
         r = self
         r = r.func(*[i.simplify(**kwargs) for i in r.args])
-        if r.is_Relational:
+        # Algebraic simplification requires Expr operands.
+        if r.is_Relational and all(isinstance(a, Expr) for a in r.args):
             dif = r.lhs - r.rhs
             # replace dif with a valid Number that will
             # allow a definitive comparison with 0
@@ -562,6 +563,8 @@ class Equality(Relational):
         e = super()._eval_simplify(**kwargs)
         if not isinstance(e, Equality):
             return e
+        if not (isinstance(e.lhs, Expr) and isinstance(e.rhs, Expr)):
+            return e.canonical
         free = self.free_symbols
         if len(free) == 1:
             try:
