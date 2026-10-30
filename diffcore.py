@@ -3,9 +3,10 @@
 Replaces the retired legacy binary (see ``legacy/README.md``). Reads
 store commands on stdin (``B`` sets the working value, ``S`` stores a
 snapshot of it, ``T`` restores a snapshot into the working value and
-reports its digest), writes one reply per command and an ``X`` trailer
-at EOF. Format reference: ``docs/SPEC.md`` (note the drift warning at
-the top of that file; the legacy engine's behavior is the contract).
+reports its digest), writes command replies and an ``X`` trailer at EOF.
+Sets that leave the working value unchanged produce no reply. Format
+reference: ``docs/SPEC.md`` (note the drift warning at the top of that
+file; the legacy engine's behavior is the contract).
 """
 
 from __future__ import annotations
@@ -44,12 +45,13 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str | None:
+        # Command prefixes and token separators use literal ASCII spaces.
         if line == "B" or line.startswith("B "):
-            reply = self._set(line.split())
+            reply = self._set([token for token in line.split(" ") if token])
         elif line == "S" or line.startswith("S "):
             reply = self._store()
         elif line == "T" or line.startswith("T "):
-            reply = self._restore(line.split())
+            reply = self._restore([token for token in line.split(" ") if token])
         else:
             reply = "E FMT"
         if reply is not None and reply.startswith("E "):
@@ -59,22 +61,22 @@ class Engine:
     def trailer(self) -> str:
         return f"X {self.sets} {self.stores} {self.restores} {self.rejected}"
 
-    def _set(self, tokens: list[str]) -> str:
+    def _set(self, tokens: list[str]) -> str | None:
         # Extra trailing tokens are tolerated and ignored.
         if len(tokens) < 2:
             return "E FMT"
         val = tokens[1]
         if not _valid_val(val):
             return "E VAL"
+        if val == self.value:
+            return None
         self.value = val
         self.sets += 1
         return "OK"
 
     def _is_full(self) -> bool:
-        # SPEC: the first snapshot is FULL, and every fourth snapshot is
-        # stored FULL so a delta chain stays short (snapshots 4, 8, ...).
-        count = len(self.snaps)
-        return count == 0 or (count + 1) % FULL_EVERY == 0
+        # Full snapshots start each block: indices 0, 4, 8, ...
+        return len(self.snaps) % FULL_EVERY == 0
 
     def _store(self) -> str:
         if self._is_full():
@@ -94,14 +96,20 @@ class Engine:
         snap = self.snaps[idx]
         if snap[0] == "F":
             return snap[1]
-        # SPEC: a delta applies against the previous snapshot's
-        # reconstructed value, honoring the recorded length; positions
-        # beyond the base fill with the pad character.
         _, newlen, changes = snap
-        base = self._reconstruct(idx - 1)
+        anchor = idx - idx % FULL_EVERY
+        base = self.snaps[anchor][1]
+        # The engine applies only the requested delta to the block's full
+        # value. The first delta uses its recorded length. Later deltas
+        # retain the full value's length, extending for changed positions
+        # and padding any uncovered positions with '0'.
+        if idx == anchor + 1:
+            length = newlen
+        else:
+            length = max(len(base), max(changes, default=-1) + 1)
         return "".join(
             changes.get(p, base[p] if p < len(base) else PAD)
-            for p in range(newlen)
+            for p in range(length)
         )
 
     def _restore(self, tokens: list[str]) -> str:
@@ -115,9 +123,8 @@ class Engine:
         if idx >= len(self.snaps):
             return "E IDX"
         self.value = self._reconstruct(idx)
-        # SPEC: the restored value becomes the working value the next
-        # snapshot builds on.
-        self.base = self.value
+        # Delta comparisons keep using the last stored working value.
+        # Restoring changes only the current working value.
         self.restores += 1
         return f"V {digest(self.value)}"
 
@@ -126,7 +133,8 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # Legacy C strings end at NUL; CR and LF terminate the command.
+        line = raw.split("\0", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
         if not line:
             continue
         reply = engine.handle(line)
@@ -140,7 +148,9 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Read LF-delimited bytes so CR stays inside its original input line
+    # and arbitrary input bytes reach validation unchanged.
+    process([raw.decode("latin-1") for raw in sys.stdin.buffer], out=sys.stdout)
 
 
 if __name__ == "__main__":
