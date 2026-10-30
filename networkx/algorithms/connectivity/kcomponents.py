@@ -111,40 +111,57 @@ def k_components(G, flow_func=None):
     # Define default flow function
     if flow_func is None:
         flow_func = default_flow_func
-    # Bicomponents as a base to check for higher order k-components
+    # Connected components seed level 1.
     for component in nx.connected_components(G):
         # isolated nodes have connectivity 0
         comp = set(component)
         if len(comp) > 1:
             k_components[1].append(comp)
+    # Biconnected components seed level 2 (dyads are not bicomponents).
     bicomponents = [G.subgraph(c) for c in nx.biconnected_components(G)]
     for bicomponent in bicomponents:
         bicomp = set(bicomponent)
-        # avoid considering dyads as bicomponents
         if len(bicomp) > 2:
             k_components[2].append(bicomp)
+    # Induced candidate subgraphs are identified by their node sets, so the
+    # same candidate is never expanded twice.
+    seen = set()
     for B in bicomponents:
         if len(B) <= 2:
             continue
-        k = nx.node_connectivity(B, flow_func=flow_func)
-        if k > 2:
-            k_components[k].append(set(B))
-        # Perform cuts in a DFS like order.
-        cuts = list(nx.all_node_cuts(B, k=k, flow_func=flow_func))
-        stack = [(k, _generate_partition(B, cuts, k))]
+        root = frozenset(B)
+        if root in seen:
+            continue
+        seen.add(root)
+        stack = [root]
         while stack:
-            (parent_k, partition) = stack[-1]
-            try:
-                nodes = next(partition)
-                C = B.subgraph(nodes)
-                this_k = nx.node_connectivity(C, flow_func=flow_func)
-                if this_k > parent_k and this_k > 2:
-                    k_components[this_k].append(set(C))
-                cuts = list(nx.all_node_cuts(C, k=this_k, flow_func=flow_func))
-                if cuts:
-                    stack.append((this_k, _generate_partition(C, cuts, this_k)))
-            except StopIteration:
-                stack.pop()
+            nodes = stack.pop()
+            C = G.subgraph(nodes)
+            if len(C) <= 2:
+                continue
+            if not nx.is_connected(C):
+                # A disconnected candidate is handled by its components.
+                for cc in nx.connected_components(C):
+                    child = frozenset(cc)
+                    if child not in seen:
+                        seen.add(child)
+                        stack.append(child)
+                continue
+            this_k = nx.node_connectivity(C, flow_func=flow_func)
+            if this_k > 2:
+                k_components[this_k].append(set(nodes))
+            # A complete candidate has no separator and nothing to descend into.
+            if C.number_of_edges() == len(C) * (len(C) - 1) // 2:
+                continue
+            cuts = nx.all_node_cuts(C, k=this_k, flow_func=flow_func)
+            separator = next(iter(cuts), None)
+            if separator is None:
+                continue
+            for child in _generate_partition(C, [separator], this_k):
+                child = frozenset(child)
+                if child < nodes and child not in seen:
+                    seen.add(child)
+                    stack.append(child)
 
     # This is necessary because k-components may only be reported at their
     # maximum k level. But we want to return a dictionary in which keys are
@@ -179,35 +196,40 @@ def _consolidate(sets, k):
 
 
 def _generate_partition(G, cuts, k):
-    def has_nbrs_in_partition(G, node, partition):
-        return any(n in partition for n in G[node])
+    """Yield the sides of a separator of G, each joined with the separator.
 
-    components = []
-    n_in_cuts = {n for cut in cuts for n in cut}
-    nodes = {n for n, d in G.degree() if d > k} - n_in_cuts
-    H = G.subgraph(nodes)
-    for cc in map(set, nx.connected_components(H)):
-        component = cc | {n for n in n_in_cuts if has_nbrs_in_partition(G, n, cc)}
-        if len(component) < G.order():
-            components.append(component)
-    yield from _consolidate(components, k + 1)
+    ``cuts`` must contain at least one separator. The first one is used.
+    For each connected component of ``G`` minus that separator, the
+    component together with the entire separator is yielded. Any component
+    with node connectivity greater than the separator size lies wholly
+    within at least one such child, so repeated strict descent preserves
+    every higher-connectivity maximal component.
+    """
+    separator = next(iter(cuts), None)
+    if not separator:
+        return
+    separator = set(separator)
+    H = G.subgraph(set(G) - separator)
+    for cc in nx.connected_components(H):
+        yield set(cc) | separator
 
 
 def _reconstruct_k_components(k_comps):
     result = {}
     max_k = max(k_comps) if k_comps else 0
     for k in range(max_k, 0, -1):
-        if k == max_k:
-            result[k] = list(_consolidate(k_comps[k], k))
-        elif k not in k_comps:
-            result[k] = list(_consolidate(result[k + 1], k))
-        else:
-            nodes_at_k = set.union(*k_comps[k])
-            to_add = [c for c in result[k + 1] if any(n not in nodes_at_k for n in c)]
-            if to_add:
-                result[k] = list(_consolidate(k_comps[k] + to_add, k))
-            else:
-                result[k] = list(_consolidate(k_comps[k], k))
+        # Every (k + 1)-component is also k-connected, so it competes with the
+        # level-k candidates. Candidates are deduplicated by node set, and only
+        # the inclusion-maximal sets are kept at this level.
+        candidates = list(k_comps.get(k, [])) + result.get(k + 1, [])
+        unique = {}
+        for comp in candidates:
+            unique.setdefault(frozenset(comp), set(comp))
+        result[k] = [
+            comp
+            for key, comp in unique.items()
+            if not any(key < other for other in unique)
+        ]
     return result
 
 
