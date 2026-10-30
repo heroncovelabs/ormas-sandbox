@@ -893,9 +893,16 @@ class String(Token):
     >>> print(repr(f))
     String('foo')
 
+    The text is the single positional argument, so the object can be rebuilt
+    from its ``args``:
+
+    >>> f.args
+    ('foo',)
+    >>> f.func(*f.args) == f
+    True
+
     """
     __slots__ = ('text',)
-    not_in_args = ['text']
     is_Atom = True
 
     @classmethod
@@ -903,6 +910,11 @@ class String(Token):
         if not isinstance(text, str):
             raise TypeError("Argument text is not a string type.")
         return text
+
+    @property
+    def free_symbols(self):
+        """Return the empty set of free symbols for a string literal."""
+        return set()
 
     def _sympystr(self, printer, *args, **kwargs):
         return self.text
