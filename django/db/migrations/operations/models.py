@@ -491,6 +491,18 @@ class AlterTogetherOptionOperation(ModelOptionOperation):
             kwargs
         )
 
+    def reduce(self, operation, app_label):
+        # Operations altering a different option (e.g. index_together vs
+        # unique_together) on the same model are independent and can be
+        # optimized through.
+        if (
+            isinstance(operation, AlterTogetherOptionOperation) and
+            self.name_lower == operation.name_lower and
+            self.option_name != operation.option_name
+        ):
+            return True
+        return super().reduce(operation, app_label)
+
     def state_forwards(self, app_label, state):
         state.alter_model_options(
             app_label,
