@@ -70,7 +70,10 @@ class Command(BaseCommand):
             "--check",
             action="store_true",
             dest="check_changes",
-            help="Exit with a non-zero status if model changes are missing migrations.",
+            help=(
+                "Exit with a non-zero status if model changes are missing migrations. "
+                "Implies --dry-run."
+            ),
         )
         parser.add_argument(
             "--scriptable",
@@ -103,14 +106,15 @@ class Command(BaseCommand):
         self.written_files = []
         self.verbosity = options["verbosity"]
         self.interactive = options["interactive"]
-        self.dry_run = options["dry_run"]
+        check_changes = options["check_changes"]
+        # --check implies --dry-run: never write migration files in check mode.
+        self.dry_run = options["dry_run"] or check_changes
         self.merge = options["merge"]
         self.empty = options["empty"]
         self.migration_name = options["name"]
         if self.migration_name and not self.migration_name.isidentifier():
             raise CommandError("The migration name must be a valid Python identifier.")
         self.include_header = options["include_header"]
-        check_changes = options["check_changes"]
         self.scriptable = options["scriptable"]
         self.update = options["update"]
         # If logs and prompts are diverted to stderr, remove the ERROR style.
