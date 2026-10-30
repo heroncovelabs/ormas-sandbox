@@ -1836,7 +1836,14 @@ class SQLUpdateCompiler(SQLCompiler):
         query.clear_ordering(force=True)
         query.extra = {}
         query.select = []
-        query.add_fields([query.get_meta().pk.name])
+        meta = query.get_meta()
+        fields = [meta.pk.name]
+        # Each parent must be updated using its own primary key, which may
+        # differ from the child's primary key in multiple inheritance.
+        for related in self.query.related_updates:
+            path = meta.get_path_to_parent(related)
+            fields.append(LOOKUP_SEP.join([p.join_field.name for p in path] + ["pk"]))
+        query.add_fields(fields)
         super().pre_sql_setup()
 
         must_pre_select = (
@@ -1851,10 +1858,14 @@ class SQLUpdateCompiler(SQLCompiler):
             # don't want them to change), or the db backend doesn't support
             # selecting from the updating table (e.g. MySQL).
             idents = []
+            related_ids = {model: [] for model in self.query.related_updates}
             for rows in query.get_compiler(self.using).execute_sql(MULTI):
-                idents.extend(r[0] for r in rows)
+                for row in rows:
+                    idents.append(row[0])
+                    for index, model in enumerate(related_ids, start=1):
+                        related_ids[model].append(row[index])
             self.query.add_filter("pk__in", idents)
-            self.query.related_ids = idents
+            self.query.related_ids = related_ids
         else:
             # The fast path. Filters and updates in one query.
             self.query.add_filter("pk__in", query)
