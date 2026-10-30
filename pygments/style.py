@@ -66,6 +66,8 @@ class StyleMeta(type):
         def colorformat(text):
             if text in ansicolors:
                 return text
+            if text == 'transparent':
+                return text
             if text[0:1] == '#':
                 col = text[1:]
                 if len(col) == 6:
