@@ -846,8 +846,6 @@ class Query(BaseExpression):
         relabelling any references to them in select columns and the where
         clause.
         """
-        assert set(change_map).isdisjoint(change_map.values())
-
         # 1. Update references in "select" (normal columns plus aliases),
         # "group by" and "where".
         self.where.relabel_aliases(change_map)
@@ -859,20 +857,29 @@ class Query(BaseExpression):
         }
 
         # 2. Rename the alias in the internal table/alias datastructures.
-        for old_alias, new_alias in change_map.items():
-            if old_alias not in self.alias_map:
-                continue
-            alias_data = self.alias_map[old_alias].relabeled_clone(change_map)
-            self.alias_map[new_alias] = alias_data
-            self.alias_refcount[new_alias] = self.alias_refcount[old_alias]
+        # The relabeling is simultaneous: aliases in change_map may appear as
+        # both keys and values (e.g. T4 -> T5 and T5 -> T6), so all the old
+        # entries are removed before the new ones are added.
+        moved = [
+            (old_alias, new_alias) for old_alias, new_alias in change_map.items()
+            if old_alias in self.alias_map
+        ]
+        alias_datas = {}
+        refcounts = {}
+        for old_alias, new_alias in moved:
+            alias_datas[old_alias] = self.alias_map[old_alias].relabeled_clone(change_map)
+            refcounts[old_alias] = self.alias_refcount[old_alias]
             del self.alias_refcount[old_alias]
             del self.alias_map[old_alias]
-
-            table_aliases = self.table_map[alias_data.table_name]
-            for pos, alias in enumerate(table_aliases):
-                if alias == old_alias:
-                    table_aliases[pos] = new_alias
-                    break
+        table_names = set()
+        for old_alias, new_alias in moved:
+            alias_data = alias_datas[old_alias]
+            self.alias_map[new_alias] = alias_data
+            self.alias_refcount[new_alias] = refcounts[old_alias]
+            table_names.add(alias_data.table_name)
+        for table_name in table_names:
+            table_aliases = self.table_map[table_name]
+            table_aliases[:] = [change_map.get(alias, alias) for alias in table_aliases]
         self.external_aliases = {
             # Table is aliased or it's being changed and thus is aliased.
             change_map.get(alias, alias): (aliased or alias in change_map)
