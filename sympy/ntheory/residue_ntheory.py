@@ -753,7 +753,8 @@ def nthroot_mod(a, n, p, all_roots=False):
     a : integer
     n : positive integer
     p : positive integer
-    all_roots : if False returns the smallest root, else the list of roots
+    all_roots : if False returns the smallest root for prime p, else the
+        list of roots. For composite p, all roots are returned as a list.
 
     Examples
     ========
@@ -770,11 +771,48 @@ def nthroot_mod(a, n, p, all_roots=False):
     a, n, p = as_int(a), as_int(n), as_int(p)
     if n == 2:
         return sqrt_mod(a, p, all_roots)
+    if p < 1:
+        raise ValueError('p must be > 0')
+    if n < 1:
+        raise ValueError('n must be > 0')
+    a %= p
+    if not isprime(p):
+        from itertools import product
+        from .modular import crt1, crt2
+
+        prime_powers = []
+        roots = []
+        for prime, exponent in factorint(p).items():
+            prime_roots = nthroot_mod(a % prime, n, prime, True)
+            if not prime_roots:
+                return []
+            modulus = prime
+            for _ in range(1, exponent):
+                next_modulus = modulus * prime
+                lifted_roots = []
+                for root in prime_roots:
+                    residue = (a - pow(root, n, next_modulus)) % next_modulus
+                    derivative = n * pow(root, n - 1, prime) % prime
+                    if derivative:
+                        t = residue // modulus * mod_inverse(derivative, prime) % prime
+                        lifted_roots.append(root + t * modulus)
+                    elif residue == 0:
+                        # A singular root lifts to every congruent residue.
+                        lifted_roots.extend(root + t * modulus for t in range(prime))
+                prime_roots = lifted_roots
+                if not prime_roots:
+                    return []
+                modulus = next_modulus
+            prime_powers.append(modulus)
+            roots.append(prime_roots)
+        mm, e, s = crt1(prime_powers)
+        return sorted(int(crt2(prime_powers, values, mm, e, s)[0])
+                      for values in product(*roots))
+    if a == 0:
+        return [0] if all_roots else 0
     # see Hackman "Elementary Number Theory" (2009), page 76
     if not is_nthpow_residue(a, n, p):
         return None
-    if not isprime(p):
-        raise NotImplementedError("Not implemented for composite p")
 
     if (p - 1) % n == 0:
         return _nthroot_mod1(a, n, p, all_roots)
