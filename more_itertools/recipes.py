@@ -889,6 +889,11 @@ def iter_index(iterable, value, start=0, stop=None):
 
     """
     seq_index = getattr(iterable, 'index', None)
+    if seq_index is None and (start < 0 or (stop is not None and stop < 0)):
+        # Negative bounds count from the end, which needs the length; buffer
+        # the iterable so it follows the same path as a sequence.
+        iterable = list(iterable)
+        seq_index = iterable.index
     if seq_index is None:
         # Slow path for general iterables
         iterator = islice(iterable, start, stop)
