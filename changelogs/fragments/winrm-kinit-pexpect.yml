@@ -1,0 +1,3 @@
+bugfixes:
+  - winrm - use a detached subprocess to obtain Kerberos tickets with kinit, ensuring passwords are read from stdin on macOS and avoiding optional pexpect dependencies and file descriptor limits.
+  - winrm - restrict the kinit environment to PATH and the temporary KRB5CCNAME credentials cache.
