@@ -1299,6 +1299,10 @@ class When(Expression):
         template_params = extra_context
         sql_params = []
         condition_sql, condition_params = compiler.compile(self.condition)
+        if not condition_sql:
+            # An always-true condition such as ~Q(pk__in=[]) compiles to an
+            # empty string. Substitute a portable always-true predicate.
+            condition_sql = "1=1"
         template_params["condition"] = condition_sql
         sql_params.extend(condition_params)
         result_sql, result_params = compiler.compile(self.result)
