@@ -169,7 +169,7 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     from target in G.
 
     This function returns the set of nodes of minimum cardinality that,
-    if removed, would destroy all paths among source and target in G.
+    if removed, would destroy all paths from source to target in G.
 
     Parameters
     ----------
@@ -207,9 +207,11 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
         Set of nodes that, if removed, would destroy all paths between
         source and target in G.
 
-        Returns an empty set if source and target are either in different
-        components or are directly connected by an edge, as no node removal
-        can destroy the path.
+        Returns an empty set if there is an edge from source to target,
+        since that path survives removal of other nodes. Also returns an
+        empty set if there is already no path from source to target.
+        Directed paths are followed from source to target, so an edge
+        from target to source allows a nonempty cut.
 
     Examples
     --------
@@ -265,7 +267,7 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     is based in solving a number of maximum flow computations to determine
     the capacity of the minimum cut on an auxiliary directed network that
     corresponds to the minimum node cut of G. It handles both directed
-    and undirected graphs. This implementation is based on algorithm 11
+    and undirected graphs. The auxiliary digraph construction is described
     in [1]_.
 
     See also
@@ -294,7 +296,7 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     mapping = H.graph.get("mapping", None)
     if mapping is None:
         raise nx.NetworkXError("Invalid auxiliary digraph.")
-    if G.has_edge(s, t) or G.has_edge(t, s):
+    if G.has_edge(s, t):
         return set()
     kwargs = {"flow_func": flow_func, "residual": residual, "auxiliary": H}
 
@@ -312,8 +314,11 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
 
     If source and target nodes are provided, this function returns the
     set of nodes of minimum cardinality that, if removed, would destroy
-    all paths among source and target in G. If not, it returns a set
-    of nodes of minimum cardinality that disconnects G.
+    all paths from source to target in G. If not, it returns a set
+    of nodes of minimum cardinality that disconnects G or renders it
+    trivial. For directed graphs, the cut destroys strong connectivity.
+    An empty set is returned for a weakly connected directed graph with
+    multiple strongly connected components.
 
     Parameters
     ----------
@@ -378,8 +383,11 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
     is based in solving a number of maximum flow computations to determine
     the capacity of the minimum cut on an auxiliary directed network that
     corresponds to the minimum node cut of G. It handles both directed
-    and undirected graphs. This implementation is based on algorithm 11
-    in [1]_.
+    and undirected graphs. The auxiliary digraph construction is described
+    in [1]_. For undirected graphs, the choice of node pairs follows
+    algorithm 11 in [1]_. For directed graphs, all ordered pairs of distinct
+    nodes without an edge from source to target are considered, requiring
+    $O(n^2)$ maximum flow computations.
 
     See also
     --------
@@ -412,42 +420,50 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
         return minimum_st_node_cut(G, s, t, flow_func=flow_func)
 
     # Global minimum node cut.
-    # Analog to the algorithm 11 for global node connectivity in [1].
     if G.is_directed():
         if not nx.is_weakly_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
-        iter_func = itertools.permutations
-
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
-
+        if not nx.is_strongly_connected(G):
+            return set()
+        # Either the predecessors or the successors of a node form a cut.
+        # Use distinct neighbors and exclude the node itself.
+        min_cut = min(
+            (
+                set(neighbors(v)) - {v}
+                for v in G
+                for neighbors in (G.predecessors, G.successors)
+            ),
+            key=len,
+        )
+        if len(min_cut) <= 1:
+            return min_cut
+        # A separating ordered pair remains after every nontrivial cut.
+        pairs = itertools.permutations(G, 2)
     else:
         if not nx.is_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+        # Algorithm 11 in [1] applies to undirected graphs.
+        v = min(G, key=lambda v: len(G[v]) - G.has_edge(v, v))
+        neighbors = [w for w in G[v] if w != v]
+        min_cut = set(neighbors)
+        pairs = itertools.chain(
+            ((v, w) for w in set(G) - min_cut - {v}),
+            itertools.combinations(neighbors, 2),
+        )
 
     # Reuse the auxiliary digraph and the residual network.
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Choose a node with minimum degree.
-    v = min(G, key=G.degree)
-    # Initial node cutset is all neighbors of the node with minimum degree.
-    min_cut = set(G[v])
-    # Compute st node cuts between v and all its non-neighbors nodes in G.
-    for w in set(G) - set(neighbors(v)) - {v}:
-        this_cut = minimum_st_node_cut(G, v, w, **kwargs)
-        if len(min_cut) >= len(this_cut):
-            min_cut = this_cut
-    # Also for non adjacent pairs of neighbors of v.
-    for x, y in iter_func(neighbors(v), 2):
+    for x, y in pairs:
         if y in G[x]:
             continue
         this_cut = minimum_st_node_cut(G, x, y, **kwargs)
         if len(min_cut) >= len(this_cut):
             min_cut = this_cut
+        if G.is_directed() and len(min_cut) == 1:
+            break
 
     return min_cut
 
