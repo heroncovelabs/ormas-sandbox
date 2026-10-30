@@ -32,12 +32,26 @@ def _digits(token: str) -> bool:
 class Tool:
     def __init__(self, grade: int, index: int) -> None:
         self.grade = grade
-        self.index = index  # registration order, for rota tie-breaks
-        self.duty = 0  # service duty owed
-        self.accrued = 0  # ledger: duty accrued since the last reckoning
-        self.cleared = 0  # ledger: duty cleared by rotas since the last one
+        self.index = index  # final rota tie-break: registration order
+        self.duty = 0  # live service priority, which can be negative
+        self.accrued = 0  # lifetime ledger: days x grade at each return
+        self.cleared = 0  # lifetime ledger: live duty cleared by rotas
+        self.last_return = 0  # return recency, reset by a reckoning
+        self.service_count = 0
         self.loaned_by: str | None = None
         self.loan_days = 0
+
+    def accrue(self, amount: int) -> None:
+        # Three completed services permanently halve each live increment.
+        if self.service_count >= 3:
+            amount //= 2
+        self.duty += amount
+
+
+class Member:
+    def __init__(self) -> None:
+        self.outstanding = 0
+        self.heavy = False  # sticky once three tools are out together
 
 
 class Engine:
@@ -45,7 +59,7 @@ class Engine:
 
     def __init__(self) -> None:
         self.tools: dict[str, Tool] = {}
-        self.members: set[str] = set()
+        self.members: dict[str, Member] = {}
         self.registered = 0
         self.enrolled = 0
         self.loans = 0
@@ -110,7 +124,7 @@ class Engine:
             return f"N {ident} FMT"
         if tokens[1] in self.members:
             return f"N {ident} DUP"
-        self.members.add(tokens[1])
+        self.members[tokens[1]] = Member()
         self.enrolled += 1
         return f"OK {len(self.members)}"
 
@@ -136,6 +150,11 @@ class Engine:
             return f"N {ident} OUT"
         t.loaned_by = tokens[1]
         t.loan_days = int(days)
+        t.accrue(t.loan_days * t.grade)
+        member = self.members[tokens[1]]
+        member.outstanding += 1
+        if member.outstanding >= 3:
+            member.heavy = True
         self.loans += 1
         return f"L {tokens[1]} {tokens[2]}"
 
@@ -152,13 +171,15 @@ class Engine:
             return f"N {ident} UNKNOWN"
         if t.loaned_by != tokens[1]:
             return f"N {ident} NOLOAN"
-        # Duty accrues when the tool comes back: days x grade.
-        earned = t.loan_days * t.grade
-        t.duty += earned
-        t.accrued += earned
+        member = self.members[tokens[1]]
+        # The return ledger and the live rota use different accrual rules.
+        t.accrued += t.loan_days * t.grade
+        t.accrue(2 * t.grade + (5 if member.heavy else 0))
+        member.outstanding -= 1
         t.loaned_by = None
         t.loan_days = 0
         self.returns += 1
+        t.last_return = self.returns
         return f"R {tokens[1]} {tokens[2]}"
 
     def _service(self, tokens: list[str]) -> str:
@@ -166,17 +187,17 @@ class Engine:
             return f"N {NO_ID} FMT"
         rota = sorted(
             ((name, t) for name, t in self.tools.items() if t.duty > 0),
-            key=lambda item: (-item[1].duty, item[1].index),
+            key=lambda item: (
+                -item[1].duty, -item[1].last_return, item[1].index
+            ),
         )
         self.services += 1
-        if not rota:
-            # No tool owes service: there is no rota to emit or close.
-            return ""
         lines = []
         for name, t in rota:
             lines.append(f"S {name}")
             t.cleared += t.duty
             t.duty = 0
+            t.service_count += 1
         lines.append(f"SEND {len(rota)}")
         return "\n".join(lines)
 
@@ -185,13 +206,10 @@ class Engine:
             return f"N {NO_ID} FMT"
         positive = 0
         for t in self.tools.values():
-            # Recompute duty from the ledger since the last reckoning:
-            # what accrued, minus what the rotas cleared. The reckoning
-            # is an audit, not a revision: it always agrees with the
-            # live figure.
+            # Reckon from the lifetime return/clearance ledger. Its totals
+            # survive reckonings, and can revise live duty below zero.
             t.duty = t.accrued - t.cleared
-            t.accrued = 0
-            t.cleared = 0
+            t.last_return = 0
             if t.duty > 0:
                 positive += 1
         self.reckonings += 1
