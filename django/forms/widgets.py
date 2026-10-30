@@ -1157,6 +1157,9 @@ class SelectDateWidget(Widget):
             input_format = formats.sanitize_strftime_format(input_format)
             try:
                 date_value = datetime.date(int(y), int(m), int(d))
+            except OverflowError:
+                # Return an invalid date for values too large for datetime.date().
+                return "0-0-0"
             except ValueError:
                 # Return pseudo-ISO dates with zeros for any unselected values,
                 # e.g. '2017-0-23'.
