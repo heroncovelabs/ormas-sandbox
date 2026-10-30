@@ -313,7 +313,7 @@ _known_constants_mpmath = {
 
 class MpmathPrinter(PythonCodePrinter):
     """
-    Lambda printer for mpmath which maintains precision for floats
+    Lambda printer for mpmath which maintains precision for floats and rationals
     """
     printmethod = "_mpmathcode"
 
@@ -321,6 +321,10 @@ class MpmathPrinter(PythonCodePrinter):
         _known_functions.items(),
         [(k, 'mpmath.' + v) for k, v in _known_functions_mpmath.items()]
     ))
+
+    def _print_Rational(self, e):
+        return '{0}({1})/{0}({2})'.format(
+            self._module_format('mpmath.mpf'), e.p, e.q)
 
     def _print_Float(self, e):
         # XXX: This does not handle setting mpmath.mp.dps. It is assumed that
