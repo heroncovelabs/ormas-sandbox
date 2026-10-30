@@ -65,7 +65,10 @@ class Aggregate(Func):
         if hasattr(default, 'resolve_expression'):
             default = default.resolve_expression(query, allow_joins, reuse, summarize)
         c.default = None  # Reset the default argument before wrapping.
-        return Coalesce(c, default, output_field=c._output_field_or_none)
+        wrapper = Coalesce(c, default, output_field=c._output_field_or_none)
+        # Preserve the summary flag for aggregation over annotated querysets.
+        wrapper.is_summary = c.is_summary
+        return wrapper
 
     @property
     def default_alias(self):
