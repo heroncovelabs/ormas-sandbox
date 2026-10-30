@@ -1034,6 +1034,9 @@ class Parser:
 
     LAMBDA_ARG_TERMINATORS: t.ClassVar[frozenset] = frozenset({TokenType.COMMA, TokenType.R_PAREN})
 
+    # JSON operators that share the bitwise and concatenation precedence tier.
+    JSON_OPERATORS: t.ClassVar = {}
+
     COLUMN_OPERATORS: t.ClassVar = {
         TokenType.DOT: None,
         TokenType.DOTCOLON: lambda self, this, to: self.expression(exp.JSONCast(this=this, to=to)),
@@ -6241,6 +6244,8 @@ class Parser:
                 this = self.expression(
                     self.BITWISE[self._prev.token_type](this=this, expression=self._parse_term())
                 )
+            elif self._match_set(self.JSON_OPERATORS):
+                this = self.JSON_OPERATORS[self._prev.token_type](self, this, self._parse_term())
             elif self.dialect.DPIPE_IS_STRING_CONCAT and self._match(TokenType.DPIPE):
                 this = self.expression(
                     exp.DPipe(

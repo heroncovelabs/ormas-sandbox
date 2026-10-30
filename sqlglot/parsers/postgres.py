@@ -190,8 +190,15 @@ class PostgresParser(parser.Parser):
 
     JSON_ARROWS_REQUIRE_JSON_TYPE = True
 
-    COLUMN_OPERATORS = {
-        **parser.Parser.COLUMN_OPERATORS,
+    JSON_OPERATORS = {
+        **{
+            token: parser.Parser.COLUMN_OPERATORS[token]
+            for token in (
+                TokenType.HASH_ARROW,
+                TokenType.DHASH_ARROW,
+                TokenType.PLACEHOLDER,
+            )
+        },
         TokenType.ARROW: lambda self, this, path: self.validate_expression(
             build_json_extract_path(
                 exp.JSONExtract, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
@@ -202,6 +209,11 @@ class PostgresParser(parser.Parser):
                 exp.JSONExtractScalar, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
             )([this, path])
         ),
+    }
+
+    COLUMN_OPERATORS = {
+        token: parser.Parser.COLUMN_OPERATORS[token]
+        for token in parser.Parser.COLUMN_OPERATORS.keys() - JSON_OPERATORS.keys()
     }
 
     ARG_MODE_TOKENS: t.ClassVar = {TokenType.IN, TokenType.OUT, TokenType.INOUT, TokenType.VARIADIC}
