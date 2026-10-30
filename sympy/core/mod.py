@@ -118,6 +118,14 @@ class Mod(Function):
                 return cls(net, q)
 
         elif isinstance(p, Mul):
+            # Reduce integer coefficients when the remaining factor is integral.
+            if q.is_Integer:
+                coeff, terms = p.as_coeff_Mul()
+                if coeff.is_Integer and terms.is_integer:
+                    reduced = coeff % q
+                    if reduced != coeff:
+                        return cls(reduced*terms, q)
+
             # separating into modulus and non modulus
             both_l = non_mod_l, mod_l = [], []
             for arg in p.args:
