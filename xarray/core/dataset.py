@@ -4133,41 +4133,57 @@ class Dataset(
         if isinstance(dims_or_levels, str) or not isinstance(dims_or_levels, Sequence):
             dims_or_levels = [dims_or_levels]
 
-        invalid_coords = set(dims_or_levels) - set(self._indexes)
+        reset_coord_names = set(dims_or_levels)
+        invalid_coords = reset_coord_names - set(self._indexes)
         if invalid_coords:
             raise ValueError(
                 f"{tuple(invalid_coords)} are not coordinates with an index"
             )
 
-        drop_indexes: list[Hashable] = []
-        drop_variables: list[Hashable] = []
-        replaced_indexes: list[PandasMultiIndex] = []
+        drop_indexes: set[Hashable] = set()
+        drop_variables: set[Hashable] = set()
         new_indexes: dict[Hashable, Index] = {}
-        new_variables: dict[Hashable, IndexVariable] = {}
+        new_variables: dict[Hashable, Variable] = {}
 
-        for name in dims_or_levels:
-            index = self._indexes[name]
-            drop_indexes += list(self.xindexes.get_all_coords(name))
+        for index, index_vars in self.xindexes.group_by_index():
+            reset_coords = reset_coord_names.intersection(index_vars)
+            if not reset_coords:
+                continue
+            drop_indexes.update(index_vars)
 
-            if isinstance(index, PandasMultiIndex) and name not in self.dims:
-                # special case for pd.MultiIndex (name is an index level):
-                # replace by a new index with dropped level(s) instead of just drop the index
-                if index not in replaced_indexes:
-                    level_names = index.index.names
-                    level_vars = {
-                        k: self._variables[k]
-                        for k in level_names
-                        if k not in dims_or_levels
-                    }
-                    if level_vars:
-                        idx = index.keep_levels(level_vars)
+            if isinstance(index, PandasMultiIndex):
+                # Resetting the dimension coordinate resets all of its levels.
+                if index.dim in reset_coords:
+                    reset_coords.update(index.index.names)
+                level_vars = {
+                    k: self._variables[k]
+                    for k in index.index.names
+                    if k not in reset_coords
+                }
+                if level_vars:
+                    idx = index.keep_levels(level_vars)
+                    if isinstance(idx, PandasMultiIndex):
                         idx_vars = idx.create_variables(level_vars)
-                        new_indexes.update({k: idx for k in idx_vars})
-                        new_variables.update(idx_vars)
-                replaced_indexes.append(index)
+                    else:
+                        # A single remaining level becomes the dimension coordinate.
+                        drop_variables.update(level_vars)
+                        idx_vars = idx.create_variables(
+                            {index.dim: next(iter(level_vars.values()))}
+                        )
+                    new_indexes.update({k: idx for k in idx_vars})
+                    new_variables.update(idx_vars)
+                else:
+                    # The multi-index coordinate disappears with the last level.
+                    drop_variables.add(index.dim)
+
+                reset_coords.discard(index.dim)
 
             if drop:
-                drop_variables.append(name)
+                drop_variables.update(reset_coords)
+            else:
+                new_variables.update(
+                    {k: self._variables[k].to_base_variable() for k in reset_coords}
+                )
 
         indexes = {k: v for k, v in self._indexes.items() if k not in drop_indexes}
         indexes.update(new_indexes)
@@ -4177,9 +4193,11 @@ class Dataset(
         }
         variables.update(new_variables)
 
-        coord_names = set(new_variables) | self._coord_names
+        coord_names = self._coord_names - drop_variables | set(new_variables)
 
-        return self._replace(variables, coord_names=coord_names, indexes=indexes)
+        return self._replace_with_new_dims(
+            variables, coord_names=coord_names, indexes=indexes
+        )
 
     def reorder_levels(
         self: T_Dataset,
