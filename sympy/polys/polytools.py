@@ -11,7 +11,7 @@ from sympy.core.basic import preorder_traversal
 from sympy.core.compatibility import iterable, ordered
 from sympy.core.decorators import _sympifyit
 from sympy.core.function import Derivative
-from sympy.core.mul import _keep_coeff
+from sympy.core.mul import _keep_coeff, prod
 from sympy.core.relational import Relational
 from sympy.core.symbol import Symbol
 from sympy.core.sympify import sympify, _sympify
@@ -5949,6 +5949,11 @@ def _symbolic_factor_list(expr, opt, method):
                         other.append((f, k))
 
                 factors.append((_factors_product(other), exp))
+
+    if method == 'sqf':
+        # Combine factors with the same multiplicity across product terms.
+        factors = [(prod(f for f, _ in items), exp)
+                   for exp, items in sift(factors, lambda f: f[1]).items()]
 
     return coeff, factors
 
