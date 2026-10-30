@@ -101,6 +101,10 @@ class MCodePrinter(CodePrinter):
                     return "%s[%s]" % (mfunc, self.stringify(expr.args, ", "))
         return expr.func.__name__ + "[%s]" % self.stringify(expr.args, ", ")
 
+    # Max and Min inherit from Expr and need explicit function printing.
+    _print_Max = _print_Function
+    _print_Min = _print_Function
+
     def _print_Integral(self, expr):
         if len(expr.variables) == 1 and not expr.limits[0][1:]:
             args = [expr.args[0], expr.variables[0]]
