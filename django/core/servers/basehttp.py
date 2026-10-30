@@ -128,12 +128,28 @@ class ServerHandler(simple_server.ServerHandler):
             LimitedStream(stdin, content_length), stdout, stderr, environ, **kwargs
         )
 
+    def write(self, data):
+        # Consume and close HEAD response iterables as usual, while sending
+        # only their headers when finish_content() is called.
+        if self.environ["REQUEST_METHOD"] != "HEAD":
+            super().write(data)
+
     def cleanup_headers(self):
         super().cleanup_headers()
+        if (
+            self.environ["REQUEST_METHOD"] == "HEAD"
+            and self.headers.get("Content-Length") == "0"
+        ):
+            # finish_content() adds a default length of zero, which doesn't
+            # describe the representation that a GET request would return.
+            del self.headers["Content-Length"]
         # HTTP/1.1 requires support for persistent connections. Send 'close' if
         # the content length is unknown to prevent clients from reusing the
-        # connection.
-        if "Content-Length" not in self.headers:
+        # connection. HEAD responses have no body, regardless of their length.
+        if (
+            self.environ["REQUEST_METHOD"] != "HEAD"
+            and "Content-Length" not in self.headers
+        ):
             self.headers["Connection"] = "close"
         # Persistent connections require threading server.
         elif not isinstance(self.request_handler.server, socketserver.ThreadingMixIn):
