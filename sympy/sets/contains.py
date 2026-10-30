@@ -45,4 +45,15 @@ class Contains(BooleanFunction):
             isinstance(i, (Eq, Ne))])
 
     def as_set(self):
-        raise NotImplementedError()
+        """
+        Return the set whose membership is asserted.
+
+        Examples
+        ========
+
+        >>> from sympy import Contains, S, Symbol
+        >>> x = Symbol('x')
+        >>> Contains(x, S.Reals).as_set()
+        Reals
+        """
+        return self.args[1]
