@@ -9,15 +9,19 @@ contract).
 
 from __future__ import annotations
 
+import datetime
 import sys
 
 RECLEN = 80
 OUTLEN = 47
 
 RATE_BP = {
-    1: 25, 2: 50, 3: 75, 4: 100, 5: 150, 6: 200, 7: 250, 8: 300, 9: 350,
+    1: 25, 2: 50, 3: 75, 4: 100, 5: 150, 6: 200, 7: 245, 8: 300, 9: 350,
 }
 FEE_CAP = 250_000
+EUR_LEVY_THRESHOLD = 5_000_000
+EUR_LEVY_BP = 10
+WEEKEND_MCC_BP = 25
 
 _WEIGHTS = (1, 3, 7)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -34,18 +38,37 @@ def check_char(data: str, upto: int) -> str:
 
 
 def _round_nearest(numerator: int, denominator: int) -> int:
-    """Round to the nearest unit (halves up), per the spec's fee rule."""
+    """Round to the nearest unit (halves up)."""
     quotient, remainder = divmod(numerator, denominator)
     if 2 * remainder >= denominator:
         return quotient + 1
     return quotient
 
 
+def _round_even(numerator: int, denominator: int) -> int:
+    """Round to the nearest unit (halves to even)."""
+    quotient, remainder = divmod(numerator, denominator)
+    if 2 * remainder > denominator or (2 * remainder == denominator and quotient % 2):
+        return quotient + 1
+    return quotient
+
+
+def _round_floor(numerator: int, denominator: int) -> int:
+    return numerator // denominator
+
+
 def _days_in_month(year: int, month: int) -> int:
     days = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+    if month == 2 and year % 4 == 0:
         return 29
     return days[month - 1]
+
+
+def _is_weekend(year: int, month: int, day: int) -> bool:
+    if month == 2 and day == 29 and not (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
+        # Gregorian-invalid leap day: treat as the following day
+        return datetime.date(year, 3, 1).weekday() >= 5
+    return datetime.date(year, month, day).weekday() >= 5
 
 
 class Record:
@@ -80,12 +103,12 @@ class Record:
         if not stripped or not stripped.isalnum():
             self.error = "ERRACCT"
             return
-        sign, digits = raw[12], raw[13:24]
-        if sign not in "+-" or not digits.isdigit():
+        sign, digits = raw[12], raw[13:24].lstrip(" ")
+        if sign not in "+-" or not digits.isdigit() or not digits.isascii():
             self.error = "ERRAMT"
             return
         self.negative = sign == "-"
-        if self.negative:
+        if self.negative and self.type != "RF":
             self.error = "ERRAMT"
             return
         self.amount = int(digits)
@@ -116,8 +139,21 @@ class Record:
         self.mcc = int(mcc)
 
     def compute(self) -> None:
-        fee = _round_nearest(self.amount * RATE_BP[self.tier], 10_000)
-        fee = min(fee, FEE_CAP)
+        parts = [RATE_BP[self.tier]]
+        if self.currency == "EUR" and self.amount > EUR_LEVY_THRESHOLD:
+            parts.append(EUR_LEVY_BP)
+        if 5960 <= self.mcc <= 5969 and _is_weekend(self.year, self.month, self.day):
+            parts.append(WEEKEND_MCC_BP)
+        if self.currency == "JPY":
+            base_round = _round_nearest
+        elif self.type == "RF":
+            base_round = _round_floor
+        else:
+            base_round = _round_even
+        rounders = [base_round] + [_round_nearest] * (len(parts) - 1)
+        fee = sum(r(self.amount * p, 10_000) for r, p in zip(rounders, parts))
+        if self.tier != 9:
+            fee = min(fee, FEE_CAP)
         self.fee = fee
         if self.type == "RF":
             self.net = -(self.amount - fee)
@@ -149,7 +185,9 @@ def process(lines: list[str]) -> list[str]:
             record.compute()
         records.append(record)
 
-    out = [record.emit() for record in records]
+    ordered = [r for r in records if r.error is None]
+    ordered += [r for r in records if r.error is not None]
+    out = [record.emit() for record in ordered]
     accepted = sum(1 for r in records if r.error is None)
     rejected = len(records) - accepted
     fee_sum = sum(r.fee for r in records if r.error is None)
