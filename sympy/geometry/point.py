@@ -105,6 +105,9 @@ class Point(GeometryEntity):
 
     is_Point = True
 
+    # Let scalar expressions defer multiplication to Point.__rmul__.
+    _op_priority = 11.0
+
     def __new__(cls, *args, **kwargs):
         evaluate = kwargs.get('evaluate', global_evaluate[0])
         on_morph = kwargs.get('on_morph', 'ignore')
@@ -261,6 +264,12 @@ class Point(GeometryEntity):
         >>> Point(1, 2)*0.1
         Point2D(0.1, 0.2)
 
+        Multiplication by a scalar works in either order:
+
+        >>> from sympy import sympify
+        >>> Point(0, 0) + sympify(2.0)*Point(1, 1)
+        Point2D(2.0, 2.0)
+
         If this is not desired, the `scale` method can be used or
         else only multiply or divide by integers:
 
@@ -277,6 +286,10 @@ class Point(GeometryEntity):
         factor = sympify(factor)
         coords = [simplify(x*factor) for x in self.args]
         return Point(coords, evaluate=False)
+
+    def __rmul__(self, factor):
+        """Multiply a factor by point's coordinates."""
+        return self.__mul__(factor)
 
     def __neg__(self):
         """Negate the point."""
