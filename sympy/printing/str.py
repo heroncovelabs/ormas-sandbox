@@ -332,8 +332,10 @@ class StrPrinter(Printer):
                 if item.exp is not S.NegativeOne:
                     b.append(apow(item))
                 else:
-                    if (len(item.args[0].args) != 1 and
-                            isinstance(item.base, Mul)):
+                    if ((len(item.args[0].args) != 1 and
+                            isinstance(item.base, Mul)) or
+                            (isinstance(item.base, Pow) and
+                            item.base.exp.is_negative)):
                         # To avoid situations like #14160
                         pow_paren.append(item)
                     b.append(item.base)
