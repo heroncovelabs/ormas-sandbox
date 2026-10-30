@@ -320,6 +320,9 @@ class RenameModel(ModelOperation):
         new_model = to_state.apps.get_model(app_label, self.new_name)
         if self.allow_migrate_model(schema_editor.connection.alias, new_model):
             old_model = from_state.apps.get_model(app_label, self.old_name)
+            # A rename with an explicit, unchanged db_table is a noop.
+            if old_model._meta.db_table == new_model._meta.db_table:
+                return
             # Move the main table
             schema_editor.alter_db_table(
                 new_model,
