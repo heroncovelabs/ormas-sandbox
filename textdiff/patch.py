@@ -1,7 +1,4 @@
-"""Apply an edit script produced by ``textdiff/diff.py``.
-
-NOTE: apply is not implemented — see issue.md.
-"""
+"""Apply an edit script produced by ``textdiff/diff.py``, validating its source."""
 
 
 class PatchError(Exception):
@@ -14,4 +11,20 @@ def apply(ops, a):
     "keep"/"del" ops must match the next line of ``a`` (else PatchError); "ins"
     ops add a line. Every line of ``a`` must be consumed (else PatchError).
     """
-    raise NotImplementedError
+    result = []
+    position = 0
+    for kind, line in ops:
+        if kind == "ins":
+            result.append(line)
+        elif kind in ("keep", "del"):
+            if position >= len(a) or a[position] != line:
+                raise PatchError("Source mismatch at line {}".format(position))
+            position += 1
+            if kind == "keep":
+                result.append(line)
+        else:
+            raise PatchError("Unknown operation kind: {!r}".format(kind))
+
+    if position != len(a):
+        raise PatchError("Edit script left unconsumed source lines")
+    return result
