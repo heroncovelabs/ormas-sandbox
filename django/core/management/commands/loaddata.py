@@ -361,13 +361,14 @@ class Command(BaseCommand):
         current directory.
         """
         dirs = []
-        fixture_dirs = settings.FIXTURE_DIRS
+        # Normalize paths to detect duplicates between strings and Path instances.
+        fixture_dirs = [os.path.realpath(d) for d in settings.FIXTURE_DIRS]
         if len(fixture_dirs) != len(set(fixture_dirs)):
             raise ImproperlyConfigured("settings.FIXTURE_DIRS contains duplicates.")
         for app_config in apps.get_app_configs():
             app_label = app_config.label
             app_dir = os.path.join(app_config.path, "fixtures")
-            if app_dir in fixture_dirs:
+            if os.path.realpath(app_dir) in fixture_dirs:
                 raise ImproperlyConfigured(
                     "'%s' is a default fixture directory for the '%s' app "
                     "and cannot be listed in settings.FIXTURE_DIRS."
