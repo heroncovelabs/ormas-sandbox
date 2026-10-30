@@ -660,6 +660,15 @@ def symbols(names, *, cls=Symbol, **args) -> Any:
         >>> symbols(('a:d', 'x:z'))
         ((a, b, c, d), (x, y, z))
 
+    The ``cls`` argument is propagated through nested iterables, so
+    ranges inside a tuple can also create Function objects::
+
+        >>> q, u = symbols(('q:2', 'u:2'), cls=Function)
+        >>> q
+        (q0, q1)
+        >>> type(q[0])
+        <class 'sympy.core.function.UndefinedFunction'>
+
     Multiple ranges are supported; contiguous numerical ranges should be
     separated by parentheses to disambiguate the ending number of one
     range from the starting number of the next::
@@ -791,7 +800,7 @@ def symbols(names, *, cls=Symbol, **args) -> Any:
         return tuple(result)
     else:
         for name in names:
-            result.append(symbols(name, **args))
+            result.append(symbols(name, cls=cls, **args))
 
         return type(names)(result)
 
