@@ -270,9 +270,10 @@ class DataArrayRolling(Rolling["DataArray"]):
     def __iter__(self) -> Iterator[tuple[RollingKey, DataArray]]:
         if self.ndim > 1:
             raise ValueError("__iter__ is only supported for 1d-rolling")
-        stops = np.arange(1, len(self.window_labels) + 1)
-        starts = stops - int(self.window[0])
-        starts[: int(self.window[0])] = 0
+        window0 = int(self.window[0])
+        offset = window0 - window0 // 2 - 1 if self.center[0] else 0
+        stops = np.arange(1 + offset, len(self.window_labels) + 1 + offset)
+        starts = np.maximum(stops - window0, 0)
         for (label, start, stop) in zip(self.window_labels, starts, stops):
             window = self.obj.isel({self.dim[0]: slice(start, stop)})
 
