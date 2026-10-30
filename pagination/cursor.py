@@ -1,8 +1,7 @@
 """Opaque pagination cursors over records ordered by ``(ts, id)``.
 
-NOTE: ``is_after`` has a bug — it treats the record *at* the cursor as being
-"after" the cursor, which makes that record repeat across page boundaries. See
-issue.md.
+``is_after`` compares the full ``(ts, id)`` key lexicographically with a strict
+greater-than, so the record at the cursor position is excluded from the next page.
 """
 
 import base64
@@ -23,4 +22,4 @@ def decode_cursor(token):
 
 def is_after(record, token):
     """True if ``record`` sorts strictly after the position named by ``token``."""
-    return (record["ts"], record["id"]) >= decode_cursor(token)
+    return (record["ts"], record["id"]) > decode_cursor(token)
