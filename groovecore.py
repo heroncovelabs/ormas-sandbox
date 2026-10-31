@@ -29,11 +29,26 @@ def _digits(token: str) -> bool:
     return token.isascii() and token.isdigit()
 
 
+LONGPLAY = 90  # sides longer than this consume 2 allotment on the live path
+WEAR = 7  # quality lost per side cut since the last remaster
+TAX_SIDES = 4  # a batch with this many sides of a title costs 1 allotment
+CONTENTION = 15  # 4th-side penalty when 3+ titles are in progress
+CONTENTION_TITLES = 3
+
+
 class Title:
-    def __init__(self, minutes: int) -> None:
+    def __init__(self, minutes: int, wear: int = 0) -> None:
         self.minutes = minutes
         self.remaining = ALLOT  # live allotment
         self.sides = 0  # ledger: sides cut
+        self.wear = wear  # quality rungs lost since the last remaster
+        self.batch = 0  # sides cut since the last remaster
+        self.tax = 0  # stamper tax charged against the ledger
+        self.courtesy = False  # courtesy side already granted
+
+    @property
+    def cost(self) -> int:
+        return 2 if self.minutes > LONGPLAY else 1
 
 
 class Engine:
@@ -45,10 +60,10 @@ class Engine:
         self.sides = 0
         self.remasters = 0
         self.rejected = 0
-        self.cut_since_remaster = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        # Only spaces separate tokens; tabs are part of the token.
+        tokens = [tok for tok in line.split(" ") if tok]
         if not tokens:
             return ""
         if tokens[0] == "T":
@@ -87,7 +102,8 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        wear = max((t.wear for t in self.titles.values()), default=0)
+        self.titles[tokens[1]] = Title(int(minutes), wear)
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -100,28 +116,44 @@ class Engine:
         t = self._find(tokens[1])
         if t is None:
             return f"N {title} UNKNOWN"
-        if t.remaining < 1:
+        if t.remaining < t.cost:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        quality = Q_BASE - t.minutes * Q_CUT - t.wear * WEAR
+        if t.sides == 3:
+            busy = sum(
+                1
+                for o in self.titles.values()
+                if 0 < o.sides < ALLOT and o.remaining > 0
+            )
+            if busy >= CONTENTION_TITLES:
+                quality -= CONTENTION
+        t.remaining -= t.cost
         t.sides += 1
-        self.cut_since_remaster += 1
+        t.wear += 1
+        t.batch += 1
         self.sides += 1
         return f"Q {tokens[1]} {quality}"
 
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
+        # A remaster with no sides cut since the previous one reports the
+        # live allotments unchanged.
+        busy = any(t.batch > 0 for t in self.titles.values())
         lines = []
         for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
+            if busy:
+                if t.batch >= TAX_SIDES:
+                    t.tax += 1
+                if t.remaining == 0 and not t.courtesy:
+                    t.courtesy = True
+                    t.remaining = 1
+                else:
+                    t.remaining = ALLOT - t.sides - t.tax
+            t.wear = 0
+            t.batch = 0
             lines.append(f"R {name} {t.remaining}")
         lines.append(f"MEND {len(self.titles)}")
-        self.cut_since_remaster = 0
         self.remasters += 1
         return "\n".join(lines)
 
@@ -130,7 +162,8 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # The controller ends a line at the first carriage return.
+        line = raw.rstrip("\n").split("\r", 1)[0]
         if not line:
             continue
         reply = engine.handle(line)
