@@ -698,6 +698,17 @@ def symbols(names, *, cls=Symbol, **args) -> Any:
         >>> type(_[0])
         <class 'sympy.core.function.UndefinedFunction'>
 
+    The ``cls`` argument is propagated through nested iterables, so functions
+    can be created from a tuple of range strings and unpacked directly::
+
+        >>> q, u = symbols(('q:2', 'u:2'), cls=Function)
+        >>> q
+        (q0, q1)
+        >>> u
+        (u0, u1)
+        >>> type(q[0])
+        <class 'sympy.core.function.UndefinedFunction'>
+
     """
     result = []
 
@@ -791,7 +802,7 @@ def symbols(names, *, cls=Symbol, **args) -> Any:
         return tuple(result)
     else:
         for name in names:
-            result.append(symbols(name, **args))
+            result.append(symbols(name, cls=cls, **args))
 
         return type(names)(result)
 
