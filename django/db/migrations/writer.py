@@ -173,9 +173,9 @@ class MigrationWriter:
         else:
             imports.add("from django.db import migrations")
 
-        # Sort imports by the package / module to be imported (the part after
-        # "from" in "from ... import ..." or after "import" in "import ...").
-        sorted_imports = sorted(imports, key=lambda i: i.split()[1])
+        # Place "import module" statements before "from module import objects",
+        # then sort alphabetically within each group.
+        sorted_imports = sorted(imports, key=lambda i: (i.startswith("from "), i))
         items["imports"] = "\n".join(sorted_imports) + "\n" if imports else ""
         if migration_imports:
             items["imports"] += (
