@@ -88,6 +88,11 @@ def pushdown_projections(
         if _is_self_referencing_cte(scope):
             parent_selections = {SELECT_ALL}
 
+        # INTERSECT / EXCEPT compare whole rows, so narrowing the operands changes
+        # which rows are considered equal, regardless of ALL / DISTINCT.
+        if isinstance(scope.expression, (exp.Intersect, exp.Except)):
+            parent_selections = {SELECT_ALL}
+
         if isinstance(scope.expression, exp.SetOperation):
             set_op = scope.expression
             if set_op.kind or set_op.side:
@@ -166,6 +171,16 @@ def _remove_unused_selections(scope, parent_selections, schema, alias_count, jou
     # Resolve bare GROUP BY ordinals before pruning
     ordinal_refs = _bare_group_by_ordinal_refs(scope.expression)
     group_ordinal_selection_ids = {id(selection) for _, selection in ordinal_refs}
+
+    # GROUP BY ALL derives its keys from the non-aggregate projections, so those
+    # can't be pruned without changing the grouping
+    group = scope.expression.args.get("group")
+    if group and group.args.get("all"):
+        group_ordinal_selection_ids.update(
+            id(selection)
+            for selection in scope.expression.selects
+            if not find_in_scope(selection, exp.AggFunc)
+        )
 
     new_selections = []
     removed = False
