@@ -1836,7 +1836,25 @@ class SQLUpdateCompiler(SQLCompiler):
         query.clear_ordering(force=True)
         query.extra = {}
         query.select = []
-        query.add_fields([query.get_meta().pk.name])
+        select = [query.get_meta().pk.name]
+        related_ids_index = {}
+        for model in self.query.related_updates:
+            path = query.get_meta().get_path_to_parent(model)
+            if all(
+                info.join_field.primary_key
+                and info.target_fields == (info.to_opts.pk,)
+                for info in path
+            ):
+                # The ancestor shares the child's primary key.
+                related_ids_index[model] = 0
+            else:
+                # Follow the full path for ancestors reached through a
+                # secondary parent or a separate primary key.
+                related_ids_index[model] = len(select)
+                select.append(
+                    LOOKUP_SEP.join([info.join_field.name for info in path] + ["pk"])
+                )
+        query.add_fields(select)
         super().pre_sql_setup()
 
         must_pre_select = (
@@ -1851,10 +1869,14 @@ class SQLUpdateCompiler(SQLCompiler):
             # don't want them to change), or the db backend doesn't support
             # selecting from the updating table (e.g. MySQL).
             idents = []
+            related_ids = collections.defaultdict(list)
             for rows in query.get_compiler(self.using).execute_sql(MULTI):
-                idents.extend(r[0] for r in rows)
+                for row in rows:
+                    idents.append(row[0])
+                    for model, index in related_ids_index.items():
+                        related_ids[model].append(row[index])
             self.query.add_filter("pk__in", idents)
-            self.query.related_ids = idents
+            self.query.related_ids = related_ids
         else:
             # The fast path. Filters and updates in one query.
             self.query.add_filter("pk__in", query)
