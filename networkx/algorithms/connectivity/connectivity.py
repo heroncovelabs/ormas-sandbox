@@ -20,6 +20,17 @@ from .utils import build_auxiliary_edge_connectivity, build_auxiliary_node_conne
 
 default_flow_func = edmonds_karp
 
+
+def _simple_graph(G):
+    """Return G without self-loops or parallel edges (G itself if it is simple)."""
+    if not G.is_multigraph() and nx.number_of_selfloops(G) == 0:
+        return G
+    H = nx.DiGraph() if G.is_directed() else nx.Graph()
+    H.add_nodes_from(G)
+    H.add_edges_from((u, v) for u, v in G.edges() if u != v)
+    return H
+
+
 __all__ = [
     "average_node_connectivity",
     "local_node_connectivity",
@@ -185,7 +196,7 @@ def local_node_connectivity(
         flow_func = default_flow_func
 
     if auxiliary is None:
-        H = build_auxiliary_node_connectivity(G)
+        H = build_auxiliary_node_connectivity(_simple_graph(G))
     else:
         H = auxiliary
 
@@ -307,21 +318,28 @@ def node_connectivity(G, s=None, t=None, flow_func=None):
         return local_node_connectivity(G, s, t, flow_func=flow_func)
 
     # Global node connectivity
+    G = _simple_graph(G)
     if G.is_directed():
         if not nx.is_weakly_connected(G):
             return 0
-        iter_func = itertools.permutations
-        # It is necessary to consider both predecessors
-        # and successors for directed graphs
+        # Esfahanian's reduction (algorithm 11) only holds for undirected
+        # graphs, so for digraphs check every ordered pair of distinct nodes
+        # that are not joined by an arc.
+        H = build_auxiliary_node_connectivity(G)
+        R = build_residual_network(H, "capacity")
+        kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
+        K = G.order() - 1
+        for x, y in itertools.permutations(G, 2):
+            if y in G[x]:
+                continue
+            kwargs["cutoff"] = K
+            K = min(K, local_node_connectivity(G, x, y, **kwargs))
+        return K
 
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
-
-    else:
-        if not nx.is_connected(G):
-            return 0
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+    if not nx.is_connected(G):
+        return 0
+    iter_func = itertools.combinations
+    neighbors = G.neighbors
 
     # Reuse the auxiliary digraph and the residual network
     H = build_auxiliary_node_connectivity(G)
