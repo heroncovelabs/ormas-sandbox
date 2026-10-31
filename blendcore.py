@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 
 ID_MAX = 8
+TABLE_MAX = 4096
+VOLUME_MAX = 9999999
 NO_TANK = "????????"
 
 
@@ -26,11 +28,13 @@ def _digits(token: str) -> bool:
 
 
 class Tank:
-    def __init__(self, pigment: str, volume: int) -> None:
+    def __init__(self, name: str, pigment: str, volume: int) -> None:
+        self.name = name
         self.pigment = pigment
         self.volume = volume
         self.fills = volume
         self.dispensed = 0
+        self.loss = 0
 
 
 class Engine:
@@ -38,21 +42,25 @@ class Engine:
 
     def __init__(self) -> None:
         self.tanks: dict[str, Tank] = {}
-        self.jobs: dict[str, int] = {}
+        self.jobs: dict[str, tuple[str, int]] = {}
         self.fills = 0
         self.dispenses = 0
         self.reconciles = 0
         self.rejected = 0
 
     def handle(self, line: str) -> list[str]:
-        tokens = line.split()
-        if not tokens:
+        # The wire parser terminates at the first CR, LF, or NUL. Only
+        # literal spaces separate fields; command prefixes are positional.
+        for terminator in ("\r", "\n", "\0"):
+            line = line.split(terminator, 1)[0]
+        if not line:
             return []
+        tokens = [token for token in line.split(" ") if token]
         if line == "R":
             replies = self._reconcile()
-        elif tokens[0] == "T":
+        elif line.startswith("T "):
             replies = [self._fill(tokens)]
-        elif tokens[0] == "D":
+        elif line.startswith("D "):
             replies = [self._dispense(tokens)]
         else:
             replies = [f"N {NO_TANK} FMT"]
@@ -68,7 +76,7 @@ class Engine:
 
     def _fill(self, tokens: list[str]) -> str:
         tank = tokens[1] if len(tokens) >= 2 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -76,20 +84,25 @@ class Engine:
         if not _digits(vol_tok) or not 2 <= len(vol_tok) <= 7:
             return f"N {tank} VOL"
         volume = int(vol_tok)
-        t = self.tanks.get(tokens[1])
+        key = tank.lower()
+        t = self.tanks.get(key)
         if t is not None:
             if t.pigment != tokens[2]:
                 return f"N {tank} PIGMENT"
-            t.volume += volume
-            t.fills += volume
+            # Physical stock and the current ledger's fill baseline cap
+            # independently, even when pours have opened physical headroom.
+            t.volume = min(VOLUME_MAX, t.volume + volume)
+            t.fills = min(VOLUME_MAX, t.fills + volume)
         else:
-            self.tanks[tokens[1]] = Tank(tokens[2], volume)
+            if len(self.tanks) >= TABLE_MAX:
+                return f"N {tank} FMT"
+            self.tanks[key] = Tank(tank, tokens[2], volume)
         self.fills += 1
         return f"OK {len(self.tanks)}"
 
     def _dispense(self, tokens: list[str]) -> str:
         tank = tokens[2] if len(tokens) >= 3 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -97,25 +110,49 @@ class Engine:
         if not _digits(amt_tok) or len(amt_tok) > 6 or int(amt_tok) < 1:
             return f"N {tank} AMT"
         amount = int(amt_tok)
-        t = self.tanks.get(tokens[2])
+        t = self.tanks.get(tank.lower())
         if t is None:
             return f"N {tank} FMT"
-        if amount > t.volume:
+        if amount > t.volume + 20:
             return f"N {tank} DRY"
-        t.volume -= amount
-        t.dispensed += amount
-        total = self.jobs.get(tokens[1], 0) + amount
-        self.jobs[tokens[1]] = total
+        granted = min(amount, t.volume)
+        t.volume -= granted
+        t.dispensed += granted
+
+        # Uncredited stock loss is rounded per pour, doubled for bulk
+        # uppercase-W stock, and limited to the stock remaining after it.
+        loss = granted // 500
+        if granted >= 1000 and "W" in t.pigment:
+            loss *= 2
+        loss = min(loss, t.volume)
+        t.volume -= loss
+        t.loss += loss
+
+        # The legacy engine draws stock before trying to create a job.
+        # A full job table therefore rejects after updating the tank ledger.
+        key = tokens[1].lower()
+        if key not in self.jobs:
+            if len(self.jobs) >= TABLE_MAX:
+                return f"N {tank} FMT"
+            self.jobs[key] = (tokens[1], 0)
+        name, total = self.jobs[key]
+        total += granted
+        self.jobs[key] = (name, total)
         self.dispenses += 1
-        return f"J {tokens[1]} {total}"
+        return f"J {name} {total}"
 
     def _reconcile(self) -> list[str]:
         replies = []
-        for tank_id, t in self.tanks.items():
-            # SPEC: the book volume is fills minus dispenses; reconcile
-            # is an identity check against the live volume.
-            book = t.fills - t.dispensed
-            replies.append(f"B {tank_id} {book}")
+        for t in self.tanks.values():
+            # Small accumulated losses are restored. Above fifty units,
+            # half the loss (rounded down) becomes a permanent writeoff.
+            writeoff = t.loss // 2 if t.loss > 50 else 0
+            book = max(0, t.fills - t.dispensed - writeoff)
+            t.volume = book
+            t.fills = book
+            t.dispensed = 0
+            t.loss = 0
+            replies.append(f"B {t.name} {book}")
         replies.append(f"REND {len(self.tanks)}")
         self.reconciles += 1
         return replies
@@ -125,10 +162,7 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
-        if not line:
-            continue
-        replies.extend(engine.handle(line))
+        replies.extend(engine.handle(raw))
     replies.append(engine.trailer())
     if out is not None:
         for reply in replies:
@@ -137,7 +171,10 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Read LF-delimited wire lines without universal-newline translation:
+    # CR terminates a command and discards the rest of that same wire line.
+    lines = [raw.decode("utf-8", "surrogateescape") for raw in sys.stdin.buffer]
+    process(lines, out=sys.stdout)
 
 
 if __name__ == "__main__":
