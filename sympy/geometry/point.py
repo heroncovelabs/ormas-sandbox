@@ -104,6 +104,7 @@ class Point(GeometryEntity):
     """
 
     is_Point = True
+    _op_priority = 11.0
 
     def __new__(cls, *args, **kwargs):
         evaluate = kwargs.get('evaluate', global_evaluate[0])
@@ -277,6 +278,29 @@ class Point(GeometryEntity):
         factor = sympify(factor)
         coords = [simplify(x*factor) for x in self.args]
         return Point(coords, evaluate=False)
+
+    def __rmul__(self, factor):
+        """Multiply a factor by point's coordinates."""
+        return self.__mul__(factor)
+
+    # Since Point has a higher _op_priority than Expr, Expr will defer
+    # these reflected operations to Point; define them here so they do
+    # not bounce back to Expr (as GeometryEntity's versions would).
+    def __radd__(self, other):
+        """Add other to the point's coordinates."""
+        return self.__add__(other)
+
+    def __rsub__(self, other):
+        """Subtract the point's coordinates from other."""
+        return (-self).__add__(other)
+
+    def __rdiv__(self, other):
+        """Dividing by a point is not evaluated."""
+        from sympy.core.mul import Mul
+        from sympy.core.power import Pow
+        return Mul(other, Pow(self, S.NegativeOne))
+
+    __rtruediv__ = __rdiv__
 
     def __neg__(self):
         """Negate the point."""
