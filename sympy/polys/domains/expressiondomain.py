@@ -1,7 +1,7 @@
 """Implementation of :class:`ExpressionDomain` class. """
 
 
-from sympy.core import sympify, SympifyError
+from sympy.core import sympify, SympifyError, S
 from sympy.polys.domains.characteristiczero import CharacteristicZero
 from sympy.polys.domains.field import Field
 from sympy.polys.domains.simpledomain import SimpleDomain
@@ -47,7 +47,15 @@ class ExpressionDomain(Field, CharacteristicZero, SimpleDomain):
             return f.__class__(f.ex.as_numer_denom()[1])
 
         def simplify(f, ex):
-            return f.__class__(ex.cancel().expand(**eflags))
+            ex = ex.cancel().expand(**eflags)
+
+            # Provably zero results must become the canonical scalar zero,
+            # otherwise a leading zero coefficient can survive in the DMP
+            # representation (e.g. from clear_denoms()).
+            if ex.is_zero:
+                ex = S.Zero
+
+            return f.__class__(ex)
 
         def __abs__(f):
             return f.__class__(abs(f.ex))
@@ -120,7 +128,7 @@ class ExpressionDomain(Field, CharacteristicZero, SimpleDomain):
             return not f == g
 
         def __bool__(f):
-            return f.ex != 0
+            return f.ex.is_zero is not True
 
         def gcd(f, g):
             from sympy.polys import gcd
