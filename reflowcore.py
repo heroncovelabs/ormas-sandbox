@@ -11,6 +11,7 @@ top of that file; the legacy engine's behavior is the contract).
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
 
 WORD_MAX = 16
 WIDTH_MIN = 10
@@ -24,27 +25,30 @@ def _valid_word(token: str) -> bool:
 
 
 class Engine:
-    """Layout engine: incremental append is an optimization of reflow."""
+    """Layout engine preserving the legacy's distinct layout paths."""
 
     def __init__(self) -> None:
         self.width = 40
         self.doc: list[str] = []
-        # each line: [words...]; a line's length is the characters on it
-        # including the single joining spaces
         self.lines: list[list[str]] = []
+        # Digest lengths are cached separately: reflow omits joining spaces,
+        # while append adds them and width changes rebuild them.
+        self.lengths: list[int] = []
         self.words = 0
         self.reflows = 0
         self.rejected = 0
 
     def handle(self, line: str) -> str:
+        # Only literal spaces separate tokens; surplus tokens are ignored.
+        tokens = [token for token in line.split(" ") if token]
         if line == "W" or line.startswith("W "):
-            reply = self._width(line.split())
+            reply = self._width(tokens)
         elif line == "A" or line.startswith("A "):
-            reply = self._append(line.split())
+            reply = self._append(tokens)
         elif line == "R" or line.startswith("R "):
-            reply = self._reflow(line.split())
+            reply = self._reflow(tokens)
         elif line == "D" or line.startswith("D "):
-            reply = self._digest(line.split())
+            reply = self._digest(tokens)
         else:
             reply = "E FMT"
         if reply.startswith("E "):
@@ -56,10 +60,19 @@ class Engine:
 
     @staticmethod
     def _line_len(line: list[str]) -> int:
-        return sum(len(w) for w in line) + len(line) - 1
+        return sum(len(w) for w in line) + max(0, len(line) - 1)
+
+    @staticmethod
+    def _word_width(word: str) -> int:
+        # Digits occupy bytes in the digest but consume zero wrap width.
+        return sum(c.isalpha() for c in word)
+
+    @classmethod
+    def _wrap_len(cls, line: list[str]) -> int:
+        return sum(cls._word_width(w) for w in line) + max(0, len(line) - 1)
 
     def _width(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return "E FMT"
         w = tokens[1]
         if not (2 <= len(w) <= 3 and w.isascii() and w.isdigit()):
@@ -67,56 +80,77 @@ class Engine:
         v = int(w)
         if not WIDTH_MIN <= v <= WIDTH_MAX:
             return "E WIDTH"
-        # SPEC: W resets nothing else; existing lines are laid out at the
-        # width that was current when they were built.
         self.width = v
+        # Only the current last line is rewrapped. Earlier lines retain both
+        # their boundaries and cached digest lengths. This path retains
+        # oversized words and counts joining spaces on the rebuilt tail.
+        if self.lines:
+            tail = self.lines.pop()
+            self.lengths.pop()
+            current: list[str] = []
+            for word in tail:
+                if (current and
+                        self._wrap_len(current) + 1 + self._word_width(word) > v):
+                    self.lines.append(current)
+                    self.lengths.append(self._line_len(current))
+                    current = []
+                current.append(word)
+            self.lines.append(current)
+            self.lengths.append(self._line_len(current))
         return "OK"
 
     def _append(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return "E FMT"
         word = tokens[1]
         if not _valid_word(word):
             return "E WORD"
-        if len(word) > self.width:
-            return "E WORD"  # SPEC: a word longer than the width is rejected
         self.doc.append(word)
-        if (self.lines and
-                self._line_len(self.lines[-1]) + 1 + len(word) <= self.width):
+        if self.lines and not self.lines[-1]:
             self.lines[-1].append(word)
+            self.lengths[-1] = len(word)
+        elif (self.lines and
+                self._wrap_len(self.lines[-1]) + 1 + self._word_width(word)
+                <= self.width):
+            self.lines[-1].append(word)
+            self.lengths[-1] += 1 + len(word)
         else:
             self.lines.append([word])
+            self.lengths.append(len(word))
         self.words += 1
         return f"L {len(self.lines)}"
 
     def _reflow(self, tokens: list[str]) -> str:
-        if len(tokens) != 1:
-            return "E FMT"
-        # SPEC: reflow re-lays the whole document with the same greedy
-        # rule; append is an optimization of reflow, so the layouts match.
-        self.lines = []
+        # Reflow permanently shortens words whose wrap width is oversized.
+        # The cutoff is a byte count, even for mixed letter/digit words.
+        self.doc = [word[:self.width] if self._word_width(word) > self.width
+                    else word for word in self.doc]
+        self.lines = [[]]
+        self.lengths = [0]
         for word in self.doc:
-            if (self.lines and
-                    self._line_len(self.lines[-1]) + 1 + len(word) <= self.width):
-                self.lines[-1].append(word)
-            else:
-                self.lines.append([word])
+            # Equality starts a new line here; append and W allow equality.
+            if (self.lines[-1] and
+                    self._wrap_len(self.lines[-1]) + 1 + self._word_width(word)
+                    >= self.width):
+                self.lines.append([])
+                self.lengths.append(0)
+            self.lines[-1].append(word)
+            self.lengths[-1] += len(word)
         self.reflows += 1
         return f"L {len(self.lines)}"
 
     def _digest(self, tokens: list[str]) -> str:
-        if len(tokens) != 1:
-            return "E FMT"
-        total = sum(self._line_len(line) * _WEIGHTS[i % 2]
-                    for i, line in enumerate(self.lines))
+        total = sum(length * _WEIGHTS[i % 2]
+                    for i, length in enumerate(self.lengths))
         return f"D {total % DIGEST_MOD}"
 
 
-def process(lines: list[str], out=None) -> list[str]:
+def process(lines: Iterable[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
+        # The legacy reader terminates commands at CR, LF, or NUL.
+        line = raw.split("\0", 1)[0].split("\r", 1)[0].split("\n", 1)[0]
         if not line:
             continue
         replies.append(engine.handle(line))
@@ -128,7 +162,10 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Match the legacy 64 KiB fgets buffer and preserve embedded CR bytes.
+    chunks = iter(lambda: sys.stdin.buffer.readline(65535), b"")
+    process((raw.decode("ascii", "surrogateescape") for raw in chunks),
+            out=sys.stdout)
 
 
 if __name__ == "__main__":
