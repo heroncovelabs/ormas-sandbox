@@ -76,6 +76,8 @@ class StyleMeta(type):
                 return ''
             elif text.startswith('var') or text.startswith('calc'):
                 return text
+            elif text == 'transparent':
+                return text
             assert False, f"wrong color format {text!r}"
 
         _styles = obj._styles = {}
