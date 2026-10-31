@@ -961,6 +961,10 @@ class RenameIndex(IndexOperation):
             from_model_state = from_state.models[app_label, self.model_name_lower]
             old_index = from_model_state.get_index_by_name(self.old_name)
 
+        # Skip renaming when the index already has the target name.
+        if old_index.name == self.new_name:
+            return
+
         to_model_state = to_state.models[app_label, self.model_name_lower]
         new_index = to_model_state.get_index_by_name(self.new_name)
         schema_editor.rename_index(model, old_index, new_index)
