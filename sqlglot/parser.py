@@ -2412,16 +2412,23 @@ class Parser:
         concurrently = self._match_text_seq("CONCURRENTLY")
         if_exists = exists or self._parse_exists()
 
+        tables = None
         if kind == "COLUMN":
             this = self._parse_column()
         else:
-            this = self._parse_table_parts(schema=True, is_db_reference=kind == "SCHEMA")
+            is_db_reference = kind == "SCHEMA"
+            this = self._parse_table_parts(schema=True, is_db_reference=is_db_reference)
 
-        tables = (
-            self._parse_csv(lambda: self._parse_table_parts(schema=True))
-            if kind == "TABLE" and self._match(TokenType.COMMA)
-            else None
-        )
+            if self._match(TokenType.COMMA):
+                tables = [
+                    this,
+                    *self._parse_csv(
+                        lambda: self._parse_table_parts(
+                            schema=True, is_db_reference=is_db_reference
+                        )
+                    ),
+                ]
+                this = None
 
         cluster = self._parse_on_property() if self._match(TokenType.ON) else None
 
@@ -9319,6 +9326,7 @@ class Parser:
                 options.append(self._prev.text.upper())
 
         this: exp.Expr | None = None
+        tables: list[exp.Expr] | None = None
         inner_expression: exp.Expr | None = None
 
         kind = self._curr.text.upper() if self._curr else None
@@ -9342,6 +9350,10 @@ class Parser:
             kind = None
             this = self._parse_table_parts()
 
+        if this and kind in (None, "TABLE") and self._match(TokenType.COMMA):
+            tables = [this, *self._parse_csv(self._parse_table_parts)]
+            this = None
+
         partition = self._try_parse(self._parse_partition)
         if not partition and self._match_texts(self.PARTITION_KEYWORDS):
             return self._parse_as_command(start)
@@ -9362,6 +9374,7 @@ class Parser:
             exp.Analyze(
                 kind=kind,
                 this=this,
+                tables=tables,
                 mode=mode,
                 partition=partition,
                 properties=properties,
