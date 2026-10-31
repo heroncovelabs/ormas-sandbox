@@ -105,7 +105,7 @@ class RelatedIn(In):
                     target_field = self.lhs.field.name
                 else:
                     target_field = self.lhs.field.target_field.name
-                self.rhs.add_fields([target_field], True)
+                self.rhs.set_values([target_field])
         return super().get_prep_lookup()
 
     def as_sql(self, compiler, connection):
