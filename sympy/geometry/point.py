@@ -104,6 +104,8 @@ class Point(GeometryEntity):
     """
 
     is_Point = True
+    # Give Point's coordinate arithmetic priority over scalar expressions.
+    _op_priority = 11.0
 
     def __new__(cls, *args, **kwargs):
         evaluate = kwargs.get('evaluate', global_evaluate[0])
@@ -269,6 +271,15 @@ class Point(GeometryEntity):
         >>> Point(1, 2)*11/10
         Point2D(11/10, 11/5)
 
+        Multiplication by a SymPy scalar scales coordinates in either order:
+
+        >>> from sympy import Float
+        >>> point = Point(1, 2)
+        >>> Float(2.0)*point
+        Point2D(2.0, 4.0)
+        >>> Point(0, 0) + Float(2.0)*point == Point(0, 0) + point*Float(2.0)
+        True
+
         See Also
         ========
 
@@ -277,6 +288,10 @@ class Point(GeometryEntity):
         factor = sympify(factor)
         coords = [simplify(x*factor) for x in self.args]
         return Point(coords, evaluate=False)
+
+    def __rmul__(self, factor):
+        """Multiply point's coordinates by a factor from the left."""
+        return self.__mul__(factor)
 
     def __neg__(self):
         """Negate the point."""
