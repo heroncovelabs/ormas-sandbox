@@ -265,8 +265,14 @@ class Query(BaseExpression):
 
     @property
     def has_select_fields(self):
+        # Masks set by alias() don't constitute an explicit selection when the
+        # default columns are still selected.
         return bool(
-            self.select or self.annotation_select_mask or self.extra_select_mask
+            self.select
+            or (
+                not self.default_cols
+                and (self.annotation_select_mask or self.extra_select_mask)
+            )
         )
 
     @cached_property
