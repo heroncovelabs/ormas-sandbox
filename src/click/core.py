@@ -3574,7 +3574,8 @@ class Argument(Parameter):
         if self.deprecated:
             var += "!"
         if not self.required:
-            var = f"[{var}]"
+            if not (var.startswith("[") and var.endswith("]")):
+                var = f"[{var}]"
         if self.nargs != 1:
             var += "..."
         return var
