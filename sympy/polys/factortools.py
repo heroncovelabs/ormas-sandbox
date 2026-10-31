@@ -1146,23 +1146,38 @@ def dmp_ext_factor(f, u, K):
     if all(d <= 0 for d in dmp_degree_list(f, u)):
         return lc, []
 
-    f, F = dmp_sqf_part(f, u, K), f
-    s, g, r = dmp_sqf_norm(f, u, K)
+    # split off the content in the remaining variables; it is factored
+    # recursively below, so that factors like `y - 1` are not lost
+    cont, f = dmp_primitive(f, u, K)
 
-    factors = dmp_factor_list_include(r, u, K.dom)
+    if dmp_degree(f, u) > 0:
+        F = f
+        f = dmp_sqf_part(f, u, K)
+        s, g, r = dmp_sqf_norm(f, u, K)
 
-    if len(factors) == 1:
-        factors = [f]
+        factors = dmp_factor_list_include(r, u, K.dom)
+
+        if len(factors) == 1:
+            factors = [f]
+        else:
+            H = dmp_raise([K.one, s*K.unit], u, 0, K)
+
+            for i, (factor, _) in enumerate(factors):
+                h = dmp_convert(factor, u, K.dom, K)
+                h, _, g = dmp_inner_gcd(h, g, u, K)
+                h = dmp_compose(h, H, u, K)
+                factors[i] = h
+
+        factors = dmp_trial_division(F, factors, u, K)
     else:
-        H = dmp_raise([K.one, s*K.unit], u, 0, K)
+        factors = []
 
-        for i, (factor, _) in enumerate(factors):
-            h = dmp_convert(factor, u, K.dom, K)
-            h, _, g = dmp_inner_gcd(h, g, u, K)
-            h = dmp_compose(h, H, u, K)
-            factors[i] = h
+    c, cont_factors = dmp_factor_list(cont, u - 1, K)
 
-    return lc, dmp_trial_division(F, factors, u, K)
+    for g, k in cont_factors:
+        factors.insert(0, ([g], k))
+
+    return lc*c, _sort_factors(factors)
 
 
 def dup_gf_factor(f, K):
