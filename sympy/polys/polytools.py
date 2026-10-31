@@ -5950,6 +5950,16 @@ def _symbolic_factor_list(expr, opt, method):
 
                 factors.append((_factors_product(other), exp))
 
+    if method == 'sqf':
+        # Combine square-free factors with the same multiplicity.
+        grouped = {}
+        for f, k in factors:
+            if k in grouped:
+                grouped[k] *= f
+            else:
+                grouped[k] = f
+        factors = [(f, k) for k, f in grouped.items()]
+
     return coeff, factors
 
 
