@@ -135,6 +135,12 @@ class Command(BaseCommand):
         # Need to check migrations here, so can't use the
         # requires_migrations_check attribute.
         self.check_migrations()
+        if self._raw_ipv6:
+            addr = f"[{self.addr}]"
+        elif self.addr == "0":
+            addr = "0.0.0.0"
+        else:
+            addr = self.addr
         now = datetime.now().strftime("%B %d, %Y - %X")
         self.stdout.write(now)
         self.stdout.write(
@@ -147,7 +153,7 @@ class Command(BaseCommand):
                 "version": self.get_version(),
                 "settings": settings.SETTINGS_MODULE,
                 "protocol": self.protocol,
-                "addr": "[%s]" % self.addr if self._raw_ipv6 else self.addr,
+                "addr": addr,
                 "port": self.port,
                 "quit_command": quit_command,
             }
