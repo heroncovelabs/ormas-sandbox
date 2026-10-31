@@ -1,7 +1,7 @@
 from sympy import S, Symbol
 from sympy.core.logic import fuzzy_and, fuzzy_bool, fuzzy_not, fuzzy_or
 from sympy.core.relational import Eq
-from sympy.sets.sets import FiniteSet, Interval, Set, Union
+from sympy.sets.sets import FiniteSet, Interval, Set, Union, ProductSet
 from sympy.sets.fancysets import Complexes, Reals, Range, Rationals
 from sympy.multipledispatch import dispatch
 
@@ -30,6 +30,11 @@ def is_subset_sets(a_interval, b_fs): # noqa:F811
     # which can only happen if it has zero measure.
     if fuzzy_not(a_interval.measure.is_zero):
         return False
+
+@dispatch(ProductSet, FiniteSet)  # type: ignore # noqa:F811
+def is_subset_sets(a_ps, b_fs): # noqa:F811
+    if a_ps.is_finite_set:
+        return fuzzy_and(b_fs.contains(x) for x in a_ps)
 
 @dispatch(Interval, Union)  # type: ignore # noqa:F811
 def is_subset_sets(a_interval, b_u): # noqa:F811
