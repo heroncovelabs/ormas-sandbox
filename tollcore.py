@@ -8,26 +8,33 @@ engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 BASE_CENTS = 250
 PER_AXLE_CENTS = 40
 CLASS_BP = {"C": 10_000, "T": 18_000, "B": 14_000, "M": 6_000}
 PEAK_BP = 20_000
+BUS_PEAK_BP = 19_000
+WEEKEND_FREIGHT_BP = 6_500
 MORNING_START, MORNING_END = 700, 929
 EVENING_START, EVENING_END = 1600, 1859
+# The legacy tokenizer recognizes these four ASCII separators.
+TOKENS = re.compile(r"[^ \t\r\n]+")
 
 
 def _round_nearest(numerator: int, denominator: int) -> int:
-    """Round to the nearest cent (halves up), per the spec's toll rule."""
+    """Round to the nearest cent, choosing the even cent on an exact tie."""
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
+    if 2 * remainder > denominator or (
+        2 * remainder == denominator and quotient % 2
+    ):
         return quotient + 1
     return quotient
 
 
 def _tag_ok(tag: str) -> bool:
-    return 1 <= len(tag) <= 10 and tag.isalnum()
+    return 1 <= len(tag) <= 10 and tag.isascii() and tag.isalnum()
 
 
 class Engine:
@@ -45,17 +52,18 @@ class Engine:
         self.count_rej += 1
 
     def handle(self, line: str) -> None:
-        parts = line.split()
+        # C strings end at NUL; trailing fields beyond the first seven are ignored.
+        parts = TOKENS.findall(line.split("\0", 1)[0])
         if not parts:
             return
         tag_valid = len(parts) > 1 and _tag_ok(parts[1])
         tag = parts[1] if tag_valid else "??????????"
-        if parts[0] != "T" or len(parts) != 7 or not tag_valid:
+        if parts[0] != "T" or len(parts) < 7 or not tag_valid:
             self._reject(tag, "FMT")
             return
         gate_tok, axles_tok, time_tok, dow_tok, class_tok = parts[2:7]
 
-        if not (len(gate_tok) == 2 and gate_tok.isdigit()):
+        if not (len(gate_tok) == 2 and gate_tok.isascii() and gate_tok.isdigit()):
             self._reject(tag, "GATE")
             return
         gate = int(gate_tok)
@@ -63,7 +71,7 @@ class Engine:
             self._reject(tag, "GATE")
             return
 
-        if not (len(axles_tok) == 1 and axles_tok.isdigit()):
+        if not (len(axles_tok) == 1 and axles_tok.isascii() and axles_tok.isdigit()):
             self._reject(tag, "AXLES")
             return
         axles = int(axles_tok)
@@ -71,34 +79,49 @@ class Engine:
             self._reject(tag, "AXLES")
             return
 
-        if not (len(time_tok) == 4 and time_tok.isdigit()):
+        if not (len(time_tok) == 4 and time_tok.isascii() and time_tok.isdigit()):
             self._reject(tag, "TIME")
             return
         hh, mm = int(time_tok[:2]), int(time_tok[2:])
-        if hh > 23 or mm > 59:
+        if (hh > 23 or mm > 59) and time_tok != "2400":
             self._reject(tag, "TIME")
             return
-        hhmm = hh * 100 + mm
+        hhmm = 0 if time_tok == "2400" else hh * 100 + mm
 
-        if not (len(dow_tok) == 1 and dow_tok.isdigit()):
+        if not (len(dow_tok) == 1 and dow_tok.isascii() and dow_tok.isdigit()):
             self._reject(tag, "DOW")
             return
         dow = int(dow_tok)
-        if not 1 <= dow <= 7:
+        if not 0 <= dow <= 7:
             self._reject(tag, "DOW")
             return
+        if dow == 0:
+            dow = 7
 
         if class_tok not in CLASS_BP:
             self._reject(tag, "CLASS")
             return
 
+        if class_tok == "M" and axles >= 3:
+            class_tok = "C"
+
         base = BASE_CENTS + PER_AXLE_CENTS * (axles - 1)
+        morning_start = 645 if gate >= 30 else MORNING_START
+        evening_end = 1929 if gate <= 5 else EVENING_END
         peak = 1 <= dow <= 5 and (
-            MORNING_START <= hhmm <= MORNING_END
-            or EVENING_START <= hhmm <= EVENING_END
+            morning_start <= hhmm <= MORNING_END
+            or EVENING_START <= hhmm <= evening_end
         )
-        toll = _round_nearest(base * (PEAK_BP if peak else 10_000), 10_000)
-        toll = _round_nearest(toll * CLASS_BP[class_tok], 10_000)
+        peak_bp = (BUS_PEAK_BP if class_tok == "B" else PEAK_BP) if peak else 10_000
+        freight_bp = (
+            WEEKEND_FREIGHT_BP
+            if class_tok == "T" and dow >= 6 and 12 <= gate <= 17
+            else 10_000
+        )
+        # Keep every multiplier exact and round once at the final cent.
+        toll = _round_nearest(
+            base * peak_bp * CLASS_BP[class_tok] * freight_bp, 10_000 ** 3
+        )
 
         self._emit(f"F {tag} {toll}")
         self.count_ok += 1
@@ -110,8 +133,9 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    # Match the legacy 4096-byte fgets buffer, including its long-line chunks.
+    for line in iter(lambda: sys.stdin.buffer.readline(4095), b""):
+        engine.handle(line.decode("ascii", "surrogateescape"))
     engine.finish()
 
 
