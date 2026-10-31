@@ -17,6 +17,13 @@ from sqlglot.tokens import TokenType
 if t.TYPE_CHECKING:
     from sqlglot.dialects.dialect import Dialect
 
+JSON_BINARY_OPERATOR_TOKENS = {
+    TokenType.ARROW,
+    TokenType.DARROW,
+    TokenType.HASH_ARROW,
+    TokenType.DHASH_ARROW,
+    TokenType.PLACEHOLDER,
+}
 
 def _build_generate_series(args: list) -> exp.ExplodingGenerateSeries:
     # The goal is to convert step values like '1 day' or INTERVAL '1 day' into INTERVAL '1' day
@@ -202,6 +209,15 @@ class PostgresParser(parser.Parser):
                 exp.JSONExtractScalar, arrow_req_json_type=self.JSON_ARROWS_REQUIRE_JSON_TYPE
             )([this, path])
         ),
+    }
+
+    # JSON operators belong to Postgres' "any other operator" precedence tier, same as ||
+    BINARY_COLUMN_OPERATORS = {
+        k: v for k, v in COLUMN_OPERATORS.items() if k in JSON_BINARY_OPERATOR_TOKENS
+    }
+
+    COLUMN_OPERATORS = {
+        k: v for k, v in COLUMN_OPERATORS.items() if k not in JSON_BINARY_OPERATOR_TOKENS
     }
 
     ARG_MODE_TOKENS: t.ClassVar = {TokenType.IN, TokenType.OUT, TokenType.INOUT, TokenType.VARIADIC}

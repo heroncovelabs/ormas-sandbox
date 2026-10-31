@@ -1071,6 +1071,10 @@ class Parser:
         TokenType.DCOLON,
     }
 
+    # Operators parsed as left-associative binary operators at the same precedence as ||,
+    # instead of as tight-binding column operators (e.g. JSON operators in Postgres)
+    BINARY_COLUMN_OPERATORS: t.ClassVar[dict] = {}
+
     EXPRESSION_PARSERS: t.ClassVar = {
         exp.Cluster: lambda self: self._parse_sort(exp.Cluster, TokenType.CLUSTER_BY),
         exp.Column: lambda self: self._parse_column(),
@@ -6253,6 +6257,9 @@ class Parser:
                 this = self.expression(
                     exp.Coalesce(this=this, expressions=ensure_list(self._parse_term()))
                 )
+            elif self._match_set(self.BINARY_COLUMN_OPERATORS):
+                op = self.BINARY_COLUMN_OPERATORS[self._prev.token_type]
+                this = op(self, this, self._parse_term())
             elif self._match_pair(TokenType.LT, TokenType.LT):
                 this = self.expression(
                     exp.BitwiseLeftShift(this=this, expression=self._parse_term())

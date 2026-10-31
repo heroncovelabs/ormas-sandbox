@@ -85,6 +85,19 @@ class DuckDBParser(parser.Parser):
 
     BITWISE = {k: v for k, v in parser.Parser.BITWISE.items() if k != TokenType.CARET}
 
+    # JSON arrow operators share Postgres' precedence tier, i.e. the same as ||
+    BINARY_COLUMN_OPERATORS = {
+        k: v
+        for k, v in parser.Parser.COLUMN_OPERATORS.items()
+        if k in (TokenType.ARROW, TokenType.DARROW)
+    }
+
+    COLUMN_OPERATORS = {
+        k: v
+        for k, v in parser.Parser.COLUMN_OPERATORS.items()
+        if k not in (TokenType.ARROW, TokenType.DARROW)
+    }
+
     RANGE_PARSERS = {
         **parser.Parser.RANGE_PARSERS,
         TokenType.DAMP: binary_range_parser(exp.ArrayOverlaps),
