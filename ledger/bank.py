@@ -22,33 +22,61 @@ class Bank:
 
     def open_account(self, account_id):
         """Open a new account at zero balance. ValueError if it already exists."""
-        raise NotImplementedError
+        if account_id in self._balances:
+            raise ValueError(f"Account already exists: {account_id}")
+        self._emit(AccountOpened(account_id))
 
     def deposit(self, account_id, amount):
         """Add ``amount`` (> 0) to an existing account."""
-        raise NotImplementedError
+        self._validate_command(account_id, amount)
+        self._emit(Deposited(account_id, amount))
 
     def withdraw(self, account_id, amount):
         """Remove ``amount`` (> 0); InsufficientFunds if the balance is too low."""
-        raise NotImplementedError
+        if self._validate_command(account_id, amount) < amount:
+            raise InsufficientFunds(f"Insufficient funds: {account_id}")
+        self._emit(Withdrawn(account_id, amount))
 
     def transfer(self, src, dst, amount):
         """Move ``amount`` from ``src`` to ``dst`` atomically."""
-        raise NotImplementedError
+        available = self._validate_command(src, amount)
+        self.balance(dst)
+        if available < amount:
+            raise InsufficientFunds(f"Insufficient funds: {src}")
+        self._emit(Withdrawn(src, amount), Deposited(dst, amount))
 
     def balance(self, account_id):
         """Return the current balance of an existing account."""
-        raise NotImplementedError
+        if account_id not in self._balances:
+            raise ValueError(f"Unknown account: {account_id}")
+        return self._balances[account_id]
 
     def snapshot(self):
         """Return a copy of the current balances (account id -> balance)."""
-        raise NotImplementedError
+        return self._balances.copy()
 
     def history(self):
-        """Return the ordered event log."""
-        raise NotImplementedError
+        """Return a copy of the ordered event log."""
+        return self._log.copy()
 
     @classmethod
     def from_history(cls, events):
         """Rebuild a bank by replaying ``events``."""
-        raise NotImplementedError
+        bank = cls()
+        bank._log = list(events)
+        bank._balances = replay(bank._log)
+        return bank
+
+    def _validate_command(self, account_id, amount):
+        balance = self.balance(account_id)
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+        return balance
+
+    def _emit(self, *events):
+        """Apply a complete batch before publishing its events and balances."""
+        balances = self._balances
+        for event in events:
+            balances = apply_event(balances, event)
+        self._log.extend(events)
+        self._balances = balances
