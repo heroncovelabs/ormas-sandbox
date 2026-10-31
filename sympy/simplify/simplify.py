@@ -207,7 +207,8 @@ def posify(eq):
     Any symbol that has positive=None will be replaced with a positive dummy
     symbol having the same name. This replacement will allow more symbolic
     processing of expressions, especially those involving powers and
-    logarithms.
+    logarithms. The other assumptions of the original symbol (e.g. finite,
+    integer, real) are carried over to the dummy symbol.
 
     A dictionary that can be sent to subs to restore eq to its original
     symbols is also returned.
@@ -216,6 +217,13 @@ def posify(eq):
     >>> from sympy.abc import x
     >>> posify(x + Symbol('p', positive=True) + Symbol('n', negative=True))
     (_x + n + p, {_x: x})
+
+    Assumptions other than positivity are preserved:
+
+    >>> y = Symbol('y', finite=True)
+    >>> yp, _ = posify(y)
+    >>> yp.is_finite, yp.is_positive
+    (True, True)
 
     >>> eq = 1/x
     >>> log(eq).expand()
@@ -251,7 +259,7 @@ def posify(eq):
             eq[i] = e.subs(reps)
         return f(eq), {r: s for s, r in reps.items()}
 
-    reps = {s: Dummy(s.name, positive=True)
+    reps = {s: Dummy(s.name, positive=True, **s.assumptions0)
                  for s in eq.free_symbols if s.is_positive is None}
     eq = eq.subs(reps)
     return eq, {r: s for s, r in reps.items()}
