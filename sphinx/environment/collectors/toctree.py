@@ -208,6 +208,7 @@ class TocTreeCollector(EnvironmentCollector):
         old_fignumbers = env.toc_fignumbers
         env.toc_fignumbers = {}
         fignum_counter: Dict[str, Dict[Tuple[int, ...], int]] = {}
+        generated_docnames = frozenset(env.domains['std'].initial_data['labels'].keys())
 
         def get_figtype(node: Node) -> Optional[str]:
             for domain in env.domains.values():
@@ -258,6 +259,9 @@ class TocTreeCollector(EnvironmentCollector):
                     for _title, subdocname in subnode['entries']:
                         if url_re.match(subdocname) or subdocname == 'self':
                             # don't mess with those
+                            continue
+                        if subdocname in generated_docnames:
+                            # or these
                             continue
 
                         _walk_doc(subdocname, secnum)
