@@ -548,6 +548,41 @@ def version_option(
     return option(*param_decls, **kwargs)
 
 
+def custom_version_option(
+    callback: t.Callable[[Context], str],
+    *param_decls: str,
+    **kwargs: t.Any,
+) -> t.Callable[[FC], FC]:
+    """Add a ``--version`` option which immediately prints the output of
+    ``callback`` and exits the program with status 0.
+
+    :param callback: A function called with the current :class:`Context`
+        that returns the text to print.
+    :param param_decls: One or more option names. Defaults to the single
+        value ``"--version"``.
+    :param kwargs: Extra arguments are passed to :func:`option`.
+
+    .. versionadded:: 8.4
+    """
+
+    def show_version(ctx: Context, param: Parameter, value: bool) -> None:
+        if not value or ctx.resilient_parsing:
+            return
+
+        echo(callback(ctx), color=ctx.color)
+        ctx.exit()
+
+    if not param_decls:
+        param_decls = ("--version",)
+
+    kwargs.setdefault("is_flag", True)
+    kwargs.setdefault("expose_value", False)
+    kwargs.setdefault("is_eager", True)
+    kwargs.setdefault("help", _("Show the version and exit."))
+    kwargs["callback"] = show_version
+    return option(*param_decls, **kwargs)
+
+
 def help_option(*param_decls: str, **kwargs: t.Any) -> t.Callable[[FC], FC]:
     """Pre-configured ``--help`` option which immediately prints the help page
     and exits the program.
