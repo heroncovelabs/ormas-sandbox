@@ -7,6 +7,22 @@ book volume from its ledger), writes one reply per command and an ``X``
 trailer at EOF.
 Format reference: ``docs/SPEC.md`` (note the drift warning at the top of
 that file; the legacy engine's behavior is the contract).
+
+Engine behavior that differs from the spec:
+
+* Tank and job ids are case-insensitive (first-seen spelling is kept);
+  pigments compare case-sensitively. Tokens are separated by spaces only
+  and trailing tokens after the documented ones are ignored.
+* The fills ledger is capped at ``FILL_CAP``; the physical volume is not.
+* Every pour loses ``amount // 500`` physically (doubled for pours of at
+  least 1000 from pigments containing an uppercase ``W``), never more
+  than what is left in the tank. The loss is invisible to the book until
+  a reconcile.
+* A request at most ``DRY_SLACK`` over the physical volume is granted
+  short (the whole physical volume) instead of being rejected.
+* ``R`` writes off half of the loss accumulated since the last reconcile
+  when it exceeds ``WRITEOFF_MIN``; the resulting book volume becomes the
+  tank's new baseline (ledger and physical volume).
 """
 
 from __future__ import annotations
@@ -15,6 +31,11 @@ import sys
 
 ID_MAX = 8
 NO_TANK = "????????"
+FILL_CAP = 9999999
+LOSS_UNIT = 500
+WHITE_MIN = 1000
+DRY_SLACK = 20
+WRITEOFF_MIN = 50
 
 
 def _valid_id(token: str) -> bool:
@@ -26,11 +47,21 @@ def _digits(token: str) -> bool:
 
 
 class Tank:
-    def __init__(self, pigment: str, volume: int) -> None:
+    def __init__(self, name: str, pigment: str) -> None:
+        self.name = name
         self.pigment = pigment
-        self.volume = volume
-        self.fills = volume
+        self.white = "W" in pigment
+        self.fills = 0
         self.dispensed = 0
+        self.physical = 0
+        self.loss = 0
+
+    def fill(self, volume: int) -> None:
+        self.fills = min(self.fills + volume, FILL_CAP)
+        self.physical += volume
+
+    def book(self) -> int:
+        return self.fills - self.dispensed
 
 
 class Engine:
@@ -38,22 +69,21 @@ class Engine:
 
     def __init__(self) -> None:
         self.tanks: dict[str, Tank] = {}
-        self.jobs: dict[str, int] = {}
+        self.jobs: dict[str, list] = {}
         self.fills = 0
         self.dispenses = 0
         self.reconciles = 0
         self.rejected = 0
 
     def handle(self, line: str) -> list[str]:
-        tokens = line.split()
-        if not tokens:
-            return []
         if line == "R":
             replies = self._reconcile()
-        elif tokens[0] == "T":
-            replies = [self._fill(tokens)]
-        elif tokens[0] == "D":
-            replies = [self._dispense(tokens)]
+        elif line[0] in "TD" and (len(line) == 1 or line[1] == " "):
+            tokens = [t for t in line[1:].split(" ") if t]
+            if line[0] == "T":
+                replies = [self._fill(tokens)]
+            else:
+                replies = [self._dispense(tokens)]
         else:
             replies = [f"N {NO_TANK} FMT"]
         if replies and replies[0].startswith("N "):
@@ -67,55 +97,67 @@ class Engine:
         )
 
     def _fill(self, tokens: list[str]) -> str:
-        tank = tokens[1] if len(tokens) >= 2 else NO_TANK
-        if len(tokens) != 4:
+        tank = tokens[0] if tokens else NO_TANK
+        if len(tokens) < 3:
             return f"N {tank} FMT"
-        if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
+        if not _valid_id(tokens[0]) or not _valid_id(tokens[1]):
             return f"N {tank} FMT"
-        vol_tok = tokens[3]
+        vol_tok = tokens[2]
         if not _digits(vol_tok) or not 2 <= len(vol_tok) <= 7:
             return f"N {tank} VOL"
         volume = int(vol_tok)
-        t = self.tanks.get(tokens[1])
-        if t is not None:
-            if t.pigment != tokens[2]:
-                return f"N {tank} PIGMENT"
-            t.volume += volume
-            t.fills += volume
-        else:
-            self.tanks[tokens[1]] = Tank(tokens[2], volume)
+        key = tokens[0].lower()
+        t = self.tanks.get(key)
+        if t is None:
+            t = Tank(tokens[0], tokens[1])
+            self.tanks[key] = t
+        elif t.pigment != tokens[1]:
+            return f"N {tank} PIGMENT"
+        t.fill(volume)
         self.fills += 1
         return f"OK {len(self.tanks)}"
 
     def _dispense(self, tokens: list[str]) -> str:
-        tank = tokens[2] if len(tokens) >= 3 else NO_TANK
-        if len(tokens) != 4:
+        tank = tokens[1] if len(tokens) >= 2 else NO_TANK
+        if len(tokens) < 3:
             return f"N {tank} FMT"
-        if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
+        if not _valid_id(tokens[0]) or not _valid_id(tokens[1]):
             return f"N {tank} FMT"
-        amt_tok = tokens[3]
+        amt_tok = tokens[2]
         if not _digits(amt_tok) or len(amt_tok) > 6 or int(amt_tok) < 1:
             return f"N {tank} AMT"
         amount = int(amt_tok)
-        t = self.tanks.get(tokens[2])
+        t = self.tanks.get(tokens[1].lower())
         if t is None:
             return f"N {tank} FMT"
-        if amount > t.volume:
-            return f"N {tank} DRY"
-        t.volume -= amount
+        if amount > t.physical:
+            if amount - t.physical > DRY_SLACK:
+                return f"N {tank} DRY"
+            amount = t.physical
+        t.physical -= amount
         t.dispensed += amount
-        total = self.jobs.get(tokens[1], 0) + amount
-        self.jobs[tokens[1]] = total
+        loss = amount // LOSS_UNIT
+        if t.white and amount >= WHITE_MIN:
+            loss *= 2
+        loss = min(loss, t.physical)
+        t.physical -= loss
+        t.loss += loss
+        job = self.jobs.setdefault(tokens[0].lower(), [tokens[0], 0])
+        job[1] += amount
         self.dispenses += 1
-        return f"J {tokens[1]} {total}"
+        return f"J {job[0]} {job[1]}"
 
     def _reconcile(self) -> list[str]:
         replies = []
-        for tank_id, t in self.tanks.items():
-            # SPEC: the book volume is fills minus dispenses; reconcile
-            # is an identity check against the live volume.
-            book = t.fills - t.dispensed
-            replies.append(f"B {tank_id} {book}")
+        for t in self.tanks.values():
+            book = t.book()
+            if t.loss > WRITEOFF_MIN:
+                book -= t.loss // 2
+            t.fills = book
+            t.dispensed = 0
+            t.physical = book
+            t.loss = 0
+            replies.append(f"B {t.name} {book}")
         replies.append(f"REND {len(self.tanks)}")
         self.reconciles += 1
         return replies
@@ -137,7 +179,8 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    data = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+    process(data.split("\n"), out=sys.stdout)
 
 
 if __name__ == "__main__":
