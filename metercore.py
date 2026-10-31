@@ -8,7 +8,10 @@ that file; the legacy engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
+
+_SEPARATOR_RE = re.compile(r"[ \t\r]+")
 
 TIER1_LIMIT = 500
 TIER2_LIMIT = 2000
@@ -21,10 +24,30 @@ SUMMER_PCT = 110
 ERROR_CODES = ("FMT", "MONTH", "KWH", "BAND", "METER")
 
 
+def _is_ascii_digits(text: str) -> bool:
+    """True when text is non-empty and made only of ASCII digits 0-9."""
+    return text.isascii() and text.isdigit()
+
+
+def _tokenize(record: str) -> list[str]:
+    """Split one record into tokens the way the engine does.
+
+    The engine treats only space, tab, and carriage return as separators.
+    A NUL byte ends the record. Other control and non-ASCII bytes are ordinary
+    token characters, so a line of only such bytes still counts as a token.
+    """
+    record = record.split("\x00", 1)[0]
+    return [token for token in _SEPARATOR_RE.split(record) if token]
+
+
 def _round_nearest(numerator: int, denominator: int) -> int:
-    """Round to the nearest cent (halves up), per the spec's billing rule."""
+    """Round to the nearest integer; exact halves go to the even integer.
+
+    Verified against the engine: 178.5 -> 178, 297.5 -> 298, 31.5 -> 32.
+    """
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
+    twice = 2 * remainder
+    if twice > denominator or (twice == denominator and quotient % 2 == 1):
         return quotient + 1
     return quotient
 
@@ -43,16 +66,29 @@ def _slices(prev: int, kwh: int) -> tuple[int, int, int]:
     return s1, s2, kwh - s1 - s2
 
 
-def _reading_fee(prev: int, kwh: int, month: int, band: str) -> int:
-    fee = 0
+def _reading_fee(prev: int, kwh: int, month: int, band: str, *, meter: str = "S") -> int:
+    """Bill one reading in cents. The engine rounds once per reading.
+
+    Engine behavior (overrides the spec):
+    - month is taken modulo 12, so 13 bills as January (winter, non-summer).
+    - winter night (months 12, 1, 2; band N) gets 60% on tier-1 energy only.
+    - the summer surcharge (+10%) covers tiers 2 and 3.
+    - meter L adds 3% to the whole reading.
+    """
+    eff_month = month % 12
+    summer = eff_month in SUMMER_MONTHS
+    winter = eff_month in (0, 1, 2)  # 0 is month 12
+    numerator = 0
     for tier, slice_kwh in enumerate(_slices(prev, kwh)):
         if slice_kwh == 0:
             continue
-        # spec: the summer surcharge applies to tier-3 energy only.
-        season = SUMMER_PCT if month in SUMMER_MONTHS and tier == 2 else 100
-        units = slice_kwh * RATE_TENTHS[tier] * BAND_PCT[band] * season
-        fee += _round_nearest(units, 100_000)
-    return fee
+        band_pct = BAND_PCT[band]
+        if tier == 0 and band == "N" and winter:
+            band_pct = 60
+        season = SUMMER_PCT if summer and tier >= 1 else 100
+        numerator += slice_kwh * RATE_TENTHS[tier] * band_pct * season
+    meter_pct = 103 if meter == "L" else 100
+    return _round_nearest(numerator * meter_pct, 100_000 * 100)
 
 
 def process(lines: list[str]) -> list[str]:
@@ -69,18 +105,20 @@ def process(lines: list[str]) -> list[str]:
         month = kwh = 0
         band = ""
 
-        if len(tokens) != 6 or tokens[0] != "M":
+        # The engine accepts six or more tokens; fields beyond the sixth are ignored.
+        if len(tokens) < 6 or tokens[0] != "M":
             error = "FMT"
         elif not (1 <= len(tokens[1]) <= 8 and tokens[1].isalnum() and tokens[1].isascii()):
             error = "FMT"
-        elif len(tokens[2]) != 2 or not tokens[2].isdigit():
+        elif len(tokens[2]) != 2 or not _is_ascii_digits(tokens[2]):
             error = "MONTH"
         else:
             month = int(tokens[2])
-            if not 1 <= month <= 12:
+            # The engine accepts month 13 (billed as a non-summer month).
+            if not 1 <= month <= 13:
                 error = "MONTH"
         if error is None:
-            if not (1 <= len(tokens[3]) <= 6 and tokens[3].isdigit()):
+            if not (1 <= len(tokens[3]) <= 6 and _is_ascii_digits(tokens[3])):
                 error = "KWH"
             else:
                 kwh = int(tokens[3])
@@ -97,10 +135,15 @@ def process(lines: list[str]) -> list[str]:
             rejected += 1
             continue
 
-        account = accounts.get(tokens[1])
+        # Zero-kWh readings are valid no-ops: they create no account.
+        if kwh == 0:
+            continue
+        # Account ids are case-insensitive; the first-seen spelling is shown.
+        key = tokens[1].lower()
+        account = accounts.get(key)
         if account is None:
-            account = accounts[tokens[1]] = Account(tokens[1])
-        fee = _reading_fee(account.counter, kwh, month, band)
+            account = accounts[key] = Account(tokens[1])
+        fee = _reading_fee(account.counter, kwh, month, band, meter=tokens[5])
         account.counter += kwh
         account.total_kwh += kwh
         account.bill += fee
