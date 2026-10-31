@@ -907,6 +907,14 @@ class String(Token):
     def _sympystr(self, printer, *args, **kwargs):
         return self.text
 
+    def kwargs(self, exclude=(), apply=None):
+        return {}
+
+    # to be removed when Atom is given a suitable func
+    @property
+    def func(self):
+        return lambda: self
+
 
 class QuotedString(String):
     """ Represents a string which should be printed with quotes. """
