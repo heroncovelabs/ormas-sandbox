@@ -1627,7 +1627,7 @@ class Rational(Number):
 
         if not isinstance(p, SYMPY_INTS):
             p = Rational(p)
-            q *= p.q
+            q = Rational(q) * p.q
             p = p.p
         else:
             p = int(p)
