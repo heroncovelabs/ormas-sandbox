@@ -305,7 +305,7 @@ class StrPrinter(Printer):
         a = []  # items in the numerator
         b = []  # items that are in the denominator (if any)
 
-        pow_paren = []  # Will collect all pow with more than one base element and exp = -1
+        pow_paren = []  # Powers whose bases need parentheses in the denominator
 
         if self.order not in ('old', 'none'):
             args = expr.as_ordered_factors()
@@ -333,8 +333,8 @@ class StrPrinter(Printer):
                     b.append(apow(item))
                 else:
                     if (len(item.args[0].args) != 1 and
-                            isinstance(item.base, Mul)):
-                        # To avoid situations like #14160
+                            isinstance(item.base, (Mul, Pow))):
+                        # Preserve grouping for products and nested fractions.
                         pow_paren.append(item)
                     b.append(item.base)
             elif item.is_Rational and item is not S.Infinity:
@@ -350,7 +350,7 @@ class StrPrinter(Printer):
         a_str = [self.parenthesize(x, prec, strict=False) for x in a]
         b_str = [self.parenthesize(x, prec, strict=False) for x in b]
 
-        # To parenthesize Pow with exp = -1 and having more than one Symbol
+        # Parenthesize product and power bases of reciprocals.
         for item in pow_paren:
             if item.base in b:
                 b_str[b.index(item.base)] = "(%s)" % b_str[b.index(item.base)]
