@@ -743,6 +743,30 @@ def _nthroot_mod1(s, q, p, all_roots):
     return min(res)
 
 
+def _nthroot_mod_prime_power(a, n, p, k):
+    """Return all roots of ``x**n = a mod p**k`` for prime ``p``."""
+    roots = nthroot_mod(a % p, n, p, True)
+    if roots is None:
+        return []
+    modulus = p
+    for _ in range(1, k):
+        next_modulus = modulus*p
+        lifted = []
+        for root in roots:
+            derivative = n*pow(root, n - 1, p) % p
+            difference = (a - pow(root, n, next_modulus)) % next_modulus
+            if derivative:
+                correction = difference//modulus*mod_inverse(derivative, p) % p
+                lifted.append(root + correction*modulus)
+            elif difference == 0:
+                lifted.extend(root + i*modulus for i in range(p))
+        if not lifted:
+            return []
+        roots = lifted
+        modulus = next_modulus
+    return sorted(roots)
+
+
 def nthroot_mod(a, n, p, all_roots=False):
     """
     Find the solutions to ``x**n = a mod p``
@@ -753,7 +777,8 @@ def nthroot_mod(a, n, p, all_roots=False):
     a : integer
     n : positive integer
     p : positive integer
-    all_roots : if False returns the smallest root, else the list of roots
+    all_roots : for prime p or n == 2, if False returns the smallest root,
+        else the list of roots; otherwise the list of roots is returned
 
     Examples
     ========
@@ -765,16 +790,37 @@ def nthroot_mod(a, n, p, all_roots=False):
     [8, 11]
     >>> nthroot_mod(68, 3, 109)
     23
+    >>> nthroot_mod(17**2, 5, 17, True)
+    [0]
     """
     from sympy.core.numbers import igcdex
     a, n, p = as_int(a), as_int(n), as_int(p)
     if n == 2:
         return sqrt_mod(a, p, all_roots)
+    if p <= 0:
+        raise ValueError('p must be > 0')
+    if n <= 0:
+        raise ValueError('n must be > 0')
+    if not isprime(p):
+        from sympy.polys.domains import ZZ
+        from sympy.polys.galoistools import gf_crt1, gf_crt2
+        if p == 1:
+            return [0]
+        roots, moduli = [], []
+        for prime, power in factorint(p).items():
+            prime_roots = _nthroot_mod_prime_power(a, n, prime, power)
+            if not prime_roots:
+                return []
+            roots.append(prime_roots)
+            moduli.append(prime**power)
+        mm, e, s = gf_crt1(moduli, ZZ)
+        return sorted(int(gf_crt2(values, moduli, mm, e, s, ZZ))
+                      for values in _product(*roots))
     # see Hackman "Elementary Number Theory" (2009), page 76
     if not is_nthpow_residue(a, n, p):
         return None
-    if not isprime(p):
-        raise NotImplementedError("Not implemented for composite p")
+    if a % p == 0:
+        return [0] if all_roots else 0
 
     if (p - 1) % n == 0:
         return _nthroot_mod1(a, n, p, all_roots)
