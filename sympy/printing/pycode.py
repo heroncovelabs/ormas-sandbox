@@ -313,7 +313,7 @@ _known_constants_mpmath = {
 
 class MpmathPrinter(PythonCodePrinter):
     """
-    Lambda printer for mpmath which maintains precision for floats
+    Lambda printer for mpmath which maintains precision for floats and rationals
     """
     printmethod = "_mpmathcode"
 
@@ -331,6 +331,10 @@ class MpmathPrinter(PythonCodePrinter):
         args = str(tuple(map(int, e._mpf_)))
         return '{func}({args})'.format(func=self._module_format('mpmath.mpf'), args=args)
 
+
+    def _print_Rational(self, e):
+        return '{0}({1})/{0}({2})'.format(
+            self._module_format('mpmath.mpf'), e.p, e.q)
 
     def _print_uppergamma(self, e):
         return "{0}({1}, {2}, {3})".format(
