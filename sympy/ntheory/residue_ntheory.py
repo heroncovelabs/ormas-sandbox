@@ -743,6 +743,40 @@ def _nthroot_mod1(s, q, p, all_roots):
     return min(res)
 
 
+def _nthroot_mod_composite(a, n, m):
+    """
+    Find the sorted list of solutions to ``x**n = a mod m`` when ``m``
+    is not prime.
+    """
+    from sympy.ntheory.modular import crt
+    from sympy.utilities.iterables import cartes
+    moduli = []
+    residues = []
+    for p, e in factorint(m).items():
+        roots = nthroot_mod(a, n, p, True) or []
+        # lift the roots mod p**k to roots mod p**(k + 1) (Hensel)
+        pk = p
+        for k in range(1, e):
+            pk1 = pk*p
+            new_roots = set()
+            for r in roots:
+                fr = pow(r, n, pk1) - a
+                if (n*pow(r, n - 1, p)) % p:
+                    # unique lift
+                    t = (-(fr // pk) * mod_inverse(n*pow(r, n - 1, p), p)) % p
+                    new_roots.add((r + t*pk) % pk1)
+                elif fr % pk1 == 0:
+                    # every lift is a root
+                    new_roots.update(r + t*pk for t in range(p))
+            roots = new_roots
+            pk = pk1
+        if not roots:
+            return []
+        moduli.append(pk)
+        residues.append(sorted(roots))
+    return sorted(set(int(crt(moduli, list(r))[0]) for r in cartes(*residues)))
+
+
 def nthroot_mod(a, n, p, all_roots=False):
     """
     Find the solutions to ``x**n = a mod p``
@@ -768,13 +802,16 @@ def nthroot_mod(a, n, p, all_roots=False):
     """
     from sympy.core.numbers import igcdex
     a, n, p = as_int(a), as_int(n), as_int(p)
+    a = a % p
     if n == 2:
         return sqrt_mod(a, p, all_roots)
+    if not isprime(p):
+        return _nthroot_mod_composite(a, n, p)
+    if a == 0:
+        return [0] if all_roots else 0
     # see Hackman "Elementary Number Theory" (2009), page 76
     if not is_nthpow_residue(a, n, p):
         return None
-    if not isprime(p):
-        raise NotImplementedError("Not implemented for composite p")
 
     if (p - 1) % n == 0:
         return _nthroot_mod1(a, n, p, all_roots)
