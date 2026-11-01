@@ -156,7 +156,7 @@ def _sqrt_match(p):
         res = (p, S.Zero, S.Zero)
     elif p.is_Add:
         pargs = sorted(p.args, key=default_sort_key)
-        if all((x**2).is_Rational for x in pargs):
+        if all(x.is_real and (x**2).is_Rational for x in pargs):
             r, b, a = split_surds(p)
             res = a, b, r
             return list(res)
@@ -328,6 +328,14 @@ def _sqrtdenest1(expr, denester=True):
 
     a = expr.base
     if a.is_Atom:
+        return expr
+    if a.is_number and a.is_real is False:
+        real, imag = a.as_real_imag()
+        if real.is_Rational and imag.is_Rational:
+            # A rational magnitude permits denesting a complex square root.
+            d2 = real**2 + imag**2
+            if sqrt(d2).is_Rational:
+                return _sqrt_numeric_denest(real, imag, S.NegativeOne, d2)
         return expr
     val = _sqrt_match(a)
     if not val:
