@@ -105,6 +105,9 @@ class Point(GeometryEntity):
 
     is_Point = True
 
+    # Let Point handle arithmetic with SymPy scalar expressions.
+    _op_priority = 10.1
+
     def __new__(cls, *args, **kwargs):
         evaluate = kwargs.get('evaluate', global_evaluate[0])
         on_morph = kwargs.get('on_morph', 'ignore')
@@ -260,6 +263,9 @@ class Point(GeometryEntity):
 
         >>> Point(1, 2)*0.1
         Point2D(0.1, 0.2)
+        >>> from sympy import Float
+        >>> Float(0.1)*Point(1, 2)
+        Point2D(0.1, 0.2)
 
         If this is not desired, the `scale` method can be used or
         else only multiply or divide by integers:
@@ -277,6 +283,10 @@ class Point(GeometryEntity):
         factor = sympify(factor)
         coords = [simplify(x*factor) for x in self.args]
         return Point(coords, evaluate=False)
+
+    def __rmul__(self, factor):
+        """Multiply point's coordinates by a factor from the left."""
+        return self.__mul__(factor)
 
     def __neg__(self):
         """Negate the point."""
