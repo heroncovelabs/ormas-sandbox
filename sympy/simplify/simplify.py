@@ -251,8 +251,17 @@ def posify(eq):
             eq[i] = e.subs(reps)
         return f(eq), {r: s for s, r in reps.items()}
 
-    reps = {s: Dummy(s.name, positive=True)
-                 for s in eq.free_symbols if s.is_positive is None}
+    # preserve assumptions that remain valid for a positive symbol
+    keep = ('finite', 'infinite', 'integer', 'rational', 'irrational',
+        'algebraic', 'transcendental', 'prime', 'composite', 'even', 'odd',
+        'commutative')
+    reps = {}
+    for s in eq.free_symbols:
+        if s.is_positive is None:
+            assumptions = {k: v for k, v in s.assumptions0.items()
+                if k in keep and v is not None}
+            assumptions['positive'] = True
+            reps[s] = Dummy(s.name, **assumptions)
     eq = eq.subs(reps)
     return eq, {r: s for s, r in reps.items()}
 
