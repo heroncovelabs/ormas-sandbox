@@ -14,12 +14,14 @@ import socket
 import sys
 
 MAX_KEYS = 4096
+VALUE_KEEP = 48  # values up to 64 chars are accepted but stored truncated
 
 
 class Peer:
     def __init__(self):
         self.store: dict[str, str] = {}  # insertion-ordered
         self.connections = 0
+        self.sessions: dict[str, int] = {}  # node name -> session number
 
     # -- one connection -----------------------------------------------------
 
@@ -33,46 +35,58 @@ class Peer:
         if not raw:
             return
         parts = raw.decode(errors="replace").strip().split()
+        version = _int(parts[1]) if len(parts) >= 2 else None
         if (
-            len(parts) != 3
+            len(parts) < 3
             or parts[0] != "HELLO"
-            or not parts[1].isdigit()
-            or not 1 <= int(parts[1]) <= 9
+            or version is None
+            or not 1 <= version <= 9
             or not _alnum(parts[2], 1, 8)
         ):
             send("ERR HANDSHAKE")
             return
-        negotiated = min(int(parts[1]), 3)
-        send(f"WELCOME {negotiated} S{self.connections}")
+        # The peer only speaks protocol 1 and 3; anything below 3 falls back to 1.
+        negotiated = 3 if version >= 3 else 1
+        # Session ids are stable per node name, assigned in first-seen order.
+        session = self.sessions.setdefault(parts[2], len(self.sessions) + 1)
+        send(f"WELCOME {negotiated} S{session}")
 
-        commands = 0
+        commands = 1  # the handshake counts
         for raw in iter(rfile.readline, b""):
             line = raw.decode(errors="replace").rstrip("\r\n")
             if not line:
                 continue
             commands += 1
             parts = line.split()
-            cmd = parts[0]
+            cmd = parts[0] if parts else ""
             if cmd == "BYE":
-                send(f"GOODBYE {commands - 1}")
+                send(f"GOODBYE {commands}")
                 return
-            if cmd == "PUT" and len(parts) == 3 and _alnum(parts[1], 1, 16) and 1 <= len(parts[2]) <= 64:
-                if parts[1] not in self.store and len(self.store) >= MAX_KEYS:
+            # Extra trailing tokens are ignored.
+            if cmd == "PUT" and len(parts) >= 3 and _alnum(parts[1], 1, 16) and 1 <= len(parts[2]) <= 64:
+                key, value = parts[1], parts[2][:VALUE_KEEP]
+                old = self.store.get(key)
+                if old is None and len(self.store) >= MAX_KEYS:
                     send("ERR FULL")
                     continue
-                self.store[parts[1]] = parts[2]
-                send("OK")
-            elif cmd == "GET" and len(parts) == 2 and _alnum(parts[1], 1, 16):
+                self.store[key] = value
+                send(f"OK {old}" if old is not None and old != value else "OK")
+            elif cmd == "GET" and len(parts) >= 2 and _alnum(parts[1], 1, 16):
                 value = self.store.get(parts[1])
-                send(f"VAL {value}" if value is not None else "ERR NOTFOUND")
-            elif cmd == "DEL" and len(parts) == 2 and _alnum(parts[1], 1, 16):
+                if value is not None:
+                    send(f"VAL {value}")
+                else:
+                    send("NIL" if negotiated == 1 else "ERR NOTFOUND")
+            elif cmd == "DEL" and len(parts) >= 2 and _alnum(parts[1], 1, 16):
                 if parts[1] in self.store:
                     del self.store[parts[1]]
                     send("OK")
                 else:
                     send("ERR NOTFOUND")
-            elif cmd == "KEYS" and len(parts) == 2 and len(parts[1]) <= 16:
-                matches = sorted(k for k in self.store if k.startswith(parts[1]))
+            elif cmd == "KEYS" and len(parts) >= 2 and len(parts[1]) <= 16:
+                # Case-insensitive prefix, newest insertion first.
+                prefix = parts[1].lower()
+                matches = [k for k in reversed(self.store) if k.lower().startswith(prefix)]
                 for key in matches:
                     send(f"KEY {key}")
                 send(f"END {len(matches)}")
@@ -106,6 +120,13 @@ class Peer:
 
 def _alnum(value: str, lo: int, hi: int) -> bool:
     return lo <= len(value) <= hi and value.isalnum()
+
+
+def _int(value: str) -> int | None:
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def main() -> None:
