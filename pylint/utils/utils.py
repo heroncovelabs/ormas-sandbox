@@ -253,6 +253,20 @@ def _check_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
     return _splitstrip(value)
 
 
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> list[str]:
+    """Split a comma-separated list of regular expressions, taking care not to
+    split on commas used inside a quantifier such as `\\d{1,2}`.
+    """
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    patterns = [
+        pattern.strip()
+        for pattern in re.split(r",(?![^{]*\})", value)
+        if pattern.strip()
+    ]
+    return patterns
+
+
 def _comment(string: str) -> str:
     """Return string as a comment."""
     lines = [line.strip() for line in string.splitlines()]
