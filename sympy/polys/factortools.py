@@ -1146,6 +1146,15 @@ def dmp_ext_factor(f, u, K):
     if all(d <= 0 for d in dmp_degree_list(f, u)):
         return lc, []
 
+    # Preserve factors independent of the leading variable before taking
+    # the square-free part, which removes the polynomial content.
+    content, f = dmp_primitive(f, u, K)
+    content_factors = [([g], k) for g, k in
+                       dmp_ext_factor(content, u - 1, K)[1]]
+
+    if dmp_degree(f, u) <= 0:
+        return lc, content_factors
+
     f, F = dmp_sqf_part(f, u, K), f
     s, g, r = dmp_sqf_norm(f, u, K)
 
@@ -1162,7 +1171,8 @@ def dmp_ext_factor(f, u, K):
             h = dmp_compose(h, H, u, K)
             factors[i] = h
 
-    return lc, dmp_trial_division(F, factors, u, K)
+    factors = dmp_trial_division(F, factors, u, K)
+    return lc, _sort_factors(factors + content_factors)
 
 
 def dup_gf_factor(f, K):
