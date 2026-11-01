@@ -13,6 +13,11 @@ import sys
 PRICE_MAX = 10_000_000
 QTY_MAX = 999_999
 HASH_MOD = 1_000_000_007
+TICK_REGIME_START = 100_000
+TICK_REGIME_SIZE = 5
+LARGE_QTY = 1_000
+ROUND_LOT = 100
+VOLATILITY_BAND = 500
 
 
 class Order:
@@ -58,6 +63,10 @@ class Engine:
                 better = True
             elif order.price != best.price:
                 better = order.price < best.price if side == "B" else order.price > best.price
+            elif _large(order) != _large(best):
+                # Engine: block-size orders (original qty >= 1000) take
+                # priority over smaller orders at the same price.
+                better = _large(order)
             else:
                 better = order.seq < best.seq
             if better:
@@ -74,18 +83,32 @@ class Engine:
         if not is_market and not 0 < price < PRICE_MAX:
             self._emit(f"R {clordid} PRICE")
             return
-        if self._find_live(acct, clordid) is not None:
-            self._emit(f"R {clordid} DUP")
+        if not is_market and price >= TICK_REGIME_START and price % TICK_REGIME_SIZE:
+            self._emit(f"R {clordid} TICK")
             return
+        previous = self._find_live(acct, clordid)
+        if previous is not None:
+            # Engine: reusing a live clordid is a cancel-replace.
+            previous.live = False
+            self._emit(f"X {previous.clordid} {previous.orig}")
 
         remaining = qty
+        first_price = None
         while remaining:
             counter = self._best_counter(side, price, is_market)
             if counter is None:
                 break
             if counter.acct == acct:
-                self._emit(f"R {clordid} STP")
-                return
+                # Engine: self-trade cancels the resting order and continues.
+                counter.live = False
+                self._emit(f"X {counter.clordid} {counter.orig}")
+                continue
+            # Engine: a sweep stops once it moves more than the band away
+            # from its first fill price.
+            if first_price is None:
+                first_price = counter.price
+            elif abs(counter.price - first_price) > VOLATILITY_BAND:
+                break
             take = min(remaining, counter.qty)
             self._emit(f"F {counter.clordid} {clordid} {counter.price} {take}")
             counter.qty -= take
@@ -107,7 +130,7 @@ class Engine:
             self._emit(f"R {clordid} UNKNOWN")
             return
         order.live = False
-        self._emit(f"X {order.clordid} {order.qty}")
+        self._emit(f"X {order.clordid} {order.orig}")
 
     def end_session(self) -> None:
         bid = ask = 0
@@ -119,7 +142,9 @@ class Engine:
                 bid = max(bid, order.price)
             elif ask == 0 or order.price < ask:
                 ask = order.price
-            book_hash = (book_hash + order.price * order.qty) % HASH_MOD
+            if order.qty >= ROUND_LOT:
+                # Engine: odd-lot remainders are excluded from the hash.
+                book_hash = (book_hash + order.price * order.qty) % HASH_MOD
         self._emit(f"S {bid} {ask} {book_hash}")
 
     # -- line protocol ------------------------------------------------------
@@ -132,8 +157,9 @@ class Engine:
         if parts == ["E"]:
             self.end_session()
             return
-        if parts[0] == "N" and len(parts) == 7:
-            _, acct, clordid, side, type_, price, qty = parts
+        # Engine: tokens past the expected count are ignored.
+        if parts[0] == "N" and len(parts) >= 7:
+            _, acct, clordid, side, type_, price, qty = parts[:7]
             if (
                 _token(acct, 4, 4)
                 and _token(clordid, 1, 8)
@@ -148,14 +174,22 @@ class Engine:
                 return
             self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
             return
-        if parts[0] == "C" and len(parts) == 3:
-            _, acct, clordid = parts
+        if parts[0] == "N" and len(parts) >= 3:
+            clordid = parts[2]
+            self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
+            return
+        if parts[0] == "C" and len(parts) >= 3:
+            _, acct, clordid = parts[:3]
             if _token(acct, 4, 4) and _token(clordid, 1, 8):
                 self.cancel(acct, clordid)
                 return
             self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
             return
         self._emit("R ???????? FMT")
+
+
+def _large(order: Order) -> bool:
+    return order.orig >= LARGE_QTY
 
 
 def _token(value: str, lo: int, hi: int) -> bool:
