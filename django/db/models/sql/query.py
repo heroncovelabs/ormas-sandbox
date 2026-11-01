@@ -1019,6 +1019,8 @@ class Query(BaseExpression):
 
         The 'reuse' parameter can be either None which means all joins are
         reusable, or it can be a set containing the aliases that can be reused.
+        Joins with a filtered relation are reused only when their filtered
+        relations match.
 
         A join is always created as LOUTER if the lhs alias is LOUTER to make
         sure chains like t1 LOUTER t2 INNER t3 aren't generated. All new
@@ -1027,7 +1029,8 @@ class Query(BaseExpression):
         reuse_aliases = [
             a
             for a, j in self.alias_map.items()
-            if (reuse is None or a in reuse) and j.equals(join)
+            if (reuse is None or a in reuse)
+            and (j == join if join.filtered_relation else j.equals(join))
         ]
         if reuse_aliases:
             if join.table_alias in reuse_aliases:
