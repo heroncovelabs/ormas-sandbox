@@ -95,8 +95,10 @@ class UnsortedTagsError(ValueError):
 
 class InvalidTag(ValueError):
     """
-    Raised when a tag has an empty interpreter, ABI, or platform component, or
-    does not have exactly three components.
+    Raised when a tag has an empty interpreter, ABI, or platform component, an
+    interpreter member that is not a valid Python identifier (e.g. ``"2"``,
+    ``"2.7.6"``, ``"py3.2"``, or ``"py+3"``), or does not have exactly three
+    components.
 
     .. versionadded:: 26.3
     """
@@ -249,8 +251,9 @@ def parse_tag(
     :raises UnsortedTagsError: If **validate_order** is true and any compressed tag
         set component is not in sorted order.
     :raises InvalidTag: If the interpreter, ABI, or platform field (or any member
-        of a compressed tag set) is empty, or the tag does not have exactly three
-        components.
+        of a compressed tag set) is empty, if any interpreter member is not a
+        valid Python identifier (checked with :meth:`str.isidentifier`), or the
+        tag does not have exactly three components.
     :raises TooManyTagsError: If **limit** is not ``None`` and the compressed tag
         set would generate more than **limit** tags.
     :raises ValueError: If **limit** is negative.
@@ -263,6 +266,8 @@ def parse_tag(
        not have exactly three components.
        Added the *limit* parameter. Raises :class:`TooManyTagsError` if the compressed
        tag set would generate more than *limit* tags.
+       Raises :class:`InvalidTag` if an interpreter member is not a valid Python
+       identifier.
     """
 
     if limit is not None and limit < 0:
@@ -293,6 +298,12 @@ def parse_tag(
         interpreters, abis, platforms = component_parts
     except ValueError as exc:
         raise InvalidTag(f"Tag {tag!r} must have exactly three components") from exc
+    for interpreter in interpreters:
+        if not interpreter.isidentifier():
+            raise InvalidTag(
+                f"Tag {tag!r} has an invalid interpreter member: {interpreter!r} "
+                "is not a valid Python identifier"
+            )
     return frozenset(
         Tag(interpreter, abi, platform_)
         for interpreter in interpreters
