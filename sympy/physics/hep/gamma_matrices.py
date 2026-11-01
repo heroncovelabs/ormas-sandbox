@@ -692,9 +692,9 @@ def kahane_simplify(expression):
     # power of two factor, as described in Kahane's paper:
     resulting_coeff *= 2**(number_of_contractions)
 
-    # If `first_dum_pos` is not zero, it means that there are trailing free gamma
-    # matrices in front of `expression`, so multiply by them:
-    for i in range(0, first_dum_pos):
+    # If `first_dum_pos` is not zero, prepend the leading free gamma matrices
+    # in reverse order to preserve their original order in each product:
+    for i in reversed(range(first_dum_pos)):
         [ri.insert(0, free_pos[i]) for ri in resulting_indices]
 
     resulting_expr = S.Zero
