@@ -183,7 +183,9 @@ def floatformat(text, arg=-1):
     tupl = d.as_tuple()
     units = len(tupl[1])
     units += -tupl[2] if m else tupl[2]
-    prec = abs(p) + units + 1
+    # Scaled zeros such as Decimal("0.00") yield units <= 0, which would give
+    # an invalid Context precision (must be >= 1).
+    prec = abs(p) + max(units, 1) + 1
 
     # Avoid conversion to scientific notation by accessing `sign`, `digits`,
     # and `exponent` from Decimal.as_tuple() directly.
