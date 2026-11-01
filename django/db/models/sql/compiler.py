@@ -1722,11 +1722,17 @@ class SQLInsertCompiler(SQLCompiler):
 
         placeholder_rows, param_rows = self.assemble_as_sql(fields, value_rows)
 
+        update_fields = self.query.update_fields
+        unique_fields = self.query.unique_fields
+        if update_fields:
+            update_fields = [opts.get_field(name).column for name in update_fields]
+        if unique_fields:
+            unique_fields = [opts.get_field(name).column for name in unique_fields]
         on_conflict_suffix_sql = self.connection.ops.on_conflict_suffix_sql(
             fields,
             self.query.on_conflict,
-            self.query.update_fields,
-            self.query.unique_fields,
+            update_fields,
+            unique_fields,
         )
         if (
             self.returning_fields
