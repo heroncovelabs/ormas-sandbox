@@ -205,9 +205,9 @@ def posify(eq):
     symbols.
 
     Any symbol that has positive=None will be replaced with a positive dummy
-    symbol having the same name. This replacement will allow more symbolic
-    processing of expressions, especially those involving powers and
-    logarithms.
+    symbol having the same name and all the original assumptions. This
+    replacement will allow more symbolic processing of expressions,
+    especially those involving powers and logarithms.
 
     A dictionary that can be sent to subs to restore eq to its original
     symbols is also returned.
@@ -251,7 +251,7 @@ def posify(eq):
             eq[i] = e.subs(reps)
         return f(eq), {r: s for s, r in reps.items()}
 
-    reps = {s: Dummy(s.name, positive=True)
+    reps = {s: Dummy(s.name, positive=True, **s.assumptions0)
                  for s in eq.free_symbols if s.is_positive is None}
     eq = eq.subs(reps)
     return eq, {r: s for s, r in reps.items()}
