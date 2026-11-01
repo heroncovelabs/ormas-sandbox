@@ -294,7 +294,9 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     mapping = H.graph.get("mapping", None)
     if mapping is None:
         raise nx.NetworkXError("Invalid auxiliary digraph.")
-    if G.has_edge(s, t) or G.has_edge(t, s):
+    # Only a direct edge from s to t makes the pair inseparable (for
+    # undirected graphs this is symmetric).
+    if G.has_edge(s, t):
         return set()
     kwargs = {"flow_func": flow_func, "residual": residual, "auxiliary": H}
 
@@ -416,26 +418,57 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
     if G.is_directed():
         if not nx.is_weakly_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
-        iter_func = itertools.permutations
+        if not nx.is_strongly_connected(G):
+            return set()
 
-        def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
+        # Reuse the auxiliary digraph and the residual network.
+        H = build_auxiliary_node_connectivity(G)
+        R = build_residual_network(H, "capacity")
+        kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    else:
-        if not nx.is_connected(G):
-            raise nx.NetworkXError("Input graph is not connected")
-        iter_func = itertools.combinations
-        neighbors = G.neighbors
+        # Distinct out- and in-neighbors, ignoring self-loops and parallel arcs.
+        succ = {u: set(G.successors(u)) - {u} for u in G}
+        pred = {u: set(G.predecessors(u)) - {u} for u in G}
+        # Initial node cutset is the smaller of the out- or in-neighbors of
+        # a node with minimum in- or out-degree.
+        v = min(G, key=lambda u: min(len(succ[u]), len(pred[u])))
+        min_cut = set(succ[v]) if len(succ[v]) <= len(pred[v]) else set(pred[v])
+        # A minimum separator S has |S| <= len(min_cut) nodes, so at least
+        # one of any len(min_cut) + 1 nodes is not in S. For such a node v
+        # there is some w that is separated from v, or v from w, by S.
+        nodes = list(G)
+        i = 0
+        while i <= len(min_cut) and i < len(nodes):
+            v = nodes[i]
+            for w in nodes:
+                if w == v:
+                    continue
+                if w not in succ[v]:
+                    this_cut = minimum_st_node_cut(G, v, w, **kwargs)
+                    if len(this_cut) < len(min_cut):
+                        min_cut = this_cut
+                if w not in pred[v]:
+                    this_cut = minimum_st_node_cut(G, w, v, **kwargs)
+                    if len(this_cut) < len(min_cut):
+                        min_cut = this_cut
+            i += 1
+        return min_cut
+
+    if not nx.is_connected(G):
+        raise nx.NetworkXError("Input graph is not connected")
+    iter_func = itertools.combinations
+    neighbors = G.neighbors
 
     # Reuse the auxiliary digraph and the residual network.
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Choose a node with minimum degree.
-    v = min(G, key=G.degree)
+    # Choose a node with minimum degree (number of distinct neighbors,
+    # ignoring self-loops and parallel edges).
+    v = min(G, key=lambda u: len(set(G[u]) - {u}))
     # Initial node cutset is all neighbors of the node with minimum degree.
-    min_cut = set(G[v])
+    min_cut = set(G[v]) - {v}
     # Compute st node cuts between v and all its non-neighbors nodes in G.
     for w in set(G) - set(neighbors(v)) - {v}:
         this_cut = minimum_st_node_cut(G, v, w, **kwargs)
