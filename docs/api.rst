@@ -310,6 +310,11 @@ These tools work with most numeric data types.
 .. autofunction:: polynomial_derivative
 .. autofunction:: polynomial_eval
 .. autofunction:: running_median
+.. autofunction:: running_mean(iterable, *, maxlen=None)
+.. autofunction:: running_min(iterable, *, maxlen=None)
+.. autofunction:: running_max(iterable, *, maxlen=None)
+.. autofunction:: running_statistics(iterable, *, maxlen=None)
+.. autoclass:: Stats
 .. autofunction:: sum_of_squares
 
 
