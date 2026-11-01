@@ -618,7 +618,7 @@ class PolyElement(DomainElement, DefaultPrinting, CantSympify, dict):
     def as_expr(self, *symbols):
         if symbols and len(symbols) != self.ring.ngens:
             raise ValueError("not enough symbols, expected %s got %s" % (self.ring.ngens, len(symbols)))
-        else:
+        elif not symbols:
             symbols = self.ring.symbols
 
         return expr_from_dict(self.as_expr_dict(), *symbols)
