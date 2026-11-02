@@ -503,7 +503,7 @@ class Pow(Expr):
                 return True
             if e.is_nonnegative or e.is_positive:
                 return True
-        if b.is_integer and e.is_negative and (e.is_finite or e.is_integer):
+        if b.is_integer and e.is_negative and e.is_finite:
             if fuzzy_not((b - 1).is_zero) and fuzzy_not((b + 1).is_zero):
                 return False
         if b.is_Number and e.is_Number:

@@ -49,13 +49,13 @@ Here follows a list of possible assumption names:
         of real numbers.
 
     integer
-        object can have only values from the set
+        object can have only finite values from the set
         of integers.
 
     odd
     even
         object can have only values from the set of
-        odd (even) integers [2]_.
+        odd (even) integers [2]_, which are finite.
 
     prime
         object is a natural number greater than ``1`` that has
@@ -72,19 +72,20 @@ Here follows a list of possible assumption names:
         object is a real number that is not zero.
 
     rational
-        object can have only values from the set
+        object can have only finite values from the set
         of rationals.
 
     algebraic
-        object can have only values from the set
+        object can have only finite values from the set
         of algebraic numbers [11]_.
 
     transcendental
-        object can have only values from the set
-        of transcendental numbers [10]_.
+        object is a finite complex number that is not algebraic,
+        see [10]_.
 
     irrational
-        object value cannot be represented exactly by Rational, see [5]_.
+        object is a finite real number that cannot be represented
+        exactly by Rational, see [5]_.
 
     finite
     infinite
@@ -165,7 +166,7 @@ _assume_rules = FactRules([
     'integer        ->  rational',
     'rational       ->  real',
     'rational       ->  algebraic',
-    'algebraic      ->  complex',
+    'algebraic      ->  complex & finite',
     'real           ->  complex',
     'real           ->  hermitian',
     'imaginary      ->  complex',
@@ -176,7 +177,7 @@ _assume_rules = FactRules([
     'even           ==  integer & !odd',
 
     'real           ==  negative | zero | positive',
-    'transcendental ==  complex & !algebraic',
+    'transcendental ==  complex & finite & !algebraic',
 
     'negative       ==  nonpositive & nonzero',
     'positive       ==  nonnegative & nonzero',
@@ -191,7 +192,7 @@ _assume_rules = FactRules([
     'composite      ->  integer & positive & !prime',
     '!composite     ->  !positive | !even | prime',
 
-    'irrational     ==  real & !rational',
+    'irrational     ==  real & finite & !rational',
 
     'imaginary      ->  !real',
 
