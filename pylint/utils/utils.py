@@ -253,6 +253,26 @@ def _check_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
     return _splitstrip(value)
 
 
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
+    """Split regex CSV while preserving commas in quantifiers such as ``{1,3}``.
+
+    Other commas separate fields, including inside parentheses. List and tuple
+    inputs are returned unchanged; string fields are stripped and empty fields
+    are discarded.
+    """
+    if isinstance(value, (list, tuple)):
+        return value
+
+    fields = []
+    start = 0
+    for match in re.finditer(r"\{[0-9]*,[0-9]*\}|,", value):
+        if match.group() == ",":
+            fields.append(value[start : match.start()])
+            start = match.end()
+    fields.append(value[start:])
+    return [field.strip() for field in fields if field.strip()]
+
+
 def _comment(string: str) -> str:
     """Return string as a comment."""
     lines = [line.strip() for line in string.splitlines()]
