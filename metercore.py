@@ -8,7 +8,14 @@ that file; the legacy engine's behavior is the contract).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+import re
 import sys
+
+# The engine reads through a 1024-byte C buffer, including its terminating NUL.
+INPUT_CHUNK_SIZE = 1023
+MAX_ACCOUNTS = 8192
+TOKEN_PATTERN = re.compile(r"[^ \t\r\n]+")
 
 TIER1_LIMIT = 500
 TIER2_LIMIT = 2000
@@ -17,14 +24,18 @@ RATE_TENTHS = (140, 190, 260)
 BAND_PCT = {"D": 100, "N": 70, "W": 85}
 SUMMER_MONTHS = (6, 7, 8, 9)
 SUMMER_PCT = 110
+WINTER_MONTHS = (12, 1, 2)
+WINTER_NIGHT_PCT = 60
+LEGACY_METER_PCT = 103
 
 ERROR_CODES = ("FMT", "MONTH", "KWH", "BAND", "METER")
 
 
 def _round_nearest(numerator: int, denominator: int) -> int:
-    """Round to the nearest cent (halves up), per the spec's billing rule."""
+    """Round to the nearest integer, with ties going to the even integer."""
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
+    doubled = 2 * remainder
+    if doubled > denominator or (doubled == denominator and quotient % 2):
         return quotient + 1
     return quotient
 
@@ -43,25 +54,36 @@ def _slices(prev: int, kwh: int) -> tuple[int, int, int]:
     return s1, s2, kwh - s1 - s2
 
 
-def _reading_fee(prev: int, kwh: int, month: int, band: str) -> int:
-    fee = 0
+def _reading_fee(prev: int, kwh: int, month: int, band: str, meter: str = "S") -> int:
+    units = 0
     for tier, slice_kwh in enumerate(_slices(prev, kwh)):
         if slice_kwh == 0:
             continue
-        # spec: the summer surcharge applies to tier-3 energy only.
-        season = SUMMER_PCT if month in SUMMER_MONTHS and tier == 2 else 100
-        units = slice_kwh * RATE_TENTHS[tier] * BAND_PCT[band] * season
-        fee += _round_nearest(units, 100_000)
-    return fee
+        band_pct = BAND_PCT[band]
+        if tier == 0 and band == "N" and month in WINTER_MONTHS:
+            band_pct = WINTER_NIGHT_PCT
+        season = SUMMER_PCT if month in SUMMER_MONTHS and tier >= 1 else 100
+        units += slice_kwh * RATE_TENTHS[tier] * band_pct * season
+
+    # Apply the meter uplift to the complete reading before rounding once.
+    meter_pct = LEGACY_METER_PCT if meter == "L" else 100
+    return _round_nearest(units * meter_pct, 10_000_000)
 
 
-def process(lines: list[str]) -> list[str]:
+class _AccountLimitError(Exception):
+    def __init__(self, output: list[str]):
+        super().__init__("too many accounts")
+        self.output = output
+
+
+def process(lines: Iterable[str]) -> list[str]:
     out: list[str] = []
     accounts: dict[str, Account] = {}
     rejected = 0
 
     for raw in lines:
-        tokens = raw.split()
+        # C strings end at NUL; strtok recognizes exactly these four separators.
+        tokens = TOKEN_PATTERN.findall(raw.partition("\0")[0])
         if not tokens:
             continue
         echo = tokens[1] if len(tokens) >= 2 else "?"
@@ -69,18 +91,20 @@ def process(lines: list[str]) -> list[str]:
         month = kwh = 0
         band = ""
 
-        if len(tokens) != 6 or tokens[0] != "M":
+        if len(tokens) < 6 or tokens[0] != "M":
             error = "FMT"
         elif not (1 <= len(tokens[1]) <= 8 and tokens[1].isalnum() and tokens[1].isascii()):
             error = "FMT"
-        elif len(tokens[2]) != 2 or not tokens[2].isdigit():
+        elif len(tokens[2]) != 2 or not all("0" <= c <= "9" for c in tokens[2]):
             error = "MONTH"
         else:
             month = int(tokens[2])
-            if not 1 <= month <= 12:
+            if not 1 <= month <= 13:
                 error = "MONTH"
+            elif month == 13:
+                month = 1
         if error is None:
-            if not (1 <= len(tokens[3]) <= 6 and tokens[3].isdigit()):
+            if not (1 <= len(tokens[3]) <= 6 and all("0" <= c <= "9" for c in tokens[3])):
                 error = "KWH"
             else:
                 kwh = int(tokens[3])
@@ -96,11 +120,16 @@ def process(lines: list[str]) -> list[str]:
             out.append(f"R {echo} {error}")
             rejected += 1
             continue
+        if kwh == 0:
+            continue
 
-        account = accounts.get(tokens[1])
+        key = tokens[1].lower()
+        account = accounts.get(key)
         if account is None:
-            account = accounts[tokens[1]] = Account(tokens[1])
-        fee = _reading_fee(account.counter, kwh, month, band)
+            if len(accounts) == MAX_ACCOUNTS:
+                raise _AccountLimitError(out)
+            account = accounts[key] = Account(tokens[1])
+        fee = _reading_fee(account.counter, kwh, month, band, tokens[5])
         account.counter += kwh
         account.total_kwh += kwh
         account.bill += fee
@@ -114,8 +143,21 @@ def process(lines: list[str]) -> list[str]:
 
 
 def main() -> None:
-    for line in process(sys.stdin.readlines()):
-        print(line)
+    # Read bytes so buffer boundaries and rejected account echoes are preserved.
+    records = iter(lambda: sys.stdin.buffer.readline(INPUT_CHUNK_SIZE), b"")
+    lines = (record.decode("utf-8", "surrogateescape") for record in records)
+    status = 0
+    try:
+        output = process(lines)
+    except _AccountLimitError as error:
+        output = error.output
+        status = 2
+
+    for line in output:
+        sys.stdout.buffer.write((line + "\n").encode("utf-8", "surrogateescape"))
+    if status:
+        sys.stderr.write("too many accounts\n")
+        raise SystemExit(status)
 
 
 if __name__ == "__main__":
