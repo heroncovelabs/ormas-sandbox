@@ -8,6 +8,7 @@ the engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 PRICE_MAX = 10_000_000
@@ -59,7 +60,8 @@ class Engine:
             elif order.price != best.price:
                 better = order.price < best.price if side == "B" else order.price > best.price
             else:
-                better = order.seq < best.seq
+                # Large original orders have priority within a price level.
+                better = (order.orig < 1000, order.seq) < (best.orig < 1000, best.seq)
             if better:
                 best = order
         return best
@@ -74,18 +76,26 @@ class Engine:
         if not is_market and not 0 < price < PRICE_MAX:
             self._emit(f"R {clordid} PRICE")
             return
-        if self._find_live(acct, clordid) is not None:
-            self._emit(f"R {clordid} DUP")
+        if not is_market and price >= 100_000 and price % 5:
+            self._emit(f"R {clordid} TICK")
             return
+        existing = self._find_live(acct, clordid)
+        if existing is not None:
+            self._cancel_live(existing)
 
         remaining = qty
+        first_fill_price: int | None = None
         while remaining:
             counter = self._best_counter(side, price, is_market)
             if counter is None:
                 break
             if counter.acct == acct:
-                self._emit(f"R {clordid} STP")
-                return
+                self._cancel_live(counter)
+                continue
+            if first_fill_price is not None and abs(counter.price - first_fill_price) > 500:
+                break
+            if first_fill_price is None:
+                first_fill_price = counter.price
             take = min(remaining, counter.qty)
             self._emit(f"F {counter.clordid} {clordid} {counter.price} {take}")
             counter.qty -= take
@@ -95,45 +105,58 @@ class Engine:
 
         if remaining and type_ == "L":
             self.seq += 1
-            self.book.append(Order(acct, clordid, side, price, remaining, self.seq))
-            self.book[-1].orig = qty
+            order = Order(acct, clordid, side, price, qty, self.seq)
+            order.qty = remaining
+            self.book.append(order)
             self._emit(f"A {clordid} {remaining}")
         else:
             self._emit(f"A {clordid} 0")
+
+    def _cancel_live(self, order: Order) -> None:
+        order.live = False
+        self._emit(f"X {order.clordid} {order.orig}")
 
     def cancel(self, acct: str, clordid: str) -> None:
         order = self._find_live(acct, clordid)
         if order is None:
             self._emit(f"R {clordid} UNKNOWN")
             return
-        order.live = False
-        self._emit(f"X {order.clordid} {order.qty}")
+        self._cancel_live(order)
 
     def end_session(self) -> None:
         bid = ask = 0
         book_hash = 0
         for order in self.book:
-            if not order.live:
+            if not order.live or order.qty <= 0:
                 continue
             if order.side == "B":
                 bid = max(bid, order.price)
             elif ask == 0 or order.price < ask:
                 ask = order.price
-            book_hash = (book_hash + order.price * order.qty) % HASH_MOD
+            if order.qty >= 100:
+                book_hash = (book_hash + order.price * order.qty) % HASH_MOD
         self._emit(f"S {bid} {ask} {book_hash}")
 
     # -- line protocol ------------------------------------------------------
 
     def handle(self, line: str) -> None:
-        line = line.rstrip("\r\n")
+        # The legacy reader terminates a message at the first line ending or NUL.
+        line = re.split(r"[\r\n\x00]", line, maxsplit=1)[0]
         if not line:
             return
-        parts = line.split(" ")
-        if parts == ["E"]:
+        if line == "E":
             self.end_session()
             return
-        if parts[0] == "N" and len(parts) == 7:
-            _, acct, clordid, side, type_, price, qty = parts
+        if line[0] not in ("N", "C"):
+            self._emit("R ???????? FMT")
+            return
+
+        # N and C consume fields following the command character, skipping
+        # ASCII whitespace; any fields after those required are ignored.
+        fields = re.split(r"[ \t\v\f]+", line[1:].strip(" \t\v\f"), maxsplit=6)
+        clordid = fields[1] if len(fields) > 1 else ""
+        if line[0] == "N" and len(fields) >= 6:
+            acct, clordid, side, type_, price, qty = fields[:6]
             if (
                 _token(acct, 4, 4)
                 and _token(clordid, 1, 8)
@@ -146,16 +169,12 @@ class Engine:
             ):
                 self.new_order(acct, clordid, side, type_, int(price), int(qty))
                 return
-            self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
-            return
-        if parts[0] == "C" and len(parts) == 3:
-            _, acct, clordid = parts
+        elif line[0] == "C" and len(fields) >= 2:
+            acct, clordid = fields[:2]
             if _token(acct, 4, 4) and _token(clordid, 1, 8):
                 self.cancel(acct, clordid)
                 return
-            self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
-            return
-        self._emit("R ???????? FMT")
+        self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
 
 
 def _token(value: str, lo: int, hi: int) -> bool:
