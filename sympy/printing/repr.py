@@ -60,6 +60,11 @@ class ReprPrinter(Printer):
     def _print_Cycle(self, expr):
         return expr.__repr__()
 
+    def _print_dict(self, expr):
+        items = ['%s: %s' % (self._print(key), self._print(value))
+                 for key, value in expr.items()]
+        return '{%s}' % ', '.join(items)
+
     def _print_Permutation(self, expr):
         from sympy.combinatorics.permutations import Permutation, Cycle
         from sympy.utilities.exceptions import SymPyDeprecationWarning
