@@ -2,7 +2,7 @@
 Moody and White algorithm for k-components
 """
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from itertools import combinations
 from operator import itemgetter
 
@@ -60,25 +60,17 @@ def k_components(G, flow_func=None):
 
     Notes
     -----
-    Moody and White [1]_ (appendix A) provide an algorithm for identifying
-    k-components in a graph, which is based on Kanevsky's algorithm [2]_
-    for finding all minimum-size node cut-sets of a graph (implemented in
-    :meth:`all_node_cuts` function):
-
-        1. Compute node connectivity, k, of the input graph G.
-
-        2. Identify all k-cutsets at the current level of connectivity using
-           Kanevsky's algorithm.
-
-        3. Generate new graph components based on the removal of
-           these cutsets. Nodes in a cutset belong to both sides
-           of the induced cut.
-
-        4. If the graph is neither complete nor trivial, return to 1;
-           else end.
-
-    This implementation also uses some heuristics (see [3]_ for details)
-    to speed up the computation.
+    The search starts from the bicomponents and examines induced subgraphs.
+    For a candidate of connectivity `q`, its `(q + 1)`-core contains every
+    subgraph with higher connectivity, so smaller cores can be safely split
+    into bicomponents for further searching. If the core is unchanged, a
+    minimum node cut separates the candidate into smaller sides, each
+    including the cut. Every higher-connectivity subgraph lies entirely in
+    one of these sides, since the cut would otherwise disconnect it. Recursive
+    splitting finds all maximal k-components, including those in sides with
+    lower connectivity than their parent. Reconstruction combines the
+    certified candidates at each level with all components inherited from
+    the next level and retains the inclusion-maximal node sets.
 
     See also
     --------
@@ -104,55 +96,84 @@ def k_components(G, flow_func=None):
             https://arxiv.org/pdf/1503.04476v1
 
     """
-    # Dictionary with connectivity level (k) as keys and a list of
-    # sets of nodes that form a k-component as values. Note that
-    # k-components can overlap (but only k - 1 nodes).
     k_components = defaultdict(list)
-    # Define default flow function
     if flow_func is None:
         flow_func = default_flow_func
-    # Bicomponents as a base to check for higher order k-components
-    for component in nx.connected_components(G):
-        # isolated nodes have connectivity 0
-        comp = set(component)
-        if len(comp) > 1:
-            k_components[1].append(comp)
-    bicomponents = [G.subgraph(c) for c in nx.biconnected_components(G)]
-    for bicomponent in bicomponents:
-        bicomp = set(bicomponent)
-        # avoid considering dyads as bicomponents
-        if len(bicomp) > 2:
-            k_components[2].append(bicomp)
-    for B in bicomponents:
-        if len(B) <= 2:
-            continue
-        k = nx.node_connectivity(B, flow_func=flow_func)
-        if k > 2:
-            k_components[k].append(set(B))
-        # Perform cuts in a DFS like order.
-        cuts = list(nx.all_node_cuts(B, k=k, flow_func=flow_func))
-        stack = [(k, _generate_partition(B, cuts, k))]
-        while stack:
-            (parent_k, partition) = stack[-1]
-            try:
-                nodes = next(partition)
-                C = B.subgraph(nodes)
-                this_k = nx.node_connectivity(C, flow_func=flow_func)
-                if this_k > parent_k and this_k > 2:
-                    k_components[this_k].append(set(C))
-                cuts = list(nx.all_node_cuts(C, k=this_k, flow_func=flow_func))
-                if cuts:
-                    stack.append((this_k, _generate_partition(C, cuts, this_k)))
-            except StopIteration:
-                stack.pop()
 
-    # This is necessary because k-components may only be reported at their
-    # maximum k level. But we want to return a dictionary in which keys are
-    # connectivity levels and values list of sets of components, without
-    # skipping any connectivity level. Also, it's possible that subsets of
-    # an already detected k-component appear at a level k. Checking for this
-    # in the while loop above penalizes the common case. Thus we also have to
-    # _consolidate all connectivity levels in _reconstruct_k_components.
+    # Node connectivity depends only on distinct non-self neighbors. The
+    # flow-based connectivity routines use degree, so give them a simple,
+    # loop-free graph when the input has loops or parallel edges.
+    if G.is_multigraph() or nx.number_of_selfloops(G):
+        simple = nx.Graph()
+        simple.add_nodes_from(G)
+        simple.add_edges_from((u, v) for u, v in G.edges() if u is not v and u != v)
+    else:
+        simple = G
+
+    for component in nx.connected_components(G):
+        # Isolated nodes have connectivity 0.
+        if len(component) > 1:
+            k_components[1].append(set(component))
+
+    worklist = []
+    for component in nx.biconnected_components(G):
+        # Dyads are not 2-components under this function's convention.
+        if len(component) > 2:
+            k_components[2].append(set(component))
+            worklist.append(frozenset(component))
+
+    seen = set()
+    while worklist:
+        nodes = worklist.pop()
+        if nodes in seen:
+            continue
+        seen.add(nodes)
+        C = G.subgraph(nodes)
+        H = C if simple is G else simple.subgraph(nodes)
+        q = nx.node_connectivity(H, flow_func=flow_func)
+        if q > 2:
+            # Record the actual connectivity even if it decreased from the
+            # parent: this candidate is still a certified q-connected graph.
+            k_components[q].append(set(nodes))
+
+        # Peel the (q + 1)-core using distinct, non-self neighbors. Every
+        # subgraph of connectivity greater than q survives this process.
+        degree = {v: len(C[v]) - (v in C[v]) for v in C}
+        remaining = set(nodes)
+        queue = deque(v for v in C if degree[v] <= q)
+        while queue:
+            v = queue.popleft()
+            if v not in remaining:
+                continue
+            remaining.remove(v)
+            for neighbor in C[v]:
+                if neighbor in remaining:
+                    degree[neighbor] -= 1
+                    if degree[neighbor] == q:
+                        queue.append(neighbor)
+
+        if not remaining:
+            continue
+        if len(remaining) < len(nodes):
+            # Higher components are biconnected and lie wholly in one of
+            # these pieces. Each piece is a proper subset of this candidate.
+            core = G.subgraph(remaining)
+            worklist.extend(
+                frozenset(component)
+                for component in nx.biconnected_components(core)
+                if len(component) > 2
+            )
+            continue
+
+        # The unchanged core is non-complete: a complete candidate has
+        # connectivity |C|-1 and its (q + 1)-core is empty. A minimum cut
+        # splits every higher-connected component into at least one proper
+        # separator-side candidate without losing any of its vertices.
+        cut = nx.minimum_node_cut(H, flow_func=flow_func)
+        worklist.extend(
+            frozenset(component) for component in _generate_partition(C, [cut], q)
+        )
+
     return _reconstruct_k_components(k_components)
 
 
@@ -179,35 +200,45 @@ def _consolidate(sets, k):
 
 
 def _generate_partition(G, cuts, k):
-    def has_nbrs_in_partition(G, node, partition):
-        return any(n in partition for n in G[node])
+    """Yield smaller separator-side candidates for components above level k.
 
-    components = []
-    n_in_cuts = {n for cut in cuts for n in cut}
-    nodes = {n for n, d in G.degree() if d > k} - n_in_cuts
-    H = G.subgraph(nodes)
-    for cc in map(set, nx.connected_components(H)):
-        component = cc | {n for n in n_in_cuts if has_nbrs_in_partition(G, n, cc)}
-        if len(component) < G.order():
-            components.append(component)
-    yield from _consolidate(components, k + 1)
+    A subgraph with connectivity greater than the size of a separator S
+    cannot meet two components of G - S: deleting its vertices in S would
+    disconnect it. Thus each such subgraph lies in one side together with
+    the entire separator.
+    """
+    nodes = set(G)
+    seen = set()
+    for cut in cuts:
+        separator = set(cut)
+        for side in nx.connected_components(G.subgraph(nodes - separator)):
+            candidate = side | separator
+            # Connectivity greater than k requires at least k + 2 vertices.
+            if not k + 1 < len(candidate) < len(nodes):
+                continue
+            key = frozenset(candidate)
+            if key not in seen:
+                seen.add(key)
+                yield candidate
 
 
 def _reconstruct_k_components(k_comps):
+    """Build the maximal antichain of certified candidates at every level."""
     result = {}
     max_k = max(k_comps) if k_comps else 0
     for k in range(max_k, 0, -1):
-        if k == max_k:
-            result[k] = list(_consolidate(k_comps[k], k))
-        elif k not in k_comps:
-            result[k] = list(_consolidate(result[k + 1], k))
-        else:
-            nodes_at_k = set.union(*k_comps[k])
-            to_add = [c for c in result[k + 1] if any(n not in nodes_at_k for n in c)]
-            if to_add:
-                result[k] = list(_consolidate(k_comps[k] + to_add, k))
-            else:
-                result[k] = list(_consolidate(k_comps[k], k))
+        # A higher-level component is also k-connected. Compare whole sets,
+        # since distinct maximal components may overlap without containing one
+        # another. The search guarantees every maximal component is recorded
+        # at this level or inherited from a higher level.
+        maximal = []
+        for component in k_comps.get(k, []) + result.get(k + 1, []):
+            candidate = frozenset(component)
+            if any(candidate <= other for other in maximal):
+                continue
+            maximal = [other for other in maximal if not other < candidate]
+            maximal.append(candidate)
+        result[k] = [set(component) for component in maximal]
     return result
 
 
