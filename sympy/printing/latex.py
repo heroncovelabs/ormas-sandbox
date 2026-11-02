@@ -699,6 +699,8 @@ class LatexPrinter(Printer):
     def _print_Subs(self, subs):
         expr, old, new = subs.args
         latex_expr = self._print(expr)
+        if expr.is_Add or expr.is_Mul:
+            latex_expr = r'\left(%s\right)' % latex_expr
         latex_old = (self._print(e) for e in old)
         latex_new = (self._print(e) for e in new)
         latex_subs = r'\\ '.join(
