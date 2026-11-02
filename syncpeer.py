@@ -10,74 +10,98 @@ the drift warning; the engine's behavior is the contract).
 from __future__ import annotations
 
 import argparse
+import re
 import socket
 import sys
 
 MAX_KEYS = 4096
+MAX_SESSIONS = 1024
+MAX_RECORD = 511  # fgets' 512-byte buffer includes a terminating NUL.
+MAX_VALUE = 48
 
 
 class Peer:
     def __init__(self):
-        self.store: dict[str, str] = {}  # insertion-ordered
-        self.connections = 0
+        self.store: dict[bytes, bytes] = {}  # insertion-ordered
+        self.insertions = 0  # Deleted entries still occupy legacy store slots.
+        self.sessions: dict[bytes, int] = {}
+        self.session_count = 0
 
     # -- one connection -----------------------------------------------------
 
     def serve_connection(self, rfile, wfile) -> None:
-        def send(line: str) -> None:
-            wfile.write((line + "\n").encode())
+        def send(line: bytes) -> None:
+            wfile.write(line + b"\n")
             wfile.flush()
 
-        self.connections += 1
-        raw = rfile.readline()
-        if not raw:
+        line = _read_record(rfile)
+        if line is None:
             return
-        parts = raw.decode(errors="replace").strip().split()
-        if (
-            len(parts) != 3
-            or parts[0] != "HELLO"
-            or not parts[1].isdigit()
-            or not 1 <= int(parts[1]) <= 9
-            or not _alnum(parts[2], 1, 8)
-        ):
-            send("ERR HANDSHAKE")
+        handshake = _handshake(line)
+        if handshake is None:
+            send(b"ERR HANDSHAKE")
             return
-        negotiated = min(int(parts[1]), 3)
-        send(f"WELCOME {negotiated} S{self.connections}")
+        version, node = handshake
+        negotiated = 1 if version <= 2 else 3
+        session = self.sessions.get(node)
+        if session is None:
+            self.session_count += 1
+            session = self.session_count
+            # Once the registry fills, new identities receive uncached tokens.
+            if len(self.sessions) < MAX_SESSIONS:
+                self.sessions[node] = session
+        send(f"WELCOME {negotiated} S{session}".encode())
 
-        commands = 0
-        for raw in iter(rfile.readline, b""):
-            line = raw.decode(errors="replace").rstrip("\r\n")
+        commands = 1  # Count the handshake and every nonempty record, including BYE.
+        while (line := _read_record(rfile)) is not None:
             if not line:
                 continue
             commands += 1
-            parts = line.split()
-            cmd = parts[0]
-            if cmd == "BYE":
-                send(f"GOODBYE {commands - 1}")
+            # sscanf consumes only these fields, with fixed byte widths.
+            cmd, rest = _field(line, 15)
+            key, rest = _field(rest, 127)
+            value, _ = _field(rest, 127)
+            if cmd == b"BYE":
+                send(f"GOODBYE {commands}".encode())
                 return
-            if cmd == "PUT" and len(parts) == 3 and _alnum(parts[1], 1, 16) and 1 <= len(parts[2]) <= 64:
-                if parts[1] not in self.store and len(self.store) >= MAX_KEYS:
-                    send("ERR FULL")
-                    continue
-                self.store[parts[1]] = parts[2]
-                send("OK")
-            elif cmd == "GET" and len(parts) == 2 and _alnum(parts[1], 1, 16):
-                value = self.store.get(parts[1])
-                send(f"VAL {value}" if value is not None else "ERR NOTFOUND")
-            elif cmd == "DEL" and len(parts) == 2 and _alnum(parts[1], 1, 16):
-                if parts[1] in self.store:
-                    del self.store[parts[1]]
-                    send("OK")
+            if cmd == b"PUT" and _alnum(key, 1, 16) and 1 <= len(value) <= 64:
+                previous = self.store.get(key)
+                if previous is None:
+                    if self.insertions >= MAX_KEYS:
+                        send(b"ERR FULL")
+                        continue
+                    self.insertions += 1
+                value = value[:MAX_VALUE]
+                self.store[key] = value
+                if previous is not None and previous != value:
+                    send(b"OK " + previous)
                 else:
-                    send("ERR NOTFOUND")
-            elif cmd == "KEYS" and len(parts) == 2 and len(parts[1]) <= 16:
-                matches = sorted(k for k in self.store if k.startswith(parts[1]))
+                    send(b"OK")
+            elif cmd == b"GET" and _alnum(key, 1, 16):
+                value = self.store.get(key)
+                if value is not None:
+                    send(b"VAL " + value)
+                else:
+                    send(b"NIL" if negotiated == 1 else b"ERR NOTFOUND")
+            elif cmd == b"DEL" and _alnum(key, 1, 16):
+                if key in self.store:
+                    del self.store[key]
+                    send(b"OK")
+                else:
+                    send(b"ERR NOTFOUND")
+            elif cmd == b"KEYS" and key and len(key) <= 16:
+                # ASCII-insensitive prefixes, newest insertion first;
+                # overwrites retain their position and reinserts move to the front.
+                prefix = key.lower()
+                matches = [
+                    stored_key for stored_key in reversed(self.store)
+                    if stored_key.lower().startswith(prefix)
+                ]
                 for key in matches:
-                    send(f"KEY {key}")
-                send(f"END {len(matches)}")
+                    send(b"KEY " + key)
+                send(f"END {len(matches)}".encode())
             else:
-                send("ERR FMT")
+                send(b"ERR FMT")
 
     # -- accept loop --------------------------------------------------------
 
@@ -104,7 +128,40 @@ class Peer:
                         pass
 
 
-def _alnum(value: str, lo: int, hi: int) -> bool:
+def _read_record(rfile) -> bytes | None:
+    raw = rfile.readline(MAX_RECORD)
+    if not raw:
+        return None
+    # C strings end at NUL, and the daemon cuts at the first CR or LF.
+    return re.split(rb"[\x00\r\n]", raw, maxsplit=1)[0]
+
+
+def _field(raw: bytes, width: int) -> tuple[bytes, bytes]:
+    """Consume a width-limited scanf %s field using C-locale whitespace."""
+    raw = raw.lstrip()
+    parts = raw.split(None, 1)
+    if not parts:
+        return b"", b""
+    field = parts[0][:width]
+    return field, raw[len(field):]
+
+
+def _handshake(line: bytes) -> tuple[int, bytes] | None:
+    cmd, rest = _field(line, 15)
+    rest = rest.lstrip()
+    number = re.match(rb"[+-]?[0-9]+", rest)
+    if cmd != b"HELLO" or number is None:
+        return None
+    # scanf's %d accepts a signed decimal prefix, then narrows strtol's result.
+    version = max(-(1 << 63), min((1 << 63) - 1, int(number.group())))
+    version = (version + (1 << 31)) % (1 << 32) - (1 << 31)
+    node, _ = _field(rest[number.end():], 63)
+    if not 1 <= version <= 9 or not _alnum(node, 1, 8):
+        return None
+    return version, node
+
+
+def _alnum(value: bytes, lo: int, hi: int) -> bool:
     return lo <= len(value) <= hi and value.isalnum()
 
 
