@@ -1889,9 +1889,11 @@ class Where(Expression):
 
 
 class Analyze(Expression):
+    """An ANALYZE statement with an optional ordered list of targets in ``tables``."""
+
     arg_types = {
         "kind": False,
-        "this": False,
+        "tables": False,
         "options": False,
         "mode": False,
         "partition": False,

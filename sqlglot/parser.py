@@ -2400,6 +2400,11 @@ class Parser:
         return self._parse_query_modifiers(expression)
 
     def _parse_drop(self, exists: bool = False) -> exp.Drop | exp.Command:
+        return self._parse_drop_statement(exists=exists)
+
+    def _parse_drop_statement(
+        self, exists: bool = False, single_target: bool = False
+    ) -> exp.Drop | exp.Command:
         start = self._prev
         temporary = self._match(TokenType.TEMPORARY)
         materialized = self._match_text_seq("MATERIALIZED")
@@ -2412,16 +2417,13 @@ class Parser:
         concurrently = self._match_text_seq("CONCURRENTLY")
         if_exists = exists or self._parse_exists()
 
-        if kind == "COLUMN":
-            this = self._parse_column()
-        else:
-            this = self._parse_table_parts(schema=True, is_db_reference=kind == "SCHEMA")
+        def parse_target() -> exp.Expr | None:
+            if kind == "COLUMN":
+                return self._parse_column()
+            return self._parse_table_parts(schema=True, is_db_reference=kind == "SCHEMA")
 
-        tables = (
-            self._parse_csv(lambda: self._parse_table_parts(schema=True))
-            if kind == "TABLE" and self._match(TokenType.COMMA)
-            else None
-        )
+        # ALTER TABLE separates actions with commas, so each DROP action owns one target.
+        tables = ensure_list(parse_target()) if single_target else self._parse_csv(parse_target)
 
         cluster = self._parse_on_property() if self._match(TokenType.ON) else None
 
@@ -2435,7 +2437,6 @@ class Parser:
         return self.expression(
             exp.Drop(
                 exists=if_exists,
-                this=this,
                 tables=tables,
                 expressions=expressions,
                 kind=self.dialect.CREATABLE_KIND_MAPPING.get(kind) or kind,
@@ -9052,7 +9053,9 @@ class Parser:
         return self._parse_column_def_with_exists()
 
     def _parse_drop_column(self) -> exp.Drop | exp.Command | None:
-        drop = self._parse_drop() if self._match(TokenType.DROP) else None
+        drop = (
+            self._parse_drop_statement(single_target=True) if self._match(TokenType.DROP) else None
+        )
         if drop and not isinstance(drop, exp.Command):
             drop.set("kind", drop.args.get("kind", "COLUMN"))
         return drop
@@ -9318,29 +9321,29 @@ class Parser:
             else:
                 options.append(self._prev.text.upper())
 
-        this: exp.Expr | None = None
+        tables: list[exp.Expr] = []
         inner_expression: exp.Expr | None = None
 
         kind = self._curr.text.upper() if self._curr else None
 
         if self._match(TokenType.TABLE) or self._match(TokenType.INDEX):
-            this = self._parse_table_parts()
+            tables.extend(self._parse_csv(self._parse_table_parts))
         elif self._match_text_seq("TABLES"):
             if self._match_set((TokenType.FROM, TokenType.IN)):
                 kind = f"{kind} {self._prev.text.upper()}"
-                this = self._parse_table(schema=True, is_db_reference=True)
+                tables.extend(ensure_list(self._parse_table(schema=True, is_db_reference=True)))
         elif self._match_text_seq("DATABASE"):
-            this = self._parse_table(schema=True, is_db_reference=True)
+            tables.extend(ensure_list(self._parse_table(schema=True, is_db_reference=True)))
         elif self._match_text_seq("CLUSTER"):
-            this = self._parse_table()
+            tables.extend(ensure_list(self._parse_table()))
         # Try matching inner expr keywords before fallback to parse table.
         elif self._match_texts(self.ANALYZE_EXPRESSION_PARSERS):
             kind = None
             inner_expression = self.ANALYZE_EXPRESSION_PARSERS[self._prev.text.upper()](self)
-        else:
+        elif self._curr:
             # Empty kind  https://prestodb.io/docs/current/sql/analyze.html
             kind = None
-            this = self._parse_table_parts()
+            tables.extend(self._parse_csv(self._parse_table_parts))
 
         partition = self._try_parse(self._parse_partition)
         if not partition and self._match_texts(self.PARTITION_KEYWORDS):
@@ -9361,7 +9364,7 @@ class Parser:
         return self.expression(
             exp.Analyze(
                 kind=kind,
-                this=this,
+                tables=tables,
                 mode=mode,
                 partition=partition,
                 properties=properties,

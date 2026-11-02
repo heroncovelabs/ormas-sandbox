@@ -595,8 +595,10 @@ class TSQLGenerator(generator.Generator):
         return super().alter_sql(expression)
 
     def drop_sql(self, expression: exp.Drop) -> str:
-        if expression.args["kind"] == "VIEW":
-            expression.this.set("catalog", None)
+        if expression.kind == "VIEW":
+            for table in expression.args.get("tables") or []:
+                if isinstance(table, exp.Table):
+                    table.set("catalog", None)
         return super().drop_sql(expression)
 
     def options_modifier(self, expression: exp.Expr) -> str:
