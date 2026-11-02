@@ -33,7 +33,7 @@ from itertools import (
     zip_longest,
 )
 from math import prod, comb, isqrt, gcd
-from operator import mul, getitem, index, is_, itemgetter, truediv
+from operator import add, mul, getitem, index, is_, itemgetter, truediv
 from random import randrange, sample, choice, shuffle
 from sys import hexversion
 
@@ -1408,8 +1408,19 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _running_mean_windowed(iterator, maxlen):
+    """Yield the mean of values in a sliding window."""
+    window = deque()
+    for x in iterator:
+        window.append(x)
+        if len(window) > maxlen:
+            window.popleft()
+        # Start with the first value, as accumulate() does, and add in order.
+        yield reduce(add, window) / len(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of values seen so far or in a sliding window.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1430,26 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+    >>> list(running_mean(iterable, maxlen=2))
+    [100.0, 150.0, 400.0]
+
+    Set *maxlen* to a positive integer to average the most recent values.
+    Initially, the window contains only the values seen so far. The default
+    of ``None`` averages all values seen so far. Each result is produced as
+    soon as its input value is read.
+
+    Supports int, float, complex, Decimal, and Fraction. A non-iterable
+    input or non-integer *maxlen* raises ``TypeError`` when called, and a
+    non-positive *maxlen* raises ``ValueError`` when called.
     """
-    return map(truediv, accumulate(iterable), count(1))
+    if maxlen is None:
+        return map(truediv, accumulate(iterable), count(1))
+
+    iterator = iter(iterable)
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return _running_mean_windowed(iterator, maxlen)
 
 
 def random_derangement(iterable):

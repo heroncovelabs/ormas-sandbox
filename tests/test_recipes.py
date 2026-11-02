@@ -1530,6 +1530,36 @@ class RunningMeanTests(TestCase):
                 self.assertEqual(actual, expected)
 
 
+    def test_windowed(self):
+        datasets = [
+            [],
+            [100, 200, 600, -50, 0],
+            [8.5, 9.5, 7.5, 6.5],
+            [Decimal('1.0'), Decimal('2.0'), Decimal('-4.0')],
+            [Fraction(1, 3), Fraction(2, 7), Fraction(-4, 5)],
+            [1 + 2j, 3 - 4j, -2 + 5j, 9j],
+            [1e16, 1.0, -1e16, 4.0, 6.0],
+        ]
+        for data in datasets:
+            for maxlen in (1, 2, 3, 10):
+                with self.subTest(data=data, maxlen=maxlen):
+                    expected = [
+                        list(mi.running_mean(data[max(0, i - maxlen) : i]))[-1]
+                        for i in range(1, len(data) + 1)
+                    ]
+                    actual = list(mi.running_mean(data, maxlen=maxlen))
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(
+                        list(map(type, actual)), list(map(type, expected))
+                    )
+
+    def test_unbounded_complex(self):
+        self.assertEqual(
+            list(mi.running_mean([1 + 2j, 3 - 4j, -1 + 5j])),
+            [1 + 2j, 2 - 1j, 1 + 1j],
+        )
+
+
 class RunningMedianTests(TestCase):
     def test_vs_statistics_median(self):
         running_median = mi.running_median

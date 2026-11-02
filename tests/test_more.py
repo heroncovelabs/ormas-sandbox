@@ -6646,3 +6646,203 @@ class TestConcurrentTee(TestCase):
         with self.assertRaises(ValueError):
             non_concurrent_source = producer(limit)
             mi.concurrent_tee(non_concurrent_source, n=-1)  # Negative n
+
+
+class StatsTests(TestCase):
+    def test_record(self):
+        summary = mi.Stats(3, 1, 2, 3, 2.0)
+        same = mi.Stats(size=3, minimum=1, median=2, maximum=3, mean=2.0)
+        self.assertEqual(summary, same)
+        self.assertEqual(hash(summary), hash(same))
+        self.assertEqual(len({summary, same}), 1)
+        self.assertNotEqual(summary, mi.Stats(4, 1, 2, 3, 2.0))
+        self.assertEqual(summary.size, 3)
+        self.assertEqual(summary.minimum, 1)
+        self.assertEqual(summary.median, 2)
+        self.assertEqual(summary.maximum, 3)
+        self.assertEqual(summary.mean, 2.0)
+        self.assertFalse(hasattr(summary, '__dict__'))
+        for field in ('size', 'minimum', 'median', 'maximum', 'mean', 'extra'):
+            with self.subTest(field=field):
+                with self.assertRaises(AttributeError):
+                    setattr(summary, field, 10)
+                with self.assertRaises(AttributeError):
+                    delattr(summary, field)
+        with self.assertRaises(TypeError):
+            len(summary)
+        with self.assertRaises(TypeError):
+            summary[0]
+        with self.assertRaises(TypeError):
+            iter(summary)
+
+
+class RunningExtremaTests(TestCase):
+    def test_examples(self):
+        data = [5, 9, 4, 12, 8, 9]
+        self.assertEqual(list(mi.running_min(data)), [5, 5, 4, 4, 4, 4])
+        self.assertEqual(list(mi.running_max(data)), [5, 9, 9, 12, 12, 12])
+        self.assertEqual(
+            list(mi.running_min(data, maxlen=3)), [5, 5, 4, 4, 4, 8]
+        )
+        self.assertEqual(
+            list(mi.running_max(data, maxlen=3)), [5, 9, 9, 12, 12, 12]
+        )
+
+    def test_against_brute_force(self):
+        rng = Random(9201)
+        datasets = [
+            [rng.randrange(-20, 21) for _ in range(100)],
+            [3] * 50 + [1] * 50 + [3] * 50,
+            list(range(100)),
+            list(range(100, 0, -1)),
+            [],
+        ]
+        for function, reference in (
+            (mi.running_min, min),
+            (mi.running_max, max),
+        ):
+            for convert in (int, float, Decimal, Fraction):
+                for raw in datasets:
+                    data = list(map(convert, raw))
+                    for maxlen in (None, 1, 2, 3, 10, 200):
+                        with self.subTest(
+                            function=function, convert=convert, maxlen=maxlen
+                        ):
+                            expected = []
+                            for i in range(1, len(data) + 1):
+                                start = (
+                                    0 if maxlen is None else max(0, i - maxlen)
+                                )
+                                expected.append(reference(data[start:i]))
+                            actual = list(function(iter(data), maxlen=maxlen))
+                            self.assertEqual(actual, expected)
+                            self.assertEqual(
+                                list(map(type, actual)),
+                                list(map(type, expected)),
+                            )
+
+    def test_complex_rejected_during_iteration(self):
+        for function in (
+            mi.running_min,
+            mi.running_max,
+            mi.running_statistics,
+        ):
+            for maxlen in (None, 1, 3):
+                for data in ([1j], [1, 2j]):
+                    with self.subTest(
+                        function=function, maxlen=maxlen, data=data
+                    ):
+                        iterator = function(data, maxlen=maxlen)
+                        with self.assertRaises(TypeError):
+                            list(iterator)
+
+
+class RunningStatisticsTests(TestCase):
+    def test_examples(self):
+        self.assertEqual(
+            list(mi.running_statistics([1, 3, 5])),
+            [
+                mi.Stats(1, 1, 1, 1, 1.0),
+                mi.Stats(2, 1, 2.0, 3, 2.0),
+                mi.Stats(3, 1, 3, 5, 3.0),
+            ],
+        )
+        self.assertEqual(
+            list(mi.running_statistics([1, 3, 5], maxlen=2)),
+            [
+                mi.Stats(1, 1, 1, 1, 1.0),
+                mi.Stats(2, 1, 2.0, 3, 2.0),
+                mi.Stats(2, 3, 4.0, 5, 4.0),
+            ],
+        )
+
+    def test_numeric_types_and_windows(self):
+        rng = Random(9202)
+        raw = [rng.randrange(-20, 21) for _ in range(100)]
+        for convert in (int, float, Decimal, Fraction):
+            data = list(map(convert, raw))
+            for maxlen in (None, 1, 2, 3, 10, 200):
+                with self.subTest(convert=convert, maxlen=maxlen):
+                    medians = list(mi.running_median(data, maxlen=maxlen))
+                    means = list(mi.running_mean(data, maxlen=maxlen))
+                    summaries = list(
+                        mi.running_statistics(data, maxlen=maxlen)
+                    )
+                    self.assertEqual(len(summaries), len(data))
+                    for i, summary in enumerate(summaries, 1):
+                        window = data[
+                            0 if maxlen is None else max(0, i - maxlen) : i
+                        ]
+                        self.assertEqual(
+                            summary,
+                            mi.Stats(
+                                len(window),
+                                min(window),
+                                medians[i - 1],
+                                max(window),
+                                means[i - 1],
+                            ),
+                        )
+                        self.assertIs(type(summary.minimum), convert)
+                        self.assertIs(type(summary.maximum), convert)
+                        self.assertIs(
+                            type(summary.median), type(medians[i - 1])
+                        )
+                        self.assertIs(type(summary.mean), type(means[i - 1]))
+
+
+class RunningFunctionsTests(TestCase):
+    functions = (
+        mi.running_min,
+        mi.running_max,
+        mi.running_mean,
+        mi.running_median,
+        mi.running_statistics,
+    )
+
+    def test_exports(self):
+        namespace = {}
+        exec('from more_itertools import *', namespace)
+        for name in (
+            'Stats',
+            'running_min',
+            'running_max',
+            'running_statistics',
+        ):
+            self.assertIs(namespace[name], getattr(mi, name))
+
+    def test_call_time_errors(self):
+        for function in self.functions:
+            with self.subTest(function=function):
+                with self.assertRaises(TypeError):
+                    function(123)
+                with self.assertRaises(TypeError):
+                    function([], maxlen=3.0)
+                with self.assertRaises(TypeError):
+                    function([], 3)
+                for maxlen in (0, -1, -10):
+                    with self.assertRaises(ValueError):
+                        function([], maxlen=maxlen)
+
+    def test_empty(self):
+        for function in self.functions:
+            for maxlen in (None, 1, 3):
+                with self.subTest(function=function, maxlen=maxlen):
+                    self.assertEqual(list(function([], maxlen=maxlen)), [])
+
+    def test_streaming(self):
+        for function in self.functions:
+            for maxlen in (None, 1, 3):
+                with self.subTest(function=function, maxlen=maxlen):
+                    seen = []
+
+                    def source():
+                        for value in count():
+                            seen.append(value)
+                            yield value
+
+                    iterator = function(source(), maxlen=maxlen)
+                    self.assertEqual(seen, [])
+                    for i in range(10):
+                        next(iterator)
+                        self.assertEqual(seen, list(range(i + 1)))
