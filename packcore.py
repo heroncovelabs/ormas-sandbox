@@ -20,7 +20,13 @@ class Engine:
         self.seq: dict[str, int] = {}
         self.bin: dict[str, int] = {}
         self.live: set[str] = set()
+        # Keep the spelling of the first successful placement for each id.
+        self.names: dict[str, str] = {}
+        # Freeing an id permanently changes its normal placement to second-fit.
+        self.scarred: set[str] = set()
         self.used: list[int] = []
+        # Emptying a noninitial bin leaves a digest-only credit on its predecessor.
+        self.credits: list[int] = []
         self.seq_next = 1
         self.c_place = 0
         self.c_free = 0
@@ -35,34 +41,55 @@ class Engine:
         self._emit(f"N {item} {code}")
         self.c_rej += 1
 
-    def _fit(self, size: int) -> int:
+    def _fit(self, size: int, skip: int = 0) -> int:
         for i, u in enumerate(self.used):
             if u + size <= CAP:
-                return i
+                if skip:
+                    skip -= 1
+                else:
+                    return i
         return -1
 
     def _open(self) -> int:
         self.used.append(0)
+        self.credits.append(0)
         return len(self.used) - 1
 
     def _digest(self) -> int:
         d = 0
         for i, u in enumerate(self.used):
             w = 2 if i % 2 == 0 else 7
-            d = (d + w * u) % DMOD
+            d = (d + w * (u + self.credits[i])) % DMOD
         return d
 
-    def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
-        if not parts:
+    def handle(self, line: str | bytes) -> None:
+        # Match the legacy %7s %63s %63s scanner, including fields that
+        # continue immediately after a width-limited token. Trailing fields
+        # are ignored; whitespace-only records still produce a FMT reply.
+        raw = (
+            line.encode("utf-8", "surrogateescape")
+            if isinstance(line, str)
+            else line
+        )
+        raw = raw.split(b"\0", 1)[0].split(b"\r", 1)[0].split(b"\n", 1)[0]
+        if not raw:
             return
-        kind = parts[0]
-        item = parts[1] if len(parts) > 1 else ""
-        item_ok = 1 <= len(item) <= 8 and item.isalnum()
+        parts = []
+        for width in (7, 63, 63):
+            raw = raw.lstrip()
+            if not raw:
+                break
+            token = raw.split(None, 1)[0][:width]
+            parts.append(token)
+            raw = raw[len(token):]
+        kind = parts[0] if parts else b""
+        item_bytes = parts[1] if len(parts) > 1 else b""
+        item_ok = 1 <= len(item_bytes) <= 8 and item_bytes.isalnum()
+        item = item_bytes.decode("ascii") if item_ok else ""
         echo = item if item_ok else "????????"
 
-        if kind == "P":
-            if len(parts) != 3 or not item_ok:
+        if kind == b"P":
+            if len(parts) < 3 or not item_ok:
                 self._reject(echo, "FMT")
                 return
             stok = parts[2]
@@ -70,44 +97,66 @@ class Engine:
                 self._reject(item, "SIZE")
                 return
             size = int(stok)
-            if not 1 <= size <= 100:
+            if size > CAP:
                 self._reject(item, "SIZE")
                 return
-            if item in self.live:
-                self._reject(item, "DUP")
+            if size == 0:
                 return
-            b = self._fit(size)
-            if b < 0:
+            key = item.lower()
+            name = self.names.get(key, item)
+            if name in self.live:
+                self._reject(name, "DUP")
+                return
+            # The legacy tables reserve 4096 ids and require spare bin
+            # capacity before registering a previously unseen id.
+            if key not in self.names and (
+                len(self.names) >= 4096 or len(self.used) >= 4095
+            ):
+                self._reject(item, "FMT")
+                return
+            # A size-50 placement with exactly one open bin always opens
+            # the second bin, even when the existing bin has room.
+            if size == 50 and len(self.used) == 1:
                 b = self._open()
+            else:
+                b = self._fit(size, skip=int(name in self.scarred))
+                if b < 0:
+                    b = self._open()
             self.used[b] += size
-            self.size[item] = size
-            self.seq[item] = self.seq_next
+            self.names[key] = name
+            self.size[name] = size
+            self.seq[name] = self.seq_next
             self.seq_next += 1
-            self.bin[item] = b
-            self.live.add(item)
+            self.bin[name] = b
+            self.live.add(name)
             self.c_place += 1
             self._emit(f"B {len(self.used)}")
             return
 
-        if kind == "F":
-            if len(parts) != 2 or not item_ok:
+        if kind == b"F":
+            if len(parts) < 2 or not item_ok:
                 self._reject(echo, "FMT")
                 return
-            if item not in self.live:
-                self._reject(item, "STATE")
+            name = self.names.get(item.lower(), item)
+            if name not in self.live:
+                self._reject(name, "STATE")
                 return
-            self.used[self.bin[item]] -= self.size[item]
-            self.live.discard(item)
+            b = self.bin[name]
+            self.used[b] -= self.size[name]
+            if b > 0 and self.used[b] == 0:
+                self.credits[b - 1] += self.size[name]
+            self.live.discard(name)
+            self.scarred.add(name)
             self.c_free += 1
             self._emit(f"B {len(self.used)}")
             return
 
-        if kind == "K":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
-            order = sorted(self.live, key=lambda it: self.seq[it])
+        if kind == b"K":
+            # Compaction uses first-fit decreasing, with successful
+            # placement order (updated on reuse) breaking equal-size ties.
+            order = sorted(self.live, key=lambda it: (-self.size[it], self.seq[it]))
             self.used = []
+            self.credits = []
             for it in order:
                 b = self._fit(self.size[it])
                 if b < 0:
@@ -118,10 +167,7 @@ class Engine:
             self._emit(f"B {len(self.used)}")
             return
 
-        if kind == "D":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
+        if kind == b"D":
             self._emit(f"D {self._digest()}")
             return
 
@@ -133,7 +179,9 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
+    # fgets in the retired engine consumes at most 511 bytes per record.
+    # Read bytes to preserve CR, NUL, and non-ASCII input exactly.
+    while line := sys.stdin.buffer.readline(511):
         engine.handle(line)
     engine.finish()
 
