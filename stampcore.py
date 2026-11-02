@@ -11,7 +11,9 @@ that file; the legacy controller's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
+from collections.abc import Iterable
 
 ID_MAX = 8
 BAL_MIN = 1000  # smallest registrable prepaid balance, tenths of a cent
@@ -34,6 +36,9 @@ class Meter:
         self.franked = 0  # ledger: total postage franked
         self.credits = 0  # ledger: total return credits granted
         self.last = 0  # last franked postage (return-credit rate)
+        self.previous_postage = 0  # postage before the last successful frank
+        self.postage_since_audit = 0  # nominal postage accumulated since audit
+        self.settled_drift = 0  # deductions already accounted for by audits
         self.pool = 0  # franks not yet consumed by returns
 
 
@@ -49,7 +54,8 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        # The controller tokenizes C strings using only space, CR, and LF.
+        tokens = re.findall(r"[^ \r\n]+", line.split("\0", 1)[0])
         if not tokens:
             return ""
         if tokens[0] == "M":
@@ -73,11 +79,13 @@ class Engine:
         )
 
     def _find(self, meter: str) -> Meter | None:
-        return self.meters.get(meter)
+        if not meter.isascii():
+            return None
+        return self.meters.get(meter.upper())
 
     def _register(self, tokens: list[str]) -> str:
         meter = tokens[1] if len(tokens) >= 2 else NO_METER
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {meter} FMT"
         if not _valid_id(tokens[1]):
             return f"N {meter} FMT"
@@ -86,13 +94,13 @@ class Engine:
             return f"N {meter} BAL"
         if self._find(tokens[1]) is not None:
             return f"N {meter} DUP"
-        self.meters[tokens[1]] = Meter(int(balance))
+        self.meters[tokens[1].upper()] = Meter(int(balance))
         self.registered += 1
         return f"OK {len(self.meters)}"
 
     def _frank(self, tokens: list[str]) -> str:
         meter = tokens[1] if len(tokens) >= 2 else NO_METER
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {meter} FMT"
         if not _valid_id(tokens[1]):
             return f"N {meter} FMT"
@@ -103,10 +111,19 @@ class Engine:
         m = self._find(tokens[1])
         if m is None:
             return f"N {meter} UNKNOWN"
-        if post > m.balance:
+        coarse = "0" <= meter[-1] <= "9" and m.balance < 10000
+        if coarse and post < 25:
+            return f"N {meter} POST"
+        debit = ((post + 24) // 25) * 25 if coarse else post
+        accumulated = m.postage_since_audit + post
+        # Each newly crossed 2000-unit boundary adds one to the physical debit.
+        debit += accumulated // 2000 - m.postage_since_audit // 2000
+        if debit > m.balance:
             return f"N {meter} LOW"
-        m.balance -= post
+        m.balance -= debit
         m.franked += post
+        m.postage_since_audit = accumulated
+        m.previous_postage = m.last
         m.last = post
         m.pool += 1
         self.franks += 1
@@ -114,7 +131,7 @@ class Engine:
 
     def _return(self, tokens: list[str]) -> str:
         meter = tokens[1] if len(tokens) >= 2 else NO_METER
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {meter} FMT"
         if not _valid_id(tokens[1]):
             return f"N {meter} FMT"
@@ -125,9 +142,11 @@ class Engine:
         m = self._find(tokens[1])
         if m is None:
             return f"N {meter} UNKNOWN"
-        if returned > m.pool:
-            return f"N {meter} RET"
-        credit = returned * m.last
+        returned = min(returned, m.pool)
+        expected = m.initial - m.franked + m.credits - m.settled_drift
+        # Unsettled physical drift above 30 makes the return rate lag one frank.
+        rate = m.previous_postage if expected - m.balance > 30 else m.last
+        credit = returned * rate
         m.balance += credit
         m.credits += credit
         m.pool -= returned
@@ -136,22 +155,25 @@ class Engine:
 
     def _audit(self, tokens: list[str]) -> str:
         meter = tokens[1] if len(tokens) >= 2 else NO_METER
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {meter} FMT"
         if not _valid_id(tokens[1]):
             return f"N {meter} FMT"
         m = self._find(tokens[1])
         if m is None:
             return f"N {meter} UNKNOWN"
-        expected = m.initial - m.franked + m.credits
+        expected = m.initial - m.franked + m.credits - m.settled_drift
         delta = expected - m.balance
+        # Settle the discrepancy in the ledger without changing the reading.
+        m.settled_drift += delta
+        m.postage_since_audit = 0
         self.audits += 1
         if delta == 0:
             return f"Z {tokens[1]} MATCH"
         return f"Z {tokens[1]} DRIFT {delta}"
 
 
-def process(lines: list[str], out=None) -> list[str]:
+def process(lines: Iterable[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
@@ -169,7 +191,13 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    # Match the controller's 65536-byte fgets buffer, including partial lines.
+    # Binary reads also preserve embedded CRs and non-UTF-8 meter tokens.
+    lines = (
+        raw.decode("utf-8", errors="surrogateescape")
+        for raw in iter(lambda: sys.stdin.buffer.readline(65535), b"")
+    )
+    process(lines, out=sys.stdout)
 
 
 if __name__ == "__main__":
