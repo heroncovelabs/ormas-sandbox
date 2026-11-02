@@ -14,9 +14,9 @@ from __future__ import annotations
 import sys
 
 ID_MAX = 8
+BOARD_MAX = 4096
 NO_ID = "????????"
-# SPEC: a booking adds value/1000 (integer division) to the carrier's
-# commitment score; a drop subtracts twice what the booking added.
+# The nominal tariff is retained separately from the live booking credit.
 BOOK_STEP = 1000
 
 
@@ -32,16 +32,20 @@ class Carrier:
     def __init__(self, cid: str, rating: int) -> None:
         self.cid = cid
         self.rating = rating
-        # SPEC: every carrier starts at rating x 100.
-        self.score = rating * 100
-        self.sum_book = 0  # ledger: sum of value/1000 over bookings
-        self.sum_drop = 0  # ledger: sum of value/1000 over drops
+        self.base_score = rating * 100
+        self.score = self.base_score
+        self.sum_book = 0  # nominal tariff ledger
+        self.sum_drop = 0
+        self.open_count = 0
+        self.drop_count = 0
 
 
 class Load:
     def __init__(self, value: int) -> None:
         self.value = value
         self.booked_by: str | None = None
+        self.booking_credit = 0
+        self.soured_by: set[str] = set()
 
 
 class Engine:
@@ -58,9 +62,14 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> list[str]:
-        tokens = line.split()
-        if not tokens:
+        # The reference reads up to a newline, then treats CR and NUL as
+        # terminators. Only an actually empty line is ignored.
+        line = line.split("\n", 1)[0].split("\r", 1)[0].split("\0", 1)[0]
+        if not line:
             return []
+        # Spaces delimit fields; leading spaces leave the command unrecognized.
+        command, _, fields = line.partition(" ")
+        tokens = [command, *(field for field in fields.split(" ") if field)]
         if line == "W":
             replies = self._settle()
         elif tokens[0] == "C":
@@ -96,7 +105,13 @@ class Engine:
             return f"N {echo} RATING"
         if tokens[1] in self.carriers:
             return f"N {echo} DUP"
-        self.carriers[tokens[1]] = Carrier(tokens[1], rating)
+        if len(self.carriers) >= BOARD_MAX:
+            return f"N {echo} FMT"
+        carrier = Carrier(tokens[1], rating)
+        # Every successful settlement, including an empty one, ages new baselines.
+        carrier.base_score = max(0, carrier.base_score - 50 * self.n_set)
+        carrier.score = carrier.base_score
+        self.carriers[tokens[1]] = carrier
         self.n_car += 1
         return f"OK {len(self.carriers)}"
 
@@ -113,6 +128,8 @@ class Engine:
             return f"N {echo} VALUE"
         if tokens[1] in self.loads:
             return f"N {echo} DUP"
+        if len(self.loads) >= BOARD_MAX:
+            return f"N {echo} FMT"
         self.loads[tokens[1]] = Load(value)
         self.n_load += 1
         return f"OK {len(self.loads)}"
@@ -129,11 +146,20 @@ class Engine:
         l = self.loads.get(tokens[2])
         if l is None:
             return f"N {echo} UNKNOWN"
-        if l.booked_by is not None:
+        if l.booked_by is not None or c.cid in l.soured_by:
             return f"N {echo} TAKEN"
-        c.score += l.value // BOOK_STEP
-        c.sum_book += l.value // BOOK_STEP
-        l.booked_by = tokens[1]
+        nominal = l.value // BOOK_STEP
+        # Top-rated carriers on 2500-cent lanes use an 800-cent live tariff.
+        step = 800 if c.rating >= 80 and l.value % 2500 == 0 else BOOK_STEP
+        credit = l.value // step
+        credit = max(0, credit - c.open_count // 3)
+        if c.drop_count == 2:
+            credit //= 2
+        c.score += credit
+        c.sum_book += nominal
+        c.open_count += 1
+        l.booked_by = c.cid
+        l.booking_credit = credit
         self.n_book += 1
         return f"A {c.cid} {c.score}"
 
@@ -151,28 +177,21 @@ class Engine:
             return f"N {echo} UNKNOWN"
         if l.booked_by != tokens[1]:
             return f"N {echo} NOBOOK"
-        # SPEC: a drop subtracts twice what the booking added; the load
-        # returns to the board and may be booked again by any carrier.
-        c.score -= 2 * (l.value // BOOK_STEP)
+        c.score -= 2 * l.booking_credit
         c.sum_drop += l.value // BOOK_STEP
+        c.drop_count += 1
+        c.open_count -= 1
+        l.soured_by.add(c.cid)
         l.booked_by = None
         self.n_drop += 1
         return f"A {c.cid} {c.score}"
 
     def _settle(self) -> list[str]:
-        # SPEC: a settlement on an empty board settles nothing and
-        # writes nothing.
-        if not self.carriers:
-            return []
         replies = []
         for c in self.carriers.values():
-            # SPEC: the settlement recomputes the score from the event
-            # ledger with the same arithmetic as the live path; it is a
-            # checksum, not a correction, and always equals the running
-            # score for a healthy board.
-            settled = c.rating * 100 + c.sum_book - 2 * c.sum_drop
-            replies.append(f"S {c.cid} {settled}")
-            c.score = settled
+            # Reconcile from persistent nominal ledgers and per-drop adjustments.
+            c.score = c.base_score + c.sum_book - 2 * c.sum_drop - 2 * c.drop_count
+            replies.append(f"S {c.cid} {c.score}")
         replies.append(f"WEND {len(self.carriers)}")
         self.n_set += 1
         return replies
@@ -182,10 +201,7 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
-        if not line:
-            continue
-        replies.extend(engine.handle(line))
+        replies.extend(engine.handle(raw))
     replies.append(engine.trailer())
     if out is not None:
         for reply in replies:
@@ -194,7 +210,16 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    if hasattr(sys.stdin, "buffer") and hasattr(sys.stdout, "buffer"):
+        # The reference's input buffer holds at most 262143 bytes per read.
+        # Latin-1 preserves every input byte, including malformed echoed IDs,
+        # independently of the terminal's text encoding and error policy.
+        chunks = iter(lambda: sys.stdin.buffer.readline(262143), b"")
+        lines = [chunk.decode("latin-1") for chunk in chunks]
+        for reply in process(lines):
+            sys.stdout.buffer.write((reply + "\n").encode("latin-1"))
+    else:
+        process(sys.stdin.readlines(), out=sys.stdout)
 
 
 if __name__ == "__main__":
