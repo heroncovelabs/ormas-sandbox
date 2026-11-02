@@ -1,0 +1,2 @@
+bugfixes:
+  - human_to_bytes filter - validate the complete input and unit, rejecting malformed numbers, non-ASCII digits, leading whitespace, and unrecognized unit names (https://github.com/ansible/ansible/issues/82075).
