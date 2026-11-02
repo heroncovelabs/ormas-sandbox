@@ -187,6 +187,14 @@ class WhereNode(tree.Node):
             cols.extend(child.get_group_by_cols())
         return cols
 
+    def get_refs(self):
+        """Return the aliases referenced by this node's children."""
+        refs = set()
+        for child in self.children:
+            if hasattr(child, "get_refs"):
+                refs.update(child.get_refs())
+        return refs
+
     def get_source_expressions(self):
         return self.children[:]
 

@@ -200,6 +200,14 @@ class BaseExpression:
     def set_source_expressions(self, exprs):
         assert not exprs
 
+    def get_refs(self):
+        """Return the aliases referenced by this expression's sources."""
+        refs = set()
+        for expr in self.get_source_expressions():
+            if expr is not None and hasattr(expr, "get_refs"):
+                refs.update(expr.get_refs())
+        return refs
+
     def _parse_expressions(self, *expressions):
         return [
             arg
@@ -1159,6 +1167,9 @@ class Ref(Expression):
 
     def set_source_expressions(self, exprs):
         (self.source,) = exprs
+
+    def get_refs(self):
+        return {self.refs}
 
     def resolve_expression(
         self, query=None, allow_joins=True, reuse=None, summarize=False, for_save=False

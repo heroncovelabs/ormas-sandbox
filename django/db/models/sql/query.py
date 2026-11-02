@@ -441,17 +441,28 @@ class Query(BaseExpression):
         """
         if not self.annotation_select:
             return {}
-        existing_annotations = [
-            annotation
-            for alias, annotation in self.annotations.items()
+        existing_annotations = {
+            alias: annotation
+            for alias, annotation in self.annotation_select.items()
             if alias not in added_aggregate_names
-        ]
+        }
+        _, having, qualify = self.where.split_having_qualify()
+        has_existing_aggregation = (
+            any(
+                annotation.contains_aggregate
+                for annotation in existing_annotations.values()
+            )
+            or having
+        )
+        aggregate_refs = set()
+        for alias in added_aggregate_names:
+            aggregate_refs.update(self.annotations[alias].get_refs())
         # Decide if we need to use a subquery.
         #
-        # Existing annotations would cause incorrect results as get_aggregation()
-        # must produce just one result and thus must not use GROUP BY. But we
-        # aren't smart enough to remove the existing annotations from the
-        # query, so those would force us to use GROUP BY.
+        # Existing aggregations would cause incorrect results as
+        # get_aggregation() must produce just one result and thus must not use
+        # GROUP BY. Aggregates referencing existing annotations also need a
+        # subquery to select those annotations.
         #
         # If the query has limit or distinct, or uses set operations, then
         # those operations must be done in a subquery so that the query
@@ -460,7 +471,9 @@ class Query(BaseExpression):
         if (
             isinstance(self.group_by, tuple)
             or self.is_sliced
-            or existing_annotations
+            or has_existing_aggregation
+            or aggregate_refs
+            or qualify
             or self.distinct
             or self.combinator
         ):
@@ -482,12 +495,7 @@ class Query(BaseExpression):
                 # query is grouped by the main model's primary key. However,
                 # clearing the select clause can alter results if distinct is
                 # used.
-                has_existing_aggregate_annotations = any(
-                    annotation
-                    for annotation in existing_annotations
-                    if getattr(annotation, "contains_aggregate", True)
-                )
-                if inner_query.default_cols and has_existing_aggregate_annotations:
+                if inner_query.default_cols and has_existing_aggregation:
                     inner_query.group_by = (
                         self.model._meta.pk.get_col(inner_query.get_initial_alias()),
                     )
@@ -509,6 +517,37 @@ class Query(BaseExpression):
                     annotation_select_mask.remove(alias)
                 # Make sure the annotation_select wont use cached results.
                 inner_query.set_annotation_mask(inner_query.annotation_select_mask)
+            if not inner_query.distinct and not qualify and not inner_query.combinator:
+                # Keep annotations used by the outer aggregates or by grouping,
+                # filtering, and ordering in the inner query.
+                annotation_mask = inner_query.where.get_refs()
+                for expression in outer_query.annotation_select.values():
+                    annotation_mask.update(expression.get_refs())
+                if isinstance(inner_query.group_by, tuple):
+                    for expression in inner_query.group_by:
+                        annotation_mask.update(expression.get_refs())
+                if inner_query.group_by is not None:
+                    annotation_mask.update(
+                        alias
+                        for alias, expression in inner_query.annotation_select.items()
+                        if expression.get_group_by_cols()
+                    )
+                for ordering in (*inner_query.order_by, *inner_query.extra_order_by):
+                    if isinstance(ordering, str):
+                        annotation_mask.add(ordering.lstrip("-"))
+                    elif hasattr(ordering, "get_refs"):
+                        annotation_mask.update(ordering.get_refs())
+                # References between retained annotations can be transitive.
+                pending = list(annotation_mask)
+                while pending:
+                    annotation = inner_query.annotations.get(pending.pop())
+                    if annotation is not None:
+                        refs = annotation.get_refs() - annotation_mask
+                        annotation_mask.update(refs)
+                        pending.extend(refs)
+                inner_query.set_annotation_mask(
+                    annotation_mask.intersection(inner_query.annotations)
+                )
             if (
                 inner_query.select == ()
                 and not inner_query.default_cols
@@ -525,6 +564,10 @@ class Query(BaseExpression):
             self.select = ()
             self.default_cols = False
             self.extra = {}
+            self.annotations = {
+                alias: self.annotations[alias] for alias in added_aggregate_names
+            }
+            self.set_annotation_mask(added_aggregate_names)
 
         empty_set_result = [
             expression.empty_result_set_value
