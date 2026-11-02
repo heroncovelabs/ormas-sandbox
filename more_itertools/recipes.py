@@ -864,6 +864,19 @@ def polynomial_from_roots(roots):
 
 
 def iter_index(iterable, value, start=0, stop=None):
+    """Yield the indices at which *value* appears in *iterable*.
+
+    Negative *start* and *stop* have the same from-the-end meaning as for
+    sequences, e.g. ``list.index``.
+    """
+    has_index = hasattr(iterable, 'index')
+    if not has_index and (start < 0 or (stop is not None and stop < 0)):
+        # General iterables need a known length to resolve negative bounds
+        iterable = list(iterable)
+    return _iter_index(iterable, value, start, stop)
+
+
+def _iter_index(iterable, value, start=0, stop=None):
     """Yield the index of each place in *iterable* that *value* occurs,
     beginning with index *start* and ending before index *stop*.
 
