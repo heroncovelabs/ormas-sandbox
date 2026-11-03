@@ -32,7 +32,7 @@ class Message:
     """An entry of translatable message."""
     def __init__(self, text: str, locations: List[Tuple[str, int]], uuids: List[str]):
         self.text = text
-        self.locations = locations
+        self.locations = list(dict.fromkeys(locations))
         self.uuids = uuids
 
 
