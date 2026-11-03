@@ -28,6 +28,11 @@ EXAMPLES: |
   # this is an error, wants bits, got bytes
   ERROR: '{{ "1.15 GB" | human_to_bytes(isbits=true) }}'
 
+  # this is an error, malformed input or unit, see https://github.com/ansible/ansible/issues/82075
+  ERROR: '{{ "10 BBQ sticks please" | human_to_bytes }}'
+  ERROR: '{{ "3 prettybytes" | human_to_bytes }}'
+  ERROR: '{{ "12,000 MB" | human_to_bytes }}'
+
 RETURN:
   _value:
     description: Integer representing the bytes from the input.
