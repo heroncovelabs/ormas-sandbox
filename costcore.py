@@ -4,20 +4,45 @@ Replaces the retired legacy binary (see ``legacy/README.md``). One batch
 per process: movement lines on stdin, result lines on stdout, trailer at
 end of input. Format reference: ``docs/SPEC.md`` (mind the drift warning;
 the engine's behavior is the contract).
+
+Engine behavior that differs from (or is missing in) the spec:
+
+- SKUs are case-insensitive; a SKU is displayed with the spelling of the
+  first line that passed validation for it (receipt or issue).
+- Tokens beyond the required ones are ignored.
+- A quantity of all zeros is dropped silently (no output, not counted),
+  after the format check and before the cost check.
+- Unit costs of 0 are accepted; costs above 9,000,000 are valued at
+  9,000,000.
+- A receipt at the same (valued) unit cost as the newest layer merges into
+  that layer instead of opening a new one.
+- Issues never draw on the newest layer unless it is the only layer.
+- An issue for more than the drawable quantity, but no more than twice
+  it, is filled with whatever is drawable; beyond that it is ``STOCK``.
+- An issue of 100+ units that leaves the SKU at zero on hand is charged
+  2% shrinkage on its COGS, rounded half up.
 """
 
 from __future__ import annotations
 
+import re
 import sys
 
-MAX_QTY = 999_999
-MAX_COST = 9_999_999
+COST_CAP = 9_000_000
+SHRINK_MIN_QTY = 100
+
+_SKU = re.compile(r"[A-Za-z0-9]{1,8}")
+_QTY = re.compile(r"[0-9]{1,6}")
+_COST = re.compile(r"[0-9]{1,7}")
+_WS = re.compile(r"[ \t\r\n\v\f]+")
 
 
 class Engine:
     def __init__(self, out=None):
-        # Per-SKU FIFO cost layers: sku -> list of [qty, unit_cost].
+        # Per-SKU FIFO cost layers: key -> list of [qty, unit_cost].
         self.layers: dict[str, list[list[int]]] = {}
+        # Case-folded key -> display spelling.
+        self.names: dict[str, str] = {}
         self.count_rcpt = 0
         self.count_iss = 0
         self.count_rej = 0
@@ -31,46 +56,53 @@ class Engine:
         self._emit(f"E {sku} {code}")
         self.count_rej += 1
 
-    def _onhand(self, sku: str) -> int:
-        return sum(qty for qty, _cost in self.layers.get(sku, []))
+    def _onhand(self, key: str) -> int:
+        return sum(qty for qty, _cost in self.layers.get(key, []))
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
-        if not parts:
+        line = line.rstrip("\r\n")
+        if not line:
             return
-        kind = parts[0]
+        parts = _WS.split(line.strip(" \t\r\n\v\f"))
+        kind = parts[0] if parts else ""
         sku = parts[1] if len(parts) > 1 else ""
-        sku_ok = 1 <= len(sku) <= 8 and sku.isalnum()
+        sku_ok = _SKU.fullmatch(sku) is not None
         need = 4 if kind == "R" else 3 if kind == "I" else 0
-        if need == 0 or not sku_ok or len(parts) != need:
-            self._emit(f"E {sku if sku_ok else '????????'} FMT")
-            self.count_rej += 1
+        if need == 0 or not sku_ok or len(parts) < need:
+            self._reject(sku if sku_ok else "????????", "FMT")
             return
         qty_tok = parts[2]
-        if not (qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
+        if not _QTY.fullmatch(qty_tok):
             self._reject(sku, "QTY")
             return
         qty = int(qty_tok)
-        if not 1 <= qty <= MAX_QTY:
-            self._reject(sku, "QTY")
+        if qty == 0:
             return
         if kind == "R":
             cost_tok = parts[3]
-            if not (cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
+            if not _COST.fullmatch(cost_tok):
                 self._reject(sku, "COST")
                 return
-            cost = int(cost_tok)
-            # Every receipt opens its own cost layer, newest last.
-            self.layers.setdefault(sku, []).append([qty, cost])
-            self._emit(f"A {sku} {self._onhand(sku)}")
+            cost = min(int(cost_tok), COST_CAP)
+        key = sku.upper()
+        name = self.names.setdefault(key, sku)
+        stack = self.layers.setdefault(key, [])
+        if kind == "R":
+            if stack and stack[-1][1] == cost:
+                stack[-1][0] += qty
+            else:
+                stack.append([qty, cost])
+            self._emit(f"A {name} {self._onhand(key)}")
             self.count_rcpt += 1
             return
-        # Issue: FIFO, oldest layers consumed first.
-        if qty > self._onhand(sku):
-            self._reject(sku, "STOCK")
+        # Issue: FIFO over every layer but the newest (unless it is alone).
+        drawable = stack if len(stack) == 1 else stack[:-1]
+        avail = sum(layer[0] for layer in drawable)
+        if qty > 2 * avail:
+            self._reject(name, "STOCK")
             return
-        stack = self.layers[sku]
-        remaining = qty
+        remaining = min(qty, avail)
+        taken = remaining
         cogs = 0
         while remaining > 0:
             layer = stack[0]
@@ -80,7 +112,10 @@ class Engine:
             remaining -= got
             if layer[0] == 0:
                 stack.pop(0)
-        self._emit(f"C {sku} {cogs} {self._onhand(sku)}")
+        onhand = self._onhand(key)
+        if onhand == 0 and taken >= SHRINK_MIN_QTY:
+            cogs = (cogs * 102 + 50) // 100
+        self._emit(f"C {name} {cogs} {onhand}")
         self.count_iss += 1
         self.sum_cogs += cogs
 
@@ -92,8 +127,9 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
-        engine.handle(line)
+    # Bytes, split on LF only: a bare CR is whitespace, not a line break.
+    for raw in sys.stdin.buffer:
+        engine.handle(raw.decode("latin-1"))
     engine.finish()
 
 
