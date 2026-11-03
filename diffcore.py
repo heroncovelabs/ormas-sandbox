@@ -66,15 +66,16 @@ class Engine:
         val = tokens[1]
         if not _valid_val(val):
             return "E VAL"
+        if val == self.value:
+            # ENGINE: re-setting the current value is silent and uncounted.
+            return None
         self.value = val
         self.sets += 1
         return "OK"
 
     def _is_full(self) -> bool:
-        # SPEC: the first snapshot is FULL, and every fourth snapshot is
-        # stored FULL so a delta chain stays short (snapshots 4, 8, ...).
-        count = len(self.snaps)
-        return count == 0 or (count + 1) % FULL_EVERY == 0
+        # ENGINE: snapshots 0, 4, 8, ... (0-based) are stored FULL.
+        return len(self.snaps) % FULL_EVERY == 0
 
     def _store(self) -> str:
         if self._is_full():
@@ -94,14 +95,21 @@ class Engine:
         snap = self.snaps[idx]
         if snap[0] == "F":
             return snap[1]
-        # SPEC: a delta applies against the previous snapshot's
-        # reconstructed value, honoring the recorded length; positions
-        # beyond the base fill with the pad character.
+        # ENGINE: a delta's changes are applied directly to the most recent
+        # FULL snapshot (intermediate deltas are skipped). The recorded
+        # length is honored only for the delta right after the FULL one;
+        # later deltas keep the FULL value's length, grown only as far as
+        # the changes reach. Uncovered positions fill with the pad character.
         _, newlen, changes = snap
-        base = self._reconstruct(idx - 1)
+        anchor = idx - idx % FULL_EVERY
+        base = self.snaps[anchor][1]
+        if idx == anchor + 1:
+            length = newlen
+        else:
+            length = max([len(base)] + [p + 1 for p in changes])
         return "".join(
             changes.get(p, base[p] if p < len(base) else PAD)
-            for p in range(newlen)
+            for p in range(length)
         )
 
     def _restore(self, tokens: list[str]) -> str:
@@ -115,9 +123,8 @@ class Engine:
         if idx >= len(self.snaps):
             return "E IDX"
         self.value = self._reconstruct(idx)
-        # SPEC: the restored value becomes the working value the next
-        # snapshot builds on.
-        self.base = self.value
+        # ENGINE: the restored value becomes the working value, but the
+        # next delta is still computed against the last STORED value.
         self.restores += 1
         return f"V {digest(self.value)}"
 
