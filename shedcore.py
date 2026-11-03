@@ -19,6 +19,9 @@ GRADE_HI = 9  # highest tool grade
 DAYS_LO = 1  # shortest loan, days
 DAYS_HI = 30  # longest loan, days
 NO_ID = "????????"
+VETERAN = 3  # listings after which a tool accrues at half rate
+HEAVY = 3  # tools out at once that mark a member heavy
+HEAVY_FEE = 5  # extra return fee for heavy members
 
 
 def _valid_id(token: str) -> bool:
@@ -38,6 +41,8 @@ class Tool:
         self.cleared = 0  # ledger: duty cleared by rotas since the last one
         self.loaned_by: str | None = None
         self.loan_days = 0
+        self.services = 0  # times listed on a rota
+        self.stamp = 0  # sequence number of the latest return
 
 
 class Engine:
@@ -46,6 +51,9 @@ class Engine:
     def __init__(self) -> None:
         self.tools: dict[str, Tool] = {}
         self.members: set[str] = set()
+        self.held: dict[str, int] = {}  # tools currently out per member
+        self.heavy: set[str] = set()  # members who once held 3+ at a time
+        self.seq = 0
         self.registered = 0
         self.enrolled = 0
         self.loans = 0
@@ -111,6 +119,7 @@ class Engine:
         if tokens[1] in self.members:
             return f"N {ident} DUP"
         self.members.add(tokens[1])
+        self.held[tokens[1]] = 0
         self.enrolled += 1
         return f"OK {len(self.members)}"
 
@@ -136,6 +145,12 @@ class Engine:
             return f"N {ident} OUT"
         t.loaned_by = tokens[1]
         t.loan_days = int(days)
+        # Duty accrues at loan time: days x grade, halved for veterans.
+        earned = t.loan_days * t.grade
+        t.duty += earned // 2 if t.services >= VETERAN else earned
+        self.held[tokens[1]] += 1
+        if self.held[tokens[1]] >= HEAVY:
+            self.heavy.add(tokens[1])
         self.loans += 1
         return f"L {tokens[1]} {tokens[2]}"
 
@@ -152,10 +167,15 @@ class Engine:
             return f"N {ident} UNKNOWN"
         if t.loaned_by != tokens[1]:
             return f"N {ident} NOLOAN"
-        # Duty accrues when the tool comes back: days x grade.
-        earned = t.loan_days * t.grade
-        t.duty += earned
-        t.accrued += earned
+        # The ledger takes days x grade; live duty takes a flat return fee.
+        t.accrued += t.loan_days * t.grade
+        fee = 2 * t.grade
+        if tokens[1] in self.heavy:
+            fee += HEAVY_FEE
+        t.duty += fee // 2 if t.services >= VETERAN else fee
+        self.seq += 1
+        t.stamp = self.seq
+        self.held[tokens[1]] -= 1
         t.loaned_by = None
         t.loan_days = 0
         self.returns += 1
@@ -166,17 +186,15 @@ class Engine:
             return f"N {NO_ID} FMT"
         rota = sorted(
             ((name, t) for name, t in self.tools.items() if t.duty > 0),
-            key=lambda item: (-item[1].duty, item[1].index),
+            key=lambda item: (-item[1].duty, -item[1].stamp, item[1].index),
         )
         self.services += 1
-        if not rota:
-            # No tool owes service: there is no rota to emit or close.
-            return ""
         lines = []
         for name, t in rota:
             lines.append(f"S {name}")
             t.cleared += t.duty
             t.duty = 0
+            t.services += 1
         lines.append(f"SEND {len(rota)}")
         return "\n".join(lines)
 
@@ -185,13 +203,8 @@ class Engine:
             return f"N {NO_ID} FMT"
         positive = 0
         for t in self.tools.values():
-            # Recompute duty from the ledger since the last reckoning:
-            # what accrued, minus what the rotas cleared. The reckoning
-            # is an audit, not a revision: it always agrees with the
-            # live figure.
             t.duty = t.accrued - t.cleared
-            t.accrued = 0
-            t.cleared = 0
+            t.stamp = 0
             if t.duty > 0:
                 positive += 1
         self.reckonings += 1
