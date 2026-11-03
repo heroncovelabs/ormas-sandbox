@@ -445,6 +445,15 @@ def escape_filter(value):
 
 
 @register.filter(is_safe=True)
+def escapeseq(value):
+    """
+    An "escape" filter for sequences. Apply conditional escaping to each element
+    in the sequence, individually, and return a list with the results.
+    """
+    return [conditional_escape(obj) for obj in value]
+
+
+@register.filter(is_safe=True)
 @stringfilter
 def force_escape(value):
     """
