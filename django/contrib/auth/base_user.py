@@ -131,7 +131,7 @@ class AbstractBaseUser(models.Model):
         """
         return is_password_usable(self.password)
 
-    def get_session_auth_hash(self):
+    def get_session_auth_hash(self, secret=None):
         """
         Return an HMAC of the password field.
         """
@@ -139,6 +139,7 @@ class AbstractBaseUser(models.Model):
         return salted_hmac(
             key_salt,
             self.password,
+            secret=secret,
             algorithm="sha256",
         ).hexdigest()
 
