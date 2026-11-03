@@ -6,7 +6,8 @@ records rehearsal attendance, ``A`` records an absence, ``C`` prints
 the concert seating, ``W`` runs a reseat audit), writes reply lines and
 an ``X`` trailer at EOF.
 Format reference: ``docs/SPEC.md`` (note the drift warning at the top
-of that file; the legacy engine's behavior is the contract).
+of that file; the legacy engine's behavior is the contract, and it
+differs from the document in the places flagged below).
 """
 
 from __future__ import annotations
@@ -17,16 +18,46 @@ ID_MAX = 8
 ROWS = ("1", "2", "3", "4")
 NO_SINGER = "????????"
 
+STREAK_BONUS = 2  # extra credit for an unbroken run of rehearsals
+MISSES_TO_PROBATION = 3  # absences that put a singer on half credit
+CARRIED = 3  # seats that carried the concert
+
 
 def _valid_id(token: str) -> bool:
     return 1 <= len(token) <= ID_MAX and token.isascii() and token.isalnum()
 
 
 class Singer:
-    def __init__(self, row: int, index: int) -> None:
+    def __init__(self, row: int, index: int, standing: int = 0) -> None:
         self.row = row
         self.index = index  # enrollment order
-        self.standing = 0  # bench standing (never printed)
+        self.standing = standing  # bench standing (never printed)
+        self.on_streak = False  # last event was a rehearsal
+        self.missed = 0  # absences on record
+        self.probation = False  # rehearsals earn half credit
+        self.last_seen = 0  # tick of the last rehearsal (seating recency)
+
+    def credit(self) -> int:
+        """Credit a rehearsal pays, with the streak bonus and probation."""
+        earned = self.row + (STREAK_BONUS if self.on_streak else 0)
+        return earned // 2 if self.probation else earned
+
+    def rehearse(self, tick: int) -> None:
+        self.standing += self.credit()
+        self.on_streak = True
+        self.last_seen = tick
+
+    def miss(self) -> None:
+        self.standing = max(0, self.standing - 2 * self.row)
+        self.on_streak = False
+        self.missed += 1
+        if self.missed >= MISSES_TO_PROBATION:
+            self.probation = True
+
+    def carried(self) -> None:
+        """Seated in the front rank of a concert: standing and probation go."""
+        self.standing = 0
+        self.probation = False
 
 
 class Engine:
@@ -42,6 +73,7 @@ class Engine:
         self.concerts = 0
         self.reseats = 0
         self.rejected = 0
+        self.tick = 0
         self.out = out if out is not None else sys.stdout
 
     def _emit(self, line: str) -> None:
@@ -55,6 +87,7 @@ class Engine:
         tokens = line.rstrip("\r\n").split()
         if not tokens:
             return
+        self.tick += 1
         kind = tokens[0]
         if kind == "E":
             self._enroll(tokens)
@@ -83,11 +116,23 @@ class Engine:
         if tokens[1] in self.singers:
             self._reject(singer, "DUP")
             return
-        self.singers[tokens[1]] = Singer(int(tokens[2]), len(self.order))
+        row = int(tokens[2])
+        self.singers[tokens[1]] = Singer(row, len(self.order), self._settle(row))
         self.order.append(tokens[1])
         self.ledger.append(("E", tokens[1]))
         self.enrolled += 1
         self._emit(f"OK {len(self.singers)}")
+
+    def _settle(self, row: int) -> int:
+        """Standing a singer enrolling mid-season settles in on.
+
+        Once the season has a concert behind it, a newcomer is seated a
+        rehearsal's worth of credit up the bench for each singer the
+        bench is currently carrying on probation.
+        """
+        if self.concerts == 0:
+            return 0
+        return row * sum(1 for sg in self.singers.values() if sg.probation)
 
     def _rehearsal(self, tokens: list[str]) -> None:
         singer = tokens[1] if len(tokens) >= 2 else NO_SINGER
@@ -101,7 +146,7 @@ class Engine:
         if sg is None:
             self._reject(singer, "UNKNOWN")
             return
-        sg.standing += sg.row
+        sg.rehearse(self.tick)
         self.ledger.append(("P", tokens[1]))
         self.rehearsals += 1
         self._emit(f"P {tokens[1]}")
@@ -118,12 +163,19 @@ class Engine:
         if sg is None:
             self._reject(singer, "UNKNOWN")
             return
-        sg.standing = max(0, sg.standing - 2 * sg.row)
+        sg.miss()
         self.ledger.append(("A", tokens[1]))
         self.absences += 1
         self._emit(f"A {tokens[1]}")
 
-    def _seating(self, standings: dict[str, int]) -> list[str]:
+    def _seating(self, bench: dict[str, Singer]) -> list[str]:
+        """Descending standing, then most recent rehearsal, then book order."""
+        return sorted(
+            bench,
+            key=lambda n: (-bench[n].standing, -bench[n].last_seen, bench[n].index),
+        )
+
+    def _audit_seating(self, standings: dict[str, int]) -> list[str]:
         """Descending standing; ties by enrollment order."""
         return sorted(
             standings, key=lambda n: (-standings[n], self.singers[n].index)
@@ -133,17 +185,12 @@ class Engine:
         if len(tokens) != 1:
             self._reject(NO_SINGER, "FMT")
             return
-        if self.singers:
-            names = self._seating(
-                {name: sg.standing for name, sg in self.singers.items()}
-            )
-            for name in names:
-                self._emit(f"C {name}")
-            self._emit(f"CEND {len(names)}")
-            # The first three seats carried the concert.
-            for name in names[:3]:
-                self.singers[name].standing = 0
-        # A concert with no singers enrolled prints no seating.
+        names = self._seating(self.singers)
+        for name in names:
+            self._emit(f"C {name}")
+        self._emit(f"CEND {len(names)}")
+        for name in names[:CARRIED]:
+            self.singers[name].carried()
         self.ledger.append(("C", ""))
         self.concerts += 1
 
@@ -152,7 +199,15 @@ class Engine:
             self._reject(NO_SINGER, "FMT")
             return
         # Recompute every standing from the full ledger, replacing the
-        # live values (the reseat mirrors the bench, it never moves it).
+        # live values. The audit works off the plain ledger arithmetic
+        # alone: a rehearsal pays the bare row with no streak bonus and
+        # no probation, an enrolment is worth a bare 0, and the concert
+        # resets fall on the book order with no rehearsal recency to
+        # break ties. So the audited bench can seat differently from the
+        # live one, and the seats it carries can differ too. Only the
+        # standings are replaced; streaks, absences and probation stay
+        # as the live bench recorded them, and the recency the live
+        # seating leans on is wiped, so the book order rules again.
         replay: dict[str, int] = {}
         for kind, name in self.ledger:
             if kind == "E":
@@ -162,12 +217,17 @@ class Engine:
             elif kind == "A":
                 replay[name] = max(0, replay[name] - 2 * self.singers[name].row)
             elif kind == "C":
-                for reset in self._seating(replay)[:3]:
-                    replay[reset] = 0
+                for carrier in self._audit_seating(replay)[:CARRIED]:
+                    replay[carrier] = 0
+        positive = 0
         for name, standing in replay.items():
-            self.singers[name].standing = standing
+            live = self.singers[name]
+            live.standing = standing
+            live.last_seen = 0
+            if standing > 0:
+                positive += 1
         self.reseats += 1
-        self._emit(f"WOK {sum(1 for st in replay.values() if st > 0)}")
+        self._emit(f"WOK {positive}")
 
     def finish(self) -> None:
         self._emit(
