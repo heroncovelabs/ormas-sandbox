@@ -259,6 +259,9 @@ class TocTreeCollector(EnvironmentCollector):
                         if url_re.match(subdocname) or subdocname == 'self':
                             # don't mess with those
                             continue
+                        if subdocname not in env.all_docs:
+                            # generated pages (genindex, modindex, search)
+                            continue
 
                         _walk_doc(subdocname, secnum)
                 elif isinstance(subnode, nodes.Element):
