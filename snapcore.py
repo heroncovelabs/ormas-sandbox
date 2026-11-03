@@ -14,8 +14,11 @@ import sys
 
 KEY_MAX = 8
 VAL_MAX = 12
+SER_VAL_MAX = 10
 VERSION = "Z1"
 PAIR_SEP = ";"
+LEGACY_VERSION = "Z0"
+LEGACY_PAIR_SEP = ","
 
 _WEIGHTS = (3, 7)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -35,11 +38,17 @@ def _valid_val(token: str) -> bool:
     return 1 <= len(token) <= VAL_MAX and token.isascii() and token.isalnum()
 
 
+def _tokens(line: str) -> list[str]:
+    # Engine splits on runs of spaces only; tabs stay inside tokens.
+    return [t for t in line.split(" ") if t]
+
+
 class Engine:
     """Session-state store with serialize/load and batch counters."""
 
     def __init__(self) -> None:
         self.state: dict[str, str] = {}
+        self.rebuild_pending = False
         self.puts = 0
         self.gets = 0
         self.loads = 0
@@ -50,10 +59,10 @@ class Engine:
             reply = self._serialize()
             kind = "S"
         elif line == "P" or line.startswith("P "):
-            reply = self._put(line.split())
+            reply = self._put(_tokens(line))
             kind = "P"
         elif line == "G" or line.startswith("G "):
-            reply = self._get(line.split())
+            reply = self._get(_tokens(line))
             kind = "G"
         elif line.startswith("L "):
             reply = self._load(line[2:])
@@ -75,7 +84,8 @@ class Engine:
         return f"X {self.puts} {self.gets} {self.loads} {self.rejected}"
 
     def _put(self, tokens: list[str]) -> str:
-        if len(tokens) != 3:
+        # Engine: tokens past the value are ignored.
+        if len(tokens) < 3:
             return "R FMT"
         key, val = tokens[1], tokens[2]
         if not _valid_key(key) or not _valid_val(val):
@@ -84,7 +94,8 @@ class Engine:
         return f"OK {len(self.state)}"
 
     def _get(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        # Engine: tokens past the key are ignored.
+        if len(tokens) < 2:
             return "R FMT"
         key = tokens[1]
         if not _valid_key(key):
@@ -94,7 +105,16 @@ class Engine:
         return "NIL"
 
     def _serialize(self) -> str:
-        pairs = PAIR_SEP.join(f"{k}={v}" for k, v in self.state.items())
+        if self.rebuild_pending:
+            # Engine: a rebuild requested by a load is applied at the next
+            # serialize, permanently reordering the store by ASCII key.
+            self.state = dict(sorted(self.state.items()))
+            self.rebuild_pending = False
+        # Engine: full-length (VAL_MAX) values are written truncated.
+        pairs = PAIR_SEP.join(
+            f"{k}={v[:SER_VAL_MAX] if len(v) >= VAL_MAX else v}"
+            for k, v in self.state.items()
+        )
         body = VERSION + "|" + pairs
         return "B " + body + "|" + checksum(body)
 
@@ -105,24 +125,35 @@ class Engine:
         ver, pairs_str, check = blob.split("|")
         if len(check) != 1:
             return "R FMT"
-        if ver != VERSION:
+        if ver not in (VERSION, LEGACY_VERSION):
             return "R VER"
         if check != checksum(ver + "|" + pairs_str):
             return "R CHK"
-        if not pairs_str:
-            return "R FMT"  # SPEC: a blob carries at least one pair
+        # Engine: an empty pair list is a valid (empty) state; Z0 blobs
+        # separate pairs with ",".
+        pieces = pairs_str.split(LEGACY_PAIR_SEP if ver == LEGACY_VERSION else PAIR_SEP) if pairs_str else []
         new_state: dict[str, str] = {}
-        for piece in pairs_str.split(PAIR_SEP):
+        folded: dict[str, str] = {}
+        rebuild = ver == LEGACY_VERSION
+        for piece in pieces:
             if piece.count("=") != 1:
                 return "R FMT"
             key, val = piece.split("=")
             if not _valid_key(key) or not _valid_val(val):
                 return "R FMT"
-            if key in new_state:
-                return "R FMT"  # SPEC: duplicate keys reject
-            new_state[key] = val
+            # Engine: keys are case-folded on load; the first spelling is
+            # kept, the last value wins, and a duplicate triggers a rebuild.
+            low = key.lower()
+            if low in folded:
+                rebuild = True
+                new_state[folded[low]] = val
+            else:
+                folded[low] = key
+                new_state[key] = val
         self.state = new_state
-        return f"OK {len(self.state)}"
+        self.rebuild_pending = rebuild
+        # Engine: the acknowledgment counts pairs in the blob, not live keys.
+        return f"OK {len(pieces)}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
