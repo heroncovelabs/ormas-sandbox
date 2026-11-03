@@ -435,17 +435,34 @@ class Query(BaseExpression):
         annotation.set_source_expressions(new_exprs)
         return annotation, col_cnt
 
-    def get_aggregation(self, using, added_aggregate_names):
+    def get_aggregation(self, using, added_aggregate_names, prune_annotations=False):
         """
         Return the dictionary with the values of the existing aggregations.
+
+        When prune_annotations is True, the existing annotations are not
+        needed to compute the aggregations and are dropped from the query.
         """
         if not self.annotation_select:
             return {}
-        existing_annotations = [
-            annotation
-            for alias, annotation in self.annotations.items()
-            if alias not in added_aggregate_names
-        ]
+        if prune_annotations:
+            # Only selected aggregate annotations need to be grouped by. Masked
+            # and non-aggregate annotations don't change the number of rows.
+            existing_annotations = [
+                annotation
+                for alias, annotation in self.annotation_select.items()
+                if alias not in added_aggregate_names and annotation.contains_aggregate
+            ]
+            kept_annotations = [
+                alias
+                for alias in self.annotation_select
+                if alias in added_aggregate_names
+            ]
+        else:
+            existing_annotations = [
+                annotation
+                for alias, annotation in self.annotations.items()
+                if alias not in added_aggregate_names
+            ]
         # Decide if we need to use a subquery.
         #
         # Existing annotations would cause incorrect results as get_aggregation()
@@ -471,7 +488,10 @@ class Query(BaseExpression):
             outer_query = AggregateQuery(self.model, inner_query)
             inner_query.select_for_update = False
             inner_query.select_related = False
-            inner_query.set_annotation_mask(self.annotation_select)
+            if prune_annotations:
+                inner_query.set_annotation_mask(kept_annotations)
+            else:
+                inner_query.set_annotation_mask(self.annotation_select)
             # Queries with distinct_fields need ordering and when a limit is
             # applied we must take the slice from the ordered query. Otherwise
             # no need for ordering.
@@ -525,6 +545,9 @@ class Query(BaseExpression):
             self.select = ()
             self.default_cols = False
             self.extra = {}
+            if prune_annotations:
+                # Only the aggregations are selected, drop other annotations.
+                self.set_annotation_mask(kept_annotations)
 
         empty_set_result = [
             expression.empty_result_set_value
@@ -551,7 +574,10 @@ class Query(BaseExpression):
         """
         obj = self.clone()
         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
-        return obj.get_aggregation(using, ["__count"])["__count"]
+        # Annotations can only change the number of rows through distinct or
+        # combined queries, so they can be stripped otherwise.
+        prune = not (obj.distinct or obj.combinator)
+        return obj.get_aggregation(using, ["__count"], prune)["__count"]
 
     def has_filters(self):
         return self.where
