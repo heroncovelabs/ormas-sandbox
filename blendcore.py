@@ -7,6 +7,24 @@ book volume from its ledger), writes one reply per command and an ``X``
 trailer at EOF.
 Format reference: ``docs/SPEC.md`` (note the drift warning at the top of
 that file; the legacy engine's behavior is the contract).
+
+Engine behavior that differs from the spec:
+
+- Tank and job ids are matched case-insensitively; the first-seen
+  spelling is kept for ``B`` and ``J`` lines. Pigments match exactly.
+- ``T`` and ``D`` ignore tokens past the fourth; ``R`` must be the
+  whole line. Tokens are separated by one or more spaces, and the
+  command letter must be the first character of the line.
+- Every dispense loses ``amount // 500`` from the tank's physical
+  volume (doubled for pigments containing ``W`` when the amount is at
+  least 1000). The loss is not shown in ``J`` totals.
+- A dispense that exceeds the physical volume by at most 20 is granted
+  partially (whatever is left); beyond that it is ``DRY``.
+- Fills are capped at 9999999: the ledger's fill total and the physical
+  volume are each clamped.
+- ``R`` writes off half the physical loss since the last reconcile when
+  that loss exceeds 50, then resets the ledger and the physical volume
+  to the resulting book volume.
 """
 
 from __future__ import annotations
@@ -15,6 +33,11 @@ import sys
 
 ID_MAX = 8
 NO_TANK = "????????"
+VOL_CAP = 9999999
+LOSS_UNIT = 500
+WHITE_BULK_MIN = 1000
+PARTIAL_SLACK = 20
+WRITEOFF_MIN = 50
 
 
 def _valid_id(token: str) -> bool:
@@ -26,11 +49,23 @@ def _digits(token: str) -> bool:
 
 
 class Tank:
-    def __init__(self, pigment: str, volume: int) -> None:
+    def __init__(self, name: str, pigment: str) -> None:
+        self.name = name
         self.pigment = pigment
-        self.volume = volume
-        self.fills = volume
+        self.fills = 0
         self.dispensed = 0
+        self.physical = 0
+        self.shrink = 0
+
+    def fill(self, volume: int) -> None:
+        self.fills = min(self.fills + volume, VOL_CAP)
+        self.physical = min(self.physical + volume, VOL_CAP)
+
+    def loss(self, amount: int) -> int:
+        loss = amount // LOSS_UNIT
+        if amount >= WHITE_BULK_MIN and "W" in self.pigment:
+            loss *= 2
+        return loss
 
 
 class Engine:
@@ -38,21 +73,21 @@ class Engine:
 
     def __init__(self) -> None:
         self.tanks: dict[str, Tank] = {}
-        self.jobs: dict[str, int] = {}
+        self.jobs: dict[str, list] = {}
         self.fills = 0
         self.dispenses = 0
         self.reconciles = 0
         self.rejected = 0
 
     def handle(self, line: str) -> list[str]:
-        tokens = line.split()
+        tokens = [tok for tok in line.split(" ") if tok]
         if not tokens:
             return []
         if line == "R":
             replies = self._reconcile()
-        elif tokens[0] == "T":
+        elif line[:2] == "T " and tokens[0] == "T":
             replies = [self._fill(tokens)]
-        elif tokens[0] == "D":
+        elif line[:2] == "D " and tokens[0] == "D":
             replies = [self._dispense(tokens)]
         else:
             replies = [f"N {NO_TANK} FMT"]
@@ -68,7 +103,7 @@ class Engine:
 
     def _fill(self, tokens: list[str]) -> str:
         tank = tokens[1] if len(tokens) >= 2 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -76,20 +111,21 @@ class Engine:
         if not _digits(vol_tok) or not 2 <= len(vol_tok) <= 7:
             return f"N {tank} VOL"
         volume = int(vol_tok)
-        t = self.tanks.get(tokens[1])
+        key = tokens[1].lower()
+        t = self.tanks.get(key)
         if t is not None:
             if t.pigment != tokens[2]:
                 return f"N {tank} PIGMENT"
-            t.volume += volume
-            t.fills += volume
         else:
-            self.tanks[tokens[1]] = Tank(tokens[2], volume)
+            t = Tank(tokens[1], tokens[2])
+            self.tanks[key] = t
+        t.fill(volume)
         self.fills += 1
         return f"OK {len(self.tanks)}"
 
     def _dispense(self, tokens: list[str]) -> str:
         tank = tokens[2] if len(tokens) >= 3 else NO_TANK
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {tank} FMT"
         if not _valid_id(tokens[1]) or not _valid_id(tokens[2]):
             return f"N {tank} FMT"
@@ -97,25 +133,36 @@ class Engine:
         if not _digits(amt_tok) or len(amt_tok) > 6 or int(amt_tok) < 1:
             return f"N {tank} AMT"
         amount = int(amt_tok)
-        t = self.tanks.get(tokens[2])
+        t = self.tanks.get(tokens[2].lower())
         if t is None:
             return f"N {tank} FMT"
-        if amount > t.volume:
-            return f"N {tank} DRY"
-        t.volume -= amount
-        t.dispensed += amount
-        total = self.jobs.get(tokens[1], 0) + amount
-        self.jobs[tokens[1]] = total
+        if amount > t.physical:
+            if amount - t.physical > PARTIAL_SLACK:
+                return f"N {tank} DRY"
+            granted = t.physical
+        else:
+            granted = amount
+        t.physical -= granted
+        loss = min(t.loss(amount), t.physical)
+        t.physical -= loss
+        t.shrink += loss
+        t.dispensed += granted
+        job = self.jobs.setdefault(tokens[1].lower(), [tokens[1], 0])
+        job[1] += granted
         self.dispenses += 1
-        return f"J {tokens[1]} {total}"
+        return f"J {job[0]} {job[1]}"
 
     def _reconcile(self) -> list[str]:
         replies = []
-        for tank_id, t in self.tanks.items():
-            # SPEC: the book volume is fills minus dispenses; reconcile
-            # is an identity check against the live volume.
+        for t in self.tanks.values():
             book = t.fills - t.dispensed
-            replies.append(f"B {tank_id} {book}")
+            if t.shrink > WRITEOFF_MIN:
+                book -= t.shrink // 2
+            t.fills = book
+            t.dispensed = 0
+            t.physical = book
+            t.shrink = 0
+            replies.append(f"B {t.name} {book}")
         replies.append(f"REND {len(self.tanks)}")
         self.reconciles += 1
         return replies
