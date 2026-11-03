@@ -375,6 +375,7 @@ class Apps:
         """
         # Call expire cache on each model. This will purge
         # the relation tree and the fields cache.
+        self.get_swappable_settings_name.cache_clear()
         self.get_models.cache_clear()
         if self.ready:
             # Circumvent self.get_models() to prevent that the cache is refilled.
