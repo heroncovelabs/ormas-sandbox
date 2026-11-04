@@ -1,3 +1,5 @@
+from fractions import Fraction
+
 from ledger.money import Money
 
 class Ledger:
@@ -9,7 +11,17 @@ class Ledger:
         total = sum(c for a, c in self._entries if a == account)
         return Money(total)
     def allocate(self, total: Money, ratios):
-        parts = []
-        for r in ratios:
-            parts.append(Money(int(total.cents * r)))
-        return parts
+        # Normalize the ratios so the parts sum to the total exactly. Each part
+        # gets the floor of its exact share; the leftover cents go one each to
+        # the parts with the largest fractional remainders (ties: earlier first).
+        weights = [Fraction(r) for r in ratios]
+        weight_sum = sum(weights)
+        if not weights or weight_sum <= 0 or any(w < 0 for w in weights):
+            raise ValueError("ratios must be non-negative with a positive sum")
+        exact = [Fraction(total.cents) * w / weight_sum for w in weights]
+        floors = [int(x) for x in exact]
+        leftover = total.cents - sum(floors)
+        order = sorted(range(len(exact)), key=lambda i: (-(exact[i] - floors[i]), i))
+        for i in order[:leftover]:
+            floors[i] += 1
+        return [Money(c) for c in floors]
