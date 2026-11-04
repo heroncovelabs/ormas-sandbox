@@ -441,17 +441,47 @@ class Query(BaseExpression):
         """
         if not self.annotation_select:
             return {}
-        existing_annotations = [
-            annotation
+        existing_annotations = {
+            alias: annotation
             for alias, annotation in self.annotations.items()
             if alias not in added_aggregate_names
-        ]
+        }
+        added_aggregates = [self.annotations[alias] for alias in added_aggregate_names]
+        aggregate_refs = set()
+        for aggregate in added_aggregates:
+            aggregate_refs.update(aggregate.get_refs())
+        has_existing_aggregation = (
+            any(
+                annotation.contains_aggregate
+                for alias, annotation in self.annotation_select.items()
+                if alias in existing_annotations
+            )
+            or self.where.contains_aggregate
+            or self.where.contains_over_clause
+        )
+        # Unused aliased aggregates can be removed together with their joins
+        # when other expressions don't require the original grouping.
+        prune_aliased_aggregates = (
+            self.group_by is True
+            and not has_existing_aggregation
+            and bool(existing_annotations)
+            and not (self.where or self.extra or self.extra_tables)
+            and all(
+                annotation.contains_aggregate
+                for annotation in existing_annotations.values()
+            )
+            and all(
+                col.alias == self.base_table
+                for col in self._gen_cols(added_aggregates, include_external=True)
+            )
+        )
+        has_existing_aggregation |= (
+            self.group_by is True and not prune_aliased_aggregates
+        )
         # Decide if we need to use a subquery.
         #
-        # Existing annotations would cause incorrect results as get_aggregation()
-        # must produce just one result and thus must not use GROUP BY. But we
-        # aren't smart enough to remove the existing annotations from the
-        # query, so those would force us to use GROUP BY.
+        # Existing aggregates must retain their grouping, and references to
+        # existing annotations must be evaluated in a subquery.
         #
         # If the query has limit or distinct, or uses set operations, then
         # those operations must be done in a subquery so that the query
@@ -460,7 +490,8 @@ class Query(BaseExpression):
         if (
             isinstance(self.group_by, tuple)
             or self.is_sliced
-            or existing_annotations
+            or has_existing_aggregation
+            or aggregate_refs
             or self.distinct
             or self.combinator
         ):
@@ -484,7 +515,7 @@ class Query(BaseExpression):
                 # used.
                 has_existing_aggregate_annotations = any(
                     annotation
-                    for annotation in existing_annotations
+                    for annotation in existing_annotations.values()
                     if getattr(annotation, "contains_aggregate", True)
                 )
                 if inner_query.default_cols and has_existing_aggregate_annotations:
@@ -492,6 +523,18 @@ class Query(BaseExpression):
                         self.model._meta.pk.get_col(inner_query.get_initial_alias()),
                     )
                 inner_query.default_cols = False
+                if not inner_query.combinator:
+                    # Keep annotations used by grouping or other annotations,
+                    # and non-aggregate annotations that can affect grouping.
+                    annotation_mask = set(added_aggregate_names)
+                    if isinstance(self.group_by, tuple):
+                        for expr in self.group_by:
+                            annotation_mask.update(expr.get_refs())
+                    for alias, annotation in inner_query.annotation_select.items():
+                        if not annotation.contains_aggregate:
+                            annotation_mask.add(alias)
+                        annotation_mask.update(annotation.get_refs())
+                    inner_query.set_annotation_mask(annotation_mask)
 
             relabels = {t: "subquery" for t in inner_query.alias_map}
             relabels[None] = "subquery"
@@ -525,6 +568,18 @@ class Query(BaseExpression):
             self.select = ()
             self.default_cols = False
             self.extra = {}
+            if prune_aliased_aggregates:
+                # This path can discard unused aliased aggregates and the
+                # joins they introduced. Non-aggregate annotation joins are
+                # retained because they can affect the number of rows.
+                unique_annotations = {
+                    id(annotation): annotation
+                    for annotation in existing_annotations.values()
+                }
+                annotation_ids = set(unique_annotations)
+                for annotation in unique_annotations.values():
+                    self._unref_annotation_joins(annotation, annotation_ids)
+            self.set_annotation_mask(added_aggregate_names)
 
         empty_set_result = [
             expression.empty_result_set_value
@@ -544,6 +599,45 @@ class Query(BaseExpression):
         result = next(compiler.apply_converters((result,), converters))
 
         return dict(zip(outer_query.annotation_select, result))
+
+    @classmethod
+    def _iter_annotation_cols(cls, expression, annotation_ids, root=True):
+        """
+        Yield the Col references introduced by expression when it was resolved.
+        Ref nodes and nested annotations are not descended into as they have
+        their own resolved references.
+        """
+        if isinstance(expression, Col):
+            yield expression
+            return
+        if isinstance(expression, Ref):
+            return
+        if not root and id(expression) in annotation_ids:
+            return
+        get_source_expressions = getattr(expression, "get_source_expressions", None)
+        if get_source_expressions is None:
+            return
+        for source in get_source_expressions():
+            if source is not None:
+                yield from cls._iter_annotation_cols(
+                    source, annotation_ids, root=False
+                )
+
+    def _unref_annotation_joins(self, annotation, annotation_ids):
+        """
+        Release the join references held by an annotation that is being pruned
+        so the joins it alone required are no longer part of the FROM clause.
+        """
+        for col in self._iter_annotation_cols(annotation, annotation_ids):
+            alias = col.alias
+            while alias is not None and alias in self.alias_map:
+                parent_alias = self.alias_map[alias].parent_alias
+                if parent_alias is None:
+                    # The base table is never pruned.
+                    break
+                if self.alias_refcount.get(alias):
+                    self.unref_alias(alias)
+                alias = parent_alias
 
     def get_count(self, using):
         """

@@ -94,6 +94,20 @@ class Q(tree.Node):
         query.promote_joins(joins)
         return clause
 
+    def get_refs(self):
+        """
+        Return the set of annotation aliases referenced by this Q object,
+        collected across nested children and expression-valued lookups.
+        """
+        refs = set()
+        for child in self.children:
+            if isinstance(child, tuple):
+                # Only the lookup value may carry expression references.
+                child = child[1]
+            if hasattr(child, "get_refs"):
+                refs |= child.get_refs()
+        return refs
+
     def flatten(self):
         """
         Recursively yield this Q object and all subexpressions, in depth-first

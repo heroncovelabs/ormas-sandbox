@@ -441,6 +441,17 @@ class BaseExpression:
     def reverse_ordering(self):
         return self
 
+    def get_refs(self):
+        """
+        Return the set of annotation aliases referenced by this expression,
+        collected recursively from its non-None source expressions.
+        """
+        refs = set()
+        for expr in self.get_source_expressions():
+            if expr is not None and hasattr(expr, "get_refs"):
+                refs |= expr.get_refs()
+        return refs
+
     def flatten(self):
         """
         Recursively yield this expression and all subexpressions, in
@@ -1172,6 +1183,11 @@ class Ref(Expression):
 
     def as_sql(self, compiler, connection):
         return connection.ops.quote_name(self.refs), []
+
+    def get_refs(self):
+        # The referenced alias is the dependency boundary; don't descend into
+        # the source expression.
+        return {self.refs}
 
     def get_group_by_cols(self):
         return [self]

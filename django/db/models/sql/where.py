@@ -187,6 +187,24 @@ class WhereNode(tree.Node):
             cols.extend(child.get_group_by_cols())
         return cols
 
+    def get_refs(self):
+        """
+        Return the set of annotation aliases referenced by the predicates in
+        this node, collected recursively across all children.
+        """
+        refs = set()
+        for child in self.children:
+            if hasattr(child, "get_refs"):
+                refs |= child.get_refs()
+            else:
+                # Leaves without reference metadata (e.g. ExtraWhere or
+                # NothingNode) are inspected through their lhs/rhs when present.
+                for attr in ("lhs", "rhs"):
+                    operand = getattr(child, attr, None)
+                    if operand is not None and hasattr(operand, "get_refs"):
+                        refs |= operand.get_refs()
+        return refs
+
     def get_source_expressions(self):
         return self.children[:]
 
