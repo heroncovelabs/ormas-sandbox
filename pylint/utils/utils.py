@@ -253,6 +253,77 @@ def _check_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
     return _splitstrip(value)
 
 
+def _split_regexp_csv(string: str) -> list[str]:
+    """Split a comma-separated list of regular expressions.
+
+    Commas are only treated as separators at the outer level of the list. Commas
+    that are escaped with a backslash, inside a character class (``[...]``) or
+    inside a repetition (``{...}``) are kept as part of the regular expression.
+    Commas inside a group (``(...)``) are separators, as the group's own
+    parentheses are not used to protect commas. Entries are stripped and empty
+    entries are discarded. Regex validity is not checked here.
+
+    >>> _split_regexp_csv('foo, bar{1,3}, [,]x, c\\\\,d,')
+    ['foo', 'bar{1,3}', '[,]x', 'c\\\\,d']
+    """
+    entries: list[str] = []
+    current: list[str] = []
+    brace_depth = 0
+    in_class = False
+    class_start = False  # True right after '[' or '[^', where ']' is literal
+    escaped = False
+    for char in string:
+        if escaped:
+            escaped = False
+            class_start = False
+            current.append(char)
+            continue
+        if char == "\\":
+            escaped = True
+            class_start = False
+            current.append(char)
+            continue
+        if in_class:
+            if char == "^" and class_start:
+                current.append(char)
+                continue
+            if char == "]" and not class_start:
+                in_class = False
+            class_start = False
+            current.append(char)
+            continue
+        if char == "[":
+            in_class = True
+            class_start = True
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth = max(0, brace_depth - 1)
+        elif char == "," and brace_depth == 0:
+            entry = "".join(current).strip()
+            if entry:
+                entries.append(entry)
+            current = []
+            continue
+        current.append(char)
+    entry = "".join(current).strip()
+    if entry:
+        entries.append(entry)
+    return entries
+
+
+def _check_regexp_csv(value: list[str] | tuple[str] | str) -> Sequence[str]:
+    """Return a sequence of regular expression strings.
+
+    List and tuple inputs are returned unchanged. String inputs are split with
+    `_split_regexp_csv`, which keeps commas that belong to regex constructs
+    (groups, character classes, repetition braces) or that are escaped.
+    """
+    if isinstance(value, (list, tuple)):
+        return value
+    return _split_regexp_csv(value)
+
+
 def _comment(string: str) -> str:
     """Return string as a comment."""
     lines = [line.strip() for line in string.splitlines()]
