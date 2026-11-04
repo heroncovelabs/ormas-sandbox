@@ -83,6 +83,17 @@ def pushdown_projections(
         if scope.expression.args.get("distinct"):
             parent_selections = {SELECT_ALL}
 
+        # INTERSECT and EXCEPT compare whole rows, so every operand column matters,
+        # regardless of whether ALL or DISTINCT semantics are used.
+        if isinstance(scope.expression, (exp.Intersect, exp.Except)):
+            parent_selections = {SELECT_ALL}
+
+        # GROUP BY ALL derives its keys from the non-aggregate projections, so
+        # removing any of them would change the grouping.
+        group = scope.expression.args.get("group")
+        if isinstance(group, exp.Group) and group.args.get("all"):
+            parent_selections = {SELECT_ALL}
+
         # A recursive CTE's body reads the CTE's own output, so its projections
         # can't be pruned based only on what the enclosing query selects.
         if _is_self_referencing_cte(scope):
