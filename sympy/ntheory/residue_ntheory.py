@@ -743,6 +743,41 @@ def _nthroot_mod1(s, q, p, all_roots):
     return min(res)
 
 
+def _nthroot_mod_composite(a, n, m):
+    """
+    Return the sorted list of solutions to ``x**n = a mod m`` when
+    ``m`` is not prime.
+    """
+    from sympy.ntheory.modular import crt
+    from sympy.utilities.iterables import cartes
+    moduli = []
+    residues = []
+    for p, e in factorint(m).items():
+        roots = nthroot_mod(a % p, n, p, True) or []
+        pk = p
+        for _ in range(1, e):
+            # lift the roots of x**n = a from mod p**k to mod p**(k + 1)
+            # using f(r + t*p**k) = f(r) + t*p**k*f'(r) mod p**(k + 1)
+            pk1 = pk*p
+            lifted = []
+            for r in roots:
+                fr = (pow(r, n, pk1) - a) % pk1
+                dfr = (n*pow(r, n - 1, p)) % p
+                if dfr:
+                    t = (-(fr // pk)*mod_inverse(dfr, p)) % p
+                    lifted.append(r + t*pk)
+                elif fr == 0:
+                    lifted.extend(r + t*pk for t in range(p))
+            roots = lifted
+            pk = pk1
+        if not roots:
+            return []
+        moduli.append(pk)
+        residues.append(roots)
+    return sorted(set(int(crt(moduli, list(c))[0])
+        for c in cartes(*residues)))
+
+
 def nthroot_mod(a, n, p, all_roots=False):
     """
     Find the solutions to ``x**n = a mod p``
@@ -770,11 +805,14 @@ def nthroot_mod(a, n, p, all_roots=False):
     a, n, p = as_int(a), as_int(n), as_int(p)
     if n == 2:
         return sqrt_mod(a, p, all_roots)
+    if not isprime(p):
+        return _nthroot_mod_composite(a, n, p)
+    a = a % p
+    if a == 0:
+        return [0] if all_roots else 0
     # see Hackman "Elementary Number Theory" (2009), page 76
     if not is_nthpow_residue(a, n, p):
         return None
-    if not isprime(p):
-        raise NotImplementedError("Not implemented for composite p")
 
     if (p - 1) % n == 0:
         return _nthroot_mod1(a, n, p, all_roots)
