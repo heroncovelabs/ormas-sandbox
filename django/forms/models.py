@@ -263,7 +263,13 @@ class ModelFormMetaclass(DeclarativeFieldsMetaclass):
                 base_formfield_callback = b.Meta.formfield_callback
                 break
 
-        formfield_callback = attrs.pop("formfield_callback", base_formfield_callback)
+        formfield_callback = attrs.pop("formfield_callback", None)
+        if formfield_callback is None:
+            meta = attrs.get("Meta")
+            if meta is not None and hasattr(meta, "formfield_callback"):
+                formfield_callback = meta.formfield_callback
+        if formfield_callback is None:
+            formfield_callback = base_formfield_callback
 
         new_class = super().__new__(mcs, name, bases, attrs)
 
