@@ -3573,7 +3573,7 @@ class Argument(Parameter):
             var = self.name.upper()
         if self.deprecated:
             var += "!"
-        if not self.required:
+        if not self.required and not var.startswith("["):
             var = f"[{var}]"
         if self.nargs != 1:
             var += "..."
