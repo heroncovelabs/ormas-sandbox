@@ -52,7 +52,7 @@ from sympy.polys.densetools import (
     dup_monic, dmp_ground_monic,
     dup_primitive, dmp_ground_primitive,
     dmp_eval_tail,
-    dmp_eval_in, dmp_diff_eval_in,
+    dmp_eval_in, dmp_diff_eval_in, dmp_diff_in,
     dmp_compose,
     dup_shift, dup_mirror)
 
@@ -1146,7 +1146,13 @@ def dmp_ext_factor(f, u, K):
     if all(d <= 0 for d in dmp_degree_list(f, u)):
         return lc, []
 
-    f, F = dmp_sqf_part(f, u, K), f
+    # dmp_sqf_part only differentiates in the main variable, so factors
+    # free of it would be lost; use the gcd with all partial derivatives.
+    h = f
+    for j in range(u + 1):
+        h, _, _ = dmp_inner_gcd(h, dmp_diff_in(f, 1, j, u, K), u, K)
+
+    f, F = dmp_ground_monic(dmp_quo(f, h, u, K), u, K), f
     s, g, r = dmp_sqf_norm(f, u, K)
 
     factors = dmp_factor_list_include(r, u, K.dom)
