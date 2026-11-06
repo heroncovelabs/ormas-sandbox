@@ -157,6 +157,13 @@ def _sqrt_match(p):
     elif p.is_Add:
         pargs = sorted(p.args, key=default_sort_key)
         if all((x**2).is_Rational for x in pargs):
+            if not all(x.is_real for x in pargs):
+                # split_surds handles real surds. A complex number with a
+                # rational real part can be denested if its modulus is rational.
+                a, b = p.as_real_imag()
+                if a.is_Rational and sqrt(a**2 + b**2).is_Rational:
+                    return [a, b, S.NegativeOne]
+                return []
             r, b, a = split_surds(p)
             res = a, b, r
             return list(res)
@@ -252,7 +259,11 @@ def _sqrtdenest0(expr):
     if isinstance(expr, Expr):
         args = expr.args
         if args:
-            return expr.func(*[_sqrtdenest0(a) for a in args])
+            result = expr.func(*[_sqrtdenest0(a) for a in args])
+            if expr.is_Mul and result != expr:
+                # Collect cancellations exposed by denesting a factor.
+                return expand_mul(result)
+            return result
     return expr
 
 
