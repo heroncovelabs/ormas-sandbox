@@ -1071,6 +1071,10 @@ class Parser:
         TokenType.DCOLON,
     }
 
+    # Column operators that bind at the binary (bitwise) precedence tier instead of
+    # binding tightly to their left operand, e.g. Postgres' JSON arrows
+    JSON_TIER_OPERATORS: t.ClassVar[frozenset] = frozenset()
+
     EXPRESSION_PARSERS: t.ClassVar = {
         exp.Cluster: lambda self: self._parse_sort(exp.Cluster, TokenType.CLUSTER_BY),
         exp.Column: lambda self: self._parse_column(),
@@ -6249,6 +6253,12 @@ class Parser:
                         safe=not self.dialect.STRICT_STRING_CONCAT,
                     )
                 )
+            elif self._curr and self._curr.token_type in self.JSON_TIER_OPERATORS:
+                op_token = self._curr.token_type
+                self._advance()
+                this = self.expression(
+                    self.COLUMN_OPERATORS[op_token](self, this, self._parse_term())
+                )
             elif self._match(TokenType.DQMARK):
                 this = self.expression(
                     exp.Coalesce(this=this, expressions=ensure_list(self._parse_term()))
@@ -6946,7 +6956,7 @@ class Parser:
         while self._curr:
             op_token = self._curr.token_type
 
-            if op_token not in column_operators:
+            if op_token not in column_operators or op_token in self.JSON_TIER_OPERATORS:
                 break
             op = column_operators[op_token]
             self._advance()

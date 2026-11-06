@@ -190,6 +190,13 @@ class PostgresParser(parser.Parser):
 
     JSON_ARROWS_REQUIRE_JSON_TYPE = True
 
+    JSON_TIER_OPERATORS = {
+        TokenType.ARROW,
+        TokenType.DARROW,
+        TokenType.HASH_ARROW,
+        TokenType.DHASH_ARROW,
+    }
+
     COLUMN_OPERATORS = {
         **parser.Parser.COLUMN_OPERATORS,
         TokenType.ARROW: lambda self, this, path: self.validate_expression(
