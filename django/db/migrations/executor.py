@@ -95,12 +95,19 @@ class MigrationExecutor:
         Django first needs to create all project states before a migration is
         (un)applied and in a second step run all the database operations.
         """
-        # The django_migrations table must be present to record applied
-        # migrations.
-        self.recorder.ensure_schema()
-
         if plan is None:
             plan = self.migration_plan(targets)
+        if not plan:
+            # No migrations can be applied if the recorder table is absent.
+            if not self.recorder.has_table():
+                if state is None:
+                    state = self._create_project_state(with_applied_migrations=False)
+                return state
+        else:
+            # The django_migrations table must be present to record applied
+            # migrations.
+            self.recorder.ensure_schema()
+
         # Create the forwards plan Django would follow on an empty database
         full_plan = self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True)
 
