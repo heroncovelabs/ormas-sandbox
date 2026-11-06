@@ -4,6 +4,21 @@ Replaces the retired legacy binary (see ``legacy/README.md``). One batch
 per process: commands on stdin, result lines on stdout, trailer at end
 of input. Format reference: ``docs/SPEC.md`` (mind the drift warning;
 the engine's behavior is the contract).
+
+Engine behavior that differs from the written spec:
+
+- Item ids are case-insensitive; DUP and STATE replies for a known id
+  echo the spelling it was first placed under.
+- Trailing tokens after a well-formed command are ignored.
+- A placement of size 0 is silently dropped: no reply, not counted.
+- A size-50 placement while exactly one bin is open always opens a new
+  bin (compaction is unaffected).
+- An id that was placed before skips the first bin it fits in and goes
+  into the next one that fits (opening a new bin if none does).
+- Freeing the last item from bin i > 0 leaves the freed size lingering
+  in bin i-1's digest contribution until the next compaction.
+- Compaction repacks first-fit decreasing by size (ties in placement
+  order).
 """
 
 from __future__ import annotations
@@ -12,15 +27,18 @@ import sys
 
 CAP = 100
 DMOD = 99991
+HALF = 50
 
 
 class Engine:
     def __init__(self, out=None):
+        self.name: dict[str, str] = {}
         self.size: dict[str, int] = {}
         self.seq: dict[str, int] = {}
         self.bin: dict[str, int] = {}
         self.live: set[str] = set()
         self.used: list[int] = []
+        self.ghost: list[int] = []
         self.seq_next = 1
         self.c_place = 0
         self.c_free = 0
@@ -35,21 +53,22 @@ class Engine:
         self._emit(f"N {item} {code}")
         self.c_rej += 1
 
-    def _fit(self, size: int) -> int:
-        for i, u in enumerate(self.used):
-            if u + size <= CAP:
+    def _fit(self, size: int, start: int = 0) -> int:
+        for i in range(start, len(self.used)):
+            if self.used[i] + size <= CAP:
                 return i
         return -1
 
     def _open(self) -> int:
         self.used.append(0)
+        self.ghost.append(0)
         return len(self.used) - 1
 
     def _digest(self) -> int:
         d = 0
         for i, u in enumerate(self.used):
             w = 2 if i % 2 == 0 else 7
-            d = (d + w * u) % DMOD
+            d = (d + w * (u + self.ghost[i])) % DMOD
         return d
 
     def handle(self, line: str) -> None:
@@ -58,56 +77,68 @@ class Engine:
             return
         kind = parts[0]
         item = parts[1] if len(parts) > 1 else ""
-        item_ok = 1 <= len(item) <= 8 and item.isalnum()
+        item_ok = 1 <= len(item) <= 8 and item.isascii() and item.isalnum()
         echo = item if item_ok else "????????"
+        key = item.upper()
 
         if kind == "P":
-            if len(parts) != 3 or not item_ok:
+            if len(parts) < 3 or not item_ok:
                 self._reject(echo, "FMT")
                 return
             stok = parts[2]
-            if not (stok.isdigit() and 1 <= len(stok) <= 3):
+            if not (stok.isascii() and stok.isdigit() and 1 <= len(stok) <= 3):
                 self._reject(item, "SIZE")
                 return
             size = int(stok)
+            if size == 0:
+                return
             if not 1 <= size <= 100:
                 self._reject(item, "SIZE")
                 return
-            if item in self.live:
-                self._reject(item, "DUP")
+            if key in self.live:
+                self._reject(self.name[key], "DUP")
                 return
-            b = self._fit(size)
+            if size == HALF and len(self.used) == 1:
+                b = -1
+            elif key not in self.bin:
+                b = self._fit(size)
+            else:
+                first = self._fit(size)
+                b = self._fit(size, start=first + 1) if first >= 0 else -1
             if b < 0:
                 b = self._open()
             self.used[b] += size
-            self.size[item] = size
-            self.seq[item] = self.seq_next
+            self.name.setdefault(key, item)
+            self.size[key] = size
+            self.seq[key] = self.seq_next
             self.seq_next += 1
-            self.bin[item] = b
-            self.live.add(item)
+            self.bin[key] = b
+            self.live.add(key)
             self.c_place += 1
             self._emit(f"B {len(self.used)}")
             return
 
         if kind == "F":
-            if len(parts) != 2 or not item_ok:
+            if len(parts) < 2 or not item_ok:
                 self._reject(echo, "FMT")
                 return
-            if item not in self.live:
-                self._reject(item, "STATE")
+            if key not in self.live:
+                self._reject(self.name.get(key, item), "STATE")
                 return
-            self.used[self.bin[item]] -= self.size[item]
-            self.live.discard(item)
+            b = self.bin[key]
+            sz = self.size[key]
+            self.used[b] -= sz
+            self.live.discard(key)
+            if b > 0 and self.used[b] == 0:
+                self.ghost[b - 1] += sz
             self.c_free += 1
             self._emit(f"B {len(self.used)}")
             return
 
         if kind == "K":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
-            order = sorted(self.live, key=lambda it: self.seq[it])
+            order = sorted(self.live, key=lambda it: (-self.size[it], self.seq[it]))
             self.used = []
+            self.ghost = []
             for it in order:
                 b = self._fit(self.size[it])
                 if b < 0:
@@ -119,9 +150,6 @@ class Engine:
             return
 
         if kind == "D":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
             self._emit(f"D {self._digest()}")
             return
 
