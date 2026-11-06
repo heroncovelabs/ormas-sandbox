@@ -501,7 +501,7 @@ def _TR56(rv, f, g, h, max, pow):
         if not (rv.is_Pow and rv.base.func == f):
             return rv
 
-        if (rv.exp < 0) == True:
+        if not rv.exp.is_real or (rv.exp < 0) == True:
             return rv
         if (rv.exp > max) == True:
             return rv
