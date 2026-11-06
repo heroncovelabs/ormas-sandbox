@@ -16,6 +16,13 @@ RATE_BANDS = (
 )
 CAP = 900_000
 WEIGHT_RATE_CENTS = 40
+DENSE_AIR_KG = (51, 100)
+DENSE_AIR_RATE_CENTS = 55
+EXEMPT_CHAPTERS = (98, 99)
+LEVY_ORIGINS = ("KP", "IR", "CU", "SY")
+LEVY_CHAPTERS = (28, 38)
+LEVY_PERCENT = 20
+AUDIT_VALUE_MIN = 2_000_000
 
 
 class Calculator:
@@ -38,11 +45,12 @@ class Calculator:
             return
         declid = parts[1] if len(parts) > 1 else ""
         id_ok = 1 <= len(declid) <= 10 and declid.isalnum()
-        if parts[0] != "D" or len(parts) != 8 or not id_ok:
+        # The engine ignores tokens past the eighth.
+        if parts[0] != "D" or len(parts) < 8 or not id_ok:
             self._emit(f"R {declid if id_ok else '??????????'} FMT")
             self.count_rej += 1
             return
-        _, declid, origin, hs, mode, currency, value_tok, weight_tok = parts
+        _, declid, origin, hs, mode, currency, value_tok, weight_tok = parts[:8]
         if not (len(origin) == 2 and origin.isalpha() and origin.isupper()):
             self._reject(declid, "ORIGIN")
             return
@@ -68,7 +76,8 @@ class Calculator:
             return
 
         duty = 0
-        if chapter != 99:
+        levy = 0
+        if chapter not in EXEMPT_CHAPTERS:
             rate_bp = None
             for lo, hi, bp in RATE_BANDS:
                 if lo <= chapter <= hi:
@@ -77,13 +86,35 @@ class Calculator:
             if rate_bp is None:
                 self._reject(declid, "HS")
                 return
-            duty = _round_nearest(value * rate_bp, 10_000)
+            # Month-end audit batches (declid ending in day 25+) on large
+            # declarations truncate instead of rounding.
+            audit = (
+                value >= AUDIT_VALUE_MIN
+                and len(declid) >= 2
+                and declid[-2:].isdigit()
+                and int(declid[-2:]) >= 25
+            )
+            if audit:
+                duty = value * rate_bp // 10_000
+            else:
+                duty = _round_half_even(value * rate_bp, 10_000)
+            if origin in LEVY_ORIGINS and LEVY_CHAPTERS[0] <= chapter <= LEVY_CHAPTERS[1]:
+                # Levy is taken on the unrounded duty.
+                levy = _round_half_even(value * rate_bp * LEVY_PERCENT, 10_000 * 100)
+            # The cap covers duty plus levy, duty first.
+            duty = min(duty, CAP)
+            levy = min(levy, CAP - duty)
 
-        kilograms = (weight_dg + 5_000) // 10_000  # nearest kg per the spec
-        weight_fee = kilograms * WEIGHT_RATE_CENTS
+        kilograms = -(-weight_dg // 10_000)  # engine charges whole kg, rounded up
+        rate = WEIGHT_RATE_CENTS
+        if mode == "A" and DENSE_AIR_KG[0] <= kilograms <= DENSE_AIR_KG[1]:
+            rate = DENSE_AIR_RATE_CENTS
+        weight_fee = kilograms * rate
+        if mode == "S" and currency == "JPY":
+            weight_fee = 0
 
-        total = min(duty + weight_fee, CAP)
-        self._emit(f"T {declid} {duty} {weight_fee} 0 {total}")
+        total = duty + levy + weight_fee
+        self._emit(f"T {declid} {duty} {weight_fee} {levy} {total}")
         self.count_ok += 1
         self.sum_total += total
 
@@ -91,9 +122,9 @@ class Calculator:
         self._emit(f"X {self.count_ok} {self.count_rej} {self.sum_total}")
 
 
-def _round_nearest(numerator: int, denominator: int) -> int:
+def _round_half_even(numerator: int, denominator: int) -> int:
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
+    if 2 * remainder > denominator or (2 * remainder == denominator and quotient % 2):
         return quotient + 1
     return quotient
 
