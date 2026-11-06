@@ -786,19 +786,19 @@ class MathMLPresentationPrinter(MathMLPrinterBase):
                 msub = self.dom.createElement('msub')
                 msub.appendChild(mname)
                 msub.appendChild(join(subs))
-                x.appendChild(msub)
+                return msub
         else:
             if len(subs) == 0:
                 msup = self.dom.createElement('msup')
                 msup.appendChild(mname)
                 msup.appendChild(join(supers))
-                x.appendChild(msup)
+                return msup
             else:
                 msubsup = self.dom.createElement('msubsup')
                 msubsup.appendChild(mname)
                 msubsup.appendChild(join(subs))
                 msubsup.appendChild(join(supers))
-                x.appendChild(msubsup)
+                return msubsup
         return x
 
     def _print_MatrixSymbol(self, sym):
