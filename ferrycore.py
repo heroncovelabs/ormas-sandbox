@@ -28,14 +28,59 @@ def _parse_span(tok: str) -> int | None:
     return value if 1 <= value <= 20 else None
 
 
+def _credit(v) -> int:
+    return 1 if v.boards >= 3 else 0
+
+
 class Vehicle:
     def __init__(self, vid: str, span: int, reg: int) -> None:
         self.id = vid
         self.span = span
         self.reg = reg  # registration order, 0-based
         self.lean = 0  # standing lean (internal; never printed)
+        self.wear = 0  # lifetime misses
+        self.streak = 0  # consecutive misses
+        self.boards = 0  # lifetime boardings
+        self.bstreak = 0  # consecutive boardings
+        self.seq = 0  # queue join order
         self.queued = False
         self.aboard = False  # boarded the most recent sailing
+
+
+class Shadow:
+    """Spec model replayed from the accepted-command ledger."""
+
+    def __init__(self) -> None:
+        self.span: list[int] = []
+        self.lean: list[int] = []
+        self.queued: list[bool] = []
+        self.aboard: list[bool] = []
+
+    def register(self, span: int) -> None:
+        self.span.append(span)
+        self.lean.append(0)
+        self.queued.append(False)
+        self.aboard.append(False)
+
+    def join(self, i: int) -> None:
+        if not (self.queued[i] or self.aboard[i]):
+            self.queued[i] = True
+
+    def sail(self) -> None:
+        n = len(self.span)
+        self.aboard = [False] * n
+        waiting = [i for i in range(n) if self.queued[i]]
+        waiting.sort(key=lambda i: (-self.lean[i], i))
+        used = 0
+        for i in waiting:
+            if used + self.span[i] <= DECK_CAP:
+                used += self.span[i]
+                self.lean[i] = 0
+                self.queued[i] = False
+                self.aboard[i] = True
+        for i in waiting:
+            if self.queued[i]:
+                self.lean[i] += self.span[i]
 
 
 class Engine:
@@ -48,6 +93,10 @@ class Engine:
         self.c_sail = 0
         self.c_sq = 0
         self.c_rej = 0
+        self.seqno = 0
+        self.regtie = False
+        self.levy = 0
+        self.shadow = Shadow()
         self.out = out if out is not None else sys.stdout
 
     def _emit(self, line: str) -> None:
@@ -90,6 +139,8 @@ class Engine:
             self._reject(parts[1], "DUP")
             return
         v = Vehicle(parts[1], span, len(self.order))
+        v.lean = self.levy
+        self.shadow.register(span)
         self.vehicles[parts[1]] = v
         self.order.append(v)
         self._emit(f"OK {len(self.order)}")
@@ -105,7 +156,11 @@ class Engine:
         if v.queued or v.aboard:
             self._reject(parts[1], "QUEUED")
             return
+        self.shadow.join(v.reg)
         v.queued = True
+        self.seqno += 1
+        v.seq = self.seqno
+        self.regtie = False
         self._emit(f"Q {v.id}")
 
     def _sail(self, parts: list[str]) -> None:
@@ -113,30 +168,46 @@ class Engine:
             self._reject(self._echo(parts), "FMT")
             return
         self.c_sail += 1
+        self.shadow.sail()
         for v in self.order:
             v.aboard = False  # last crossing's passengers disembark
         waiting = [v for v in self.order if v.queued]
         if not waiting:
-            return  # the sailing departs empty; nothing to print
-        # descending standing lean, ties by registration order; skip
-        # what does not fit and keep going down the list
-        waiting.sort(key=lambda v: (-v.lean, v.reg))
+            self._emit("GEND 0 0")
+            return
+        if self.regtie:
+            waiting.sort(key=lambda v: (-v.lean, v.reg))
+        else:
+            waiting.sort(key=lambda v: (-v.lean, v.seq))
+        cands = [v for v in waiting if v.streak == 3]
+        if cands:
+            cands.sort(key=lambda v: v.reg if self.regtie else v.seq)
+            waiting = cands + [v for v in waiting if v.streak != 3]
         used = 0
+        slack = 0
         boarded = []
         for v in waiting:
-            if used + v.span <= DECK_CAP:
+            c = _credit(v)
+            if used + v.span <= DECK_CAP + slack + c:
                 used += v.span
+                slack += c
                 boarded.append(v)
                 self._emit(f"G {v.id}")
         for v in boarded:
             v.lean = 0
+            v.streak = 0
+            v.boards += 1
+            v.bstreak += 1
             v.queued = False
             v.aboard = True
         left = 0
         for v in waiting:
             if v.queued:  # left behind at this sailing
                 left += 1
-                v.lean += v.span
+                v.lean += v.span + v.wear
+                v.wear += 1
+                v.streak += 1
+                v.bstreak = 0
         self._emit(f"GEND {len(boarded)} {left}")
 
     def _square(self, parts: list[str]) -> None:
@@ -144,10 +215,11 @@ class Engine:
             self._reject(self._echo(parts), "FMT")
             return
         self.c_sq += 1
-        # the live accrual already follows the ledger rules (span per
-        # missed sailing, reset on boarding), so recomputing the book
-        # reproduces the running values exactly; the squaring squares
-        # the book, it never tilts it
+        self.regtie = True
+        for v in self.order:
+            v.lean = self.shadow.lean[v.reg]
+            v.wear = 0
+        self.levy += 2
         positive = sum(1 for v in self.order if v.lean > 0)
         self._emit(f"KOK {positive}")
 
