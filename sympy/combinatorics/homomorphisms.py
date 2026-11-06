@@ -310,6 +310,7 @@ def homomorphism(domain, codomain, gens, images=(), check=True):
 def _check_homomorphism(domain, codomain, images):
     if hasattr(domain, 'relators'):
         rels = domain.relators
+        gens = domain.generators
     else:
         gens = domain.presentation().generators
         rels = domain.presentation().relators
@@ -320,29 +321,19 @@ def _check_homomorphism(domain, codomain, images):
             return identity
         else:
             w = identity
-            r_arr = r.array_form
-            i = 0
-            j = 0
-            # i is the index for r and j is for
-            # r_arr. r_arr[j] is the tuple (sym, p)
-            # where sym is the generator symbol
-            # and p is the power to which it is
-            # raised while r[i] is a generator
-            # (not just its symbol) or the inverse of
-            # a generator - hence the need for
-            # both indices
-            while i < len(r):
-                power = r_arr[j][1]
-                if isinstance(domain, PermutationGroup) and r[i] in gens:
-                    s = domain.generators[gens.index(r[i])]
+            # each (sym, p) in array_form is a generator symbol
+            # raised to the power p (possibly negative)
+            syms = [g.array_form[0][0] for g in gens]
+            for sym, p in r.array_form:
+                k = syms.index(sym)
+                if isinstance(domain, PermutationGroup):
+                    s = domain.generators[k]
                 else:
-                    s = r[i]
+                    s = gens[k]
                 if s in images:
-                    w = w*images[s]**power
+                    w = w*images[s]**p
                 elif s**-1 in images:
-                    w = w*images[s**-1]**power
-                i += abs(power)
-                j += 1
+                    w = w*images[s**-1]**(-p)
             return w
 
     for r in rels:
