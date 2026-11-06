@@ -5968,6 +5968,25 @@ def _symbolic_factor(expr, opt, method):
         return expr
 
 
+def _sqf_list_whole(expr, opt, method):
+    """
+    Square-free factor ``expr`` as a whole, so that factors sharing the
+    same multiplicity are combined. Returns ``None`` if ``expr`` is not
+    a polynomial, in which case the caller falls back to the factor-wise
+    computation.
+    """
+    if method != 'sqf':
+        return None
+
+    try:
+        poly, _ = _poly_from_expr(expr, opt)
+    except PolificationFailed:
+        return None
+
+    coeff, factors = poly.sqf_list()
+    return coeff, list(factors)
+
+
 def _generic_factor_list(expr, gens, args, method):
     """Helper function for :func:`sqf_list` and :func:`factor_list`. """
     options.allowed_flags(args, ['frac', 'polys'])
@@ -5981,8 +6000,10 @@ def _generic_factor_list(expr, gens, args, method):
         else:
             numer, denom = together(expr).as_numer_denom()
 
-        cp, fp = _symbolic_factor_list(numer, opt, method)
-        cq, fq = _symbolic_factor_list(denom, opt, method)
+        cp, fp = _sqf_list_whole(numer, opt, method) or \
+            _symbolic_factor_list(numer, opt, method)
+        cq, fq = _sqf_list_whole(denom, opt, method) or \
+            _symbolic_factor_list(denom, opt, method)
 
         if fq and not opt.frac:
             raise PolynomialError("a polynomial expected, got %s" % expr)
