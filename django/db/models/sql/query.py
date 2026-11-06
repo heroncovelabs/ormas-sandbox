@@ -266,7 +266,9 @@ class Query(BaseExpression):
     @property
     def has_select_fields(self):
         return bool(
-            self.select or self.annotation_select_mask or self.extra_select_mask
+            self.select
+            or (self.annotation_select_mask and not self.default_cols)
+            or self.extra_select_mask
         )
 
     @cached_property
