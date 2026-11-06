@@ -375,9 +375,12 @@ class ReverseOneToOneDescriptor:
 
         # Since we're going to assign directly in the cache,
         # we must manage the reverse relation cache manually.
+        # Nested prefetches on the queryset may populate the same relation
+        # (e.g. back to the parent), so don't overwrite it here in that case.
         for rel_obj in queryset:
-            instance = instances_dict[rel_obj_attr(rel_obj)]
-            self.related.field.set_cached_value(rel_obj, instance)
+            if not queryset._prefetch_related_lookups:
+                instance = instances_dict[rel_obj_attr(rel_obj)]
+                self.related.field.set_cached_value(rel_obj, instance)
         return queryset, rel_obj_attr, instance_attr, True, self.related.get_cache_name(), False
 
     def __get__(self, instance, cls=None):
@@ -645,9 +648,13 @@ def create_reverse_many_to_one_manager(superclass, rel):
 
             # Since we just bypassed this class' get_queryset(), we must manage
             # the reverse relation manually.
+            # If the queryset itself has nested prefetches, they may populate
+            # the same relation (e.g. back to the parent), so don't overwrite
+            # it here.
             for rel_obj in queryset:
-                instance = instances_dict[rel_obj_attr(rel_obj)]
-                setattr(rel_obj, self.field.name, instance)
+                if not queryset._prefetch_related_lookups:
+                    instance = instances_dict[rel_obj_attr(rel_obj)]
+                    setattr(rel_obj, self.field.name, instance)
             cache_name = self.field.remote_field.get_cache_name()
             return queryset, rel_obj_attr, instance_attr, False, cache_name, False
 
