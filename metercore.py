@@ -17,6 +17,9 @@ RATE_TENTHS = (140, 190, 260)
 BAND_PCT = {"D": 100, "N": 70, "W": 85}
 SUMMER_MONTHS = (6, 7, 8, 9)
 SUMMER_PCT = 110
+WINTER_MONTHS = (12, 1, 2)
+WINTER_NIGHT_TIER1_PCT = 60
+LEGACY_METER_PCT = 103
 
 ERROR_CODES = ("FMT", "MONTH", "KWH", "BAND", "METER")
 
@@ -43,16 +46,30 @@ def _slices(prev: int, kwh: int) -> tuple[int, int, int]:
     return s1, s2, kwh - s1 - s2
 
 
-def _reading_fee(prev: int, kwh: int, month: int, band: str) -> int:
-    fee = 0
+def _round_half_even(numerator: int, denominator: int) -> int:
+    """Engine rounding: nearest cent, exact halves to even."""
+    quotient, remainder = divmod(numerator, denominator)
+    if 2 * remainder > denominator or (2 * remainder == denominator and quotient % 2):
+        return quotient + 1
+    return quotient
+
+
+def _reading_fee(prev: int, kwh: int, month: int, band: str, meter: str) -> int:
+    # Engine: the whole reading's cost is summed exactly and rounded once.
+    units = 0
     for tier, slice_kwh in enumerate(_slices(prev, kwh)):
         if slice_kwh == 0:
             continue
-        # spec: the summer surcharge applies to tier-3 energy only.
-        season = SUMMER_PCT if month in SUMMER_MONTHS and tier == 2 else 100
-        units = slice_kwh * RATE_TENTHS[tier] * BAND_PCT[band] * season
-        fee += _round_nearest(units, 100_000)
-    return fee
+        # engine: the summer surcharge applies to tier-2 and tier-3 energy.
+        season = SUMMER_PCT if month in SUMMER_MONTHS and tier >= 1 else 100
+        band_pct = BAND_PCT[band]
+        # engine: winter (Dec-Feb) night tier-1 energy is billed at 60%.
+        if band == "N" and tier == 0 and month in WINTER_MONTHS:
+            band_pct = WINTER_NIGHT_TIER1_PCT
+        units += slice_kwh * RATE_TENTHS[tier] * band_pct * season
+    # engine: legacy analog meters carry a +3% uplift.
+    meter_pct = LEGACY_METER_PCT if meter == "L" else 100
+    return _round_half_even(units * meter_pct, 10_000_000)
 
 
 def process(lines: list[str]) -> list[str]:
@@ -69,7 +86,8 @@ def process(lines: list[str]) -> list[str]:
         month = kwh = 0
         band = ""
 
-        if len(tokens) != 6 or tokens[0] != "M":
+        # engine: tokens past the sixth are ignored.
+        if len(tokens) < 6 or tokens[0] != "M":
             error = "FMT"
         elif not (1 <= len(tokens[1]) <= 8 and tokens[1].isalnum() and tokens[1].isascii()):
             error = "FMT"
@@ -77,6 +95,9 @@ def process(lines: list[str]) -> list[str]:
             error = "MONTH"
         else:
             month = int(tokens[2])
+            # engine: month 13 is accepted and wraps to January.
+            if month == 13:
+                month = 1
             if not 1 <= month <= 12:
                 error = "MONTH"
         if error is None:
@@ -97,10 +118,15 @@ def process(lines: list[str]) -> list[str]:
             rejected += 1
             continue
 
-        account = accounts.get(tokens[1])
+        # engine: zero-kwh readings are skipped entirely (no account created).
+        if kwh == 0:
+            continue
+        # engine: accounts are matched case-insensitively; first-seen spelling shown.
+        key = tokens[1].upper()
+        account = accounts.get(key)
         if account is None:
-            account = accounts[tokens[1]] = Account(tokens[1])
-        fee = _reading_fee(account.counter, kwh, month, band)
+            account = accounts[key] = Account(tokens[1])
+        fee = _reading_fee(account.counter, kwh, month, band, tokens[5])
         account.counter += kwh
         account.total_kwh += kwh
         account.bill += fee
