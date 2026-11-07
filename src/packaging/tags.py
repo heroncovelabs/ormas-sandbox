@@ -293,6 +293,12 @@ def parse_tag(
         interpreters, abis, platforms = component_parts
     except ValueError as exc:
         raise InvalidTag(f"Tag {tag!r} must have exactly three components") from exc
+    for interpreter in interpreters:
+        if not interpreter.isidentifier():
+            raise InvalidTag(
+                f"Tag {tag!r} has an interpreter that is not a valid identifier: "
+                f"{interpreter!r}"
+            )
     return frozenset(
         Tag(interpreter, abi, platform_)
         for interpreter in interpreters
