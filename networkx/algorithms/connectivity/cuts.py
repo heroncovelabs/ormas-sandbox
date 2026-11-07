@@ -294,7 +294,9 @@ def minimum_st_node_cut(G, s, t, flow_func=None, auxiliary=None, residual=None):
     mapping = H.graph.get("mapping", None)
     if mapping is None:
         raise nx.NetworkXError("Invalid auxiliary digraph.")
-    if G.has_edge(s, t) or G.has_edge(t, s):
+    # Only an arc from s to t (or an edge, which is symmetric) makes s and t
+    # inseparable; an arc from t to s is not a path from s to t.
+    if G.has_edge(s, t):
         return set()
     kwargs = {"flow_func": flow_func, "residual": residual, "auxiliary": H}
 
@@ -416,33 +418,51 @@ def minimum_node_cut(G, s=None, t=None, flow_func=None):
     if G.is_directed():
         if not nx.is_weakly_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
+        # A digraph that is not strongly connected is already disconnected
+        # by removing no nodes.
+        if not nx.is_strongly_connected(G):
+            return set()
         iter_func = itertools.permutations
 
         def neighbors(v):
-            return itertools.chain.from_iterable([G.predecessors(v), G.successors(v)])
+            return set(itertools.chain.from_iterable([G.predecessors(v), G.successors(v)]))
 
     else:
         if not nx.is_connected(G):
             raise nx.NetworkXError("Input graph is not connected")
         iter_func = itertools.combinations
-        neighbors = G.neighbors
+
+        def neighbors(v):
+            return set(G.neighbors(v))
 
     # Reuse the auxiliary digraph and the residual network.
     H = build_auxiliary_node_connectivity(G)
     R = build_residual_network(H, "capacity")
     kwargs = {"flow_func": flow_func, "auxiliary": H, "residual": R}
 
-    # Choose a node with minimum degree.
-    v = min(G, key=G.degree)
+    # Choose a node with minimum number of distinct neighbors (self-loops and
+    # parallel edges do not count).
+    v = min(G, key=lambda n: len(neighbors(n) - {n}))
     # Initial node cutset is all neighbors of the node with minimum degree.
-    min_cut = set(G[v])
+    min_cut = neighbors(v) - {v}
     # Compute st node cuts between v and all its non-neighbors nodes in G.
-    for w in set(G) - set(neighbors(v)) - {v}:
-        this_cut = minimum_st_node_cut(G, v, w, **kwargs)
-        if len(min_cut) >= len(this_cut):
-            min_cut = this_cut
+    if G.is_directed():
+        # Arcs v->w and w->v are independent: check both directions.
+        for w in set(G) - set(G.successors(v)) - {v}:
+            this_cut = minimum_st_node_cut(G, v, w, **kwargs)
+            if len(min_cut) >= len(this_cut):
+                min_cut = this_cut
+        for w in set(G) - set(G.predecessors(v)) - {v}:
+            this_cut = minimum_st_node_cut(G, w, v, **kwargs)
+            if len(min_cut) >= len(this_cut):
+                min_cut = this_cut
+    else:
+        for w in set(G) - neighbors(v) - {v}:
+            this_cut = minimum_st_node_cut(G, v, w, **kwargs)
+            if len(min_cut) >= len(this_cut):
+                min_cut = this_cut
     # Also for non adjacent pairs of neighbors of v.
-    for x, y in iter_func(neighbors(v), 2):
+    for x, y in iter_func(neighbors(v) - {v}, 2):
         if y in G[x]:
             continue
         this_cut = minimum_st_node_cut(G, x, y, **kwargs)
