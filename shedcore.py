@@ -29,15 +29,28 @@ def _digits(token: str) -> bool:
     return token.isascii() and token.isdigit()
 
 
+RETURN_FACTOR = 2  # a return adds grade x 2 on top of the loan accrual
+HEAVY_HOLD = 3  # a member who ever holds this many tools at once is heavy
+HEAVY_BONUS = 5  # extra duty on every later return by a heavy member
+VETERAN_SERVICES = 3  # after this many services, accruals are halved
+
+
 class Tool:
     def __init__(self, grade: int, index: int) -> None:
         self.grade = grade
         self.index = index  # registration order, for rota tie-breaks
-        self.duty = 0  # service duty owed
-        self.accrued = 0  # ledger: duty accrued since the last reckoning
-        self.cleared = 0  # ledger: duty cleared by rotas since the last one
+        self.duty = 0  # service duty owed (may go negative after reckoning)
+        self.accrued = 0  # ledger: days x grade booked at each return
+        self.cleared = 0  # ledger: duty cleared by rotas
+        self.services = 0  # times listed on a rota
+        self.stamp = 0  # last return, for rota tie-breaks (latest first)
         self.loaned_by: str | None = None
         self.loan_days = 0
+
+    def accrue(self, amount: int) -> None:
+        if self.services >= VETERAN_SERVICES:
+            amount //= 2
+        self.duty += amount
 
 
 class Engine:
@@ -46,6 +59,9 @@ class Engine:
     def __init__(self) -> None:
         self.tools: dict[str, Tool] = {}
         self.members: set[str] = set()
+        self.holding: dict[str, int] = {}  # tools each member has out
+        self.heavy: set[str] = set()  # members who ever held HEAVY_HOLD
+        self.clock = 0  # return counter for tie-break stamps
         self.registered = 0
         self.enrolled = 0
         self.loans = 0
@@ -136,6 +152,12 @@ class Engine:
             return f"N {ident} OUT"
         t.loaned_by = tokens[1]
         t.loan_days = int(days)
+        # Duty accrues when the tool goes out: days x grade.
+        t.accrue(t.loan_days * t.grade)
+        held = self.holding.get(tokens[1], 0) + 1
+        self.holding[tokens[1]] = held
+        if held >= HEAVY_HOLD:
+            self.heavy.add(tokens[1])
         self.loans += 1
         return f"L {tokens[1]} {tokens[2]}"
 
@@ -152,10 +174,15 @@ class Engine:
             return f"N {ident} UNKNOWN"
         if t.loaned_by != tokens[1]:
             return f"N {ident} NOLOAN"
-        # Duty accrues when the tool comes back: days x grade.
-        earned = t.loan_days * t.grade
-        t.duty += earned
-        t.accrued += earned
+        # The return adds a handling charge; the ledger books days x grade.
+        extra = RETURN_FACTOR * t.grade
+        if tokens[1] in self.heavy:
+            extra += HEAVY_BONUS
+        t.accrue(extra)
+        t.accrued += t.loan_days * t.grade
+        self.clock += 1
+        t.stamp = self.clock
+        self.holding[tokens[1]] -= 1
         t.loaned_by = None
         t.loan_days = 0
         self.returns += 1
@@ -166,17 +193,15 @@ class Engine:
             return f"N {NO_ID} FMT"
         rota = sorted(
             ((name, t) for name, t in self.tools.items() if t.duty > 0),
-            key=lambda item: (-item[1].duty, item[1].index),
+            key=lambda item: (-item[1].duty, -item[1].stamp, item[1].index),
         )
         self.services += 1
-        if not rota:
-            # No tool owes service: there is no rota to emit or close.
-            return ""
         lines = []
         for name, t in rota:
             lines.append(f"S {name}")
             t.cleared += t.duty
             t.duty = 0
+            t.services += 1
         lines.append(f"SEND {len(rota)}")
         return "\n".join(lines)
 
@@ -185,13 +210,12 @@ class Engine:
             return f"N {NO_ID} FMT"
         positive = 0
         for t in self.tools.values():
-            # Recompute duty from the ledger since the last reckoning:
-            # what accrued, minus what the rotas cleared. The reckoning
-            # is an audit, not a revision: it always agrees with the
-            # live figure.
+            # Recompute duty from the whole ledger (never reset): days x
+            # grade booked at each return, minus what the rotas cleared.
+            # The result replaces the live figure, even when negative,
+            # and the tie-break history is forgotten.
             t.duty = t.accrued - t.cleared
-            t.accrued = 0
-            t.cleared = 0
+            t.stamp = 0
             if t.duty > 0:
                 positive += 1
         self.reckonings += 1
