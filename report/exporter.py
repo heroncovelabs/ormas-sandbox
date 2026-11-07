@@ -1,6 +1,8 @@
 """Exporters that turn a list of :class:`~report.models.Row` into text."""
 from __future__ import annotations
 
+import csv
+import io
 import json
 from typing import List
 
@@ -25,6 +27,13 @@ def to_csv(rows: List[Row]) -> str:
     """Serialize ``rows`` to an RFC 4180 CSV string.
 
     The first line is the header (column names); one line follows per row.
-    Not implemented yet — see issue.md.
     """
-    raise NotImplementedError("CSV export is not implemented yet")
+    if not rows:
+        return ""
+    columns = _columns(rows)
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow(["" if row.get(col) is None else row.get(col) for col in columns])
+    return buf.getvalue()
