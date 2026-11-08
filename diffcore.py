@@ -66,6 +66,9 @@ class Engine:
         val = tokens[1]
         if not _valid_val(val):
             return "E VAL"
+        if val == self.value:
+            # The engine silently ignores a set to the current value.
+            return None
         self.value = val
         self.sets += 1
         return "OK"
@@ -73,8 +76,7 @@ class Engine:
     def _is_full(self) -> bool:
         # SPEC: the first snapshot is FULL, and every fourth snapshot is
         # stored FULL so a delta chain stays short (snapshots 4, 8, ...).
-        count = len(self.snaps)
-        return count == 0 or (count + 1) % FULL_EVERY == 0
+        return len(self.snaps) % FULL_EVERY == 0
 
     def _store(self) -> str:
         if self._is_full():
@@ -94,14 +96,18 @@ class Engine:
         snap = self.snaps[idx]
         if snap[0] == "F":
             return snap[1]
-        # SPEC: a delta applies against the previous snapshot's
-        # reconstructed value, honoring the recorded length; positions
-        # beyond the base fill with the pad character.
+        # Engine behavior: a delta applies against the last FULL snapshot
+        # only; the recorded length is honored just for the first delta
+        # after a FULL one, otherwise the value only grows as needed.
         _, newlen, changes = snap
-        base = self._reconstruct(idx - 1)
+        base = self.snaps[idx - idx % FULL_EVERY][1]
+        if idx % FULL_EVERY == 1:
+            length = newlen
+        else:
+            length = max(len(base), max(changes, default=-1) + 1)
         return "".join(
             changes.get(p, base[p] if p < len(base) else PAD)
-            for p in range(newlen)
+            for p in range(length)
         )
 
     def _restore(self, tokens: list[str]) -> str:
@@ -115,9 +121,7 @@ class Engine:
         if idx >= len(self.snaps):
             return "E IDX"
         self.value = self._reconstruct(idx)
-        # SPEC: the restored value becomes the working value the next
-        # snapshot builds on.
-        self.base = self.value
+        # The engine does not move the delta base on restore.
         self.restores += 1
         return f"V {digest(self.value)}"
 
