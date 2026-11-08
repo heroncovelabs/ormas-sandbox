@@ -2412,16 +2412,15 @@ class Parser:
         concurrently = self._match_text_seq("CONCURRENTLY")
         if_exists = exists or self._parse_exists()
 
+        tables = None
         if kind == "COLUMN":
             this = self._parse_column()
         else:
             this = self._parse_table_parts(schema=True, is_db_reference=kind == "SCHEMA")
-
-        tables = (
-            self._parse_csv(lambda: self._parse_table_parts(schema=True))
-            if kind == "TABLE" and self._match(TokenType.COMMA)
-            else None
-        )
+            if kind not in ("SCHEMA", "DATABASE") and self._match(TokenType.COMMA):
+                # DROP <kind> a, b, ... -> all targets are modeled in `tables`
+                tables = [this, *self._parse_csv(lambda: self._parse_table_parts(schema=True))]
+                this = None
 
         cluster = self._parse_on_property() if self._match(TokenType.ON) else None
 
@@ -9323,8 +9322,10 @@ class Parser:
 
         kind = self._curr.text.upper() if self._curr else None
 
+        tables: list[exp.Expr] | None = None
         if self._match(TokenType.TABLE) or self._match(TokenType.INDEX):
             this = self._parse_table_parts()
+            tables = self._parse_analyze_extra_tables(this)
         elif self._match_text_seq("TABLES"):
             if self._match_set((TokenType.FROM, TokenType.IN)):
                 kind = f"{kind} {self._prev.text.upper()}"
@@ -9341,6 +9342,10 @@ class Parser:
             # Empty kind  https://prestodb.io/docs/current/sql/analyze.html
             kind = None
             this = self._parse_table_parts()
+            tables = self._parse_analyze_extra_tables(this)
+
+        if tables:
+            this = None
 
         partition = self._try_parse(self._parse_partition)
         if not partition and self._match_texts(self.PARTITION_KEYWORDS):
@@ -9362,6 +9367,7 @@ class Parser:
             exp.Analyze(
                 kind=kind,
                 this=this,
+                tables=tables,
                 mode=mode,
                 partition=partition,
                 properties=properties,
@@ -9369,6 +9375,12 @@ class Parser:
                 options=options,
             )
         )
+
+    def _parse_analyze_extra_tables(self, this: exp.Expr | None) -> list[exp.Expr] | None:
+        """Parses the remaining targets of `ANALYZE t1, t2, ...`, returning all of them."""
+        if not this or not self._match(TokenType.COMMA):
+            return None
+        return [this, *self._parse_csv(lambda: self._parse_table_parts())]
 
     # https://spark.apache.org/docs/3.5.1/sql-ref-syntax-aux-analyze-table.html
     def _parse_analyze_statistics(self) -> exp.AnalyzeStatistics:
