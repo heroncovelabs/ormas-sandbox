@@ -6,6 +6,21 @@ pacing commands on stdin (``C`` creates a campaign with a daily budget,
 writes one reply per command and an ``X`` trailer at EOF.
 Format reference: ``docs/SPEC.md`` (note the drift warning at the top of
 that file; the legacy engine's behavior is the contract).
+
+Engine behavior that differs from the spec (reproduced here on purpose):
+
+* Lines end at the first CR or LF; tokens are separated by spaces only
+  (tabs are part of a token). Extra trailing tokens are ignored.
+* Campaign ids are matched case-insensitively (replies echo the token).
+* Hours may be one or two digits.
+* The true-up audits the ledger: each hour's grants count at most
+  ``daily / 24`` toward the total.
+* Unspent budget above the carry cap becomes debt against the next day's
+  hour-00 slice.
+* Campaigns with a daily budget of at least 1,000,000 are damped during
+  hours 00-05: a request may take at most half of the available allowance.
+* A request that takes exactly the whole grantable amount closes the hour:
+  further requests in that hour are rejected with ``REQ``.
 """
 
 from __future__ import annotations
@@ -15,6 +30,8 @@ import sys
 ID_MAX = 8
 HOURS = 24
 CARRY_CAP_DIV = 5  # carry is capped at 20 percent of the daily budget
+DAMPER_MIN_DAILY = 1000000
+DAMPER_LAST_HOUR = 5
 NO_CAMP = "????????"
 
 
@@ -26,14 +43,20 @@ def _digits(token: str) -> bool:
     return token.isascii() and token.isdigit()
 
 
+def _key(token: str) -> str:
+    return token.lower()
+
+
 class Campaign:
     def __init__(self, daily: int) -> None:
         self.daily = daily
         self.carry = 0
+        self.debt = 0
         self.avail = 0
         self.spent = 0
         self.grants = [0] * HOURS
         self.accrued = -1
+        self.closed = -1
 
 
 class Engine:
@@ -47,7 +70,7 @@ class Engine:
         self.rejected = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        tokens = [t for t in line.split(" ") if t]
         if not tokens:
             return ""
         if tokens[0] == "C":
@@ -66,11 +89,11 @@ class Engine:
         return f"X {self.created} {self.requests} {self.trueups} {self.rejected}"
 
     def _find(self, camp: str) -> Campaign | None:
-        return self.camps.get(camp)
+        return self.camps.get(_key(camp))
 
     def _create(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
@@ -79,24 +102,27 @@ class Engine:
             return f"N {camp} BUDGET"
         if self._find(tokens[1]) is not None:
             return f"N {camp} DUP"
-        self.camps[tokens[1]] = Campaign(int(budget))
+        self.camps[_key(tokens[1])] = Campaign(int(budget))
         self.created += 1
         return f"OK {len(self.camps)}"
 
     def _accrue(self, c: Campaign, hour: int) -> None:
         slice_ = (c.daily + c.carry) // HOURS
-        for _h in range(c.accrued + 1, hour + 1):
-            c.avail += slice_
+        for h in range(c.accrued + 1, hour + 1):
+            if h == 0:
+                c.avail += max(0, slice_ - c.debt)
+            else:
+                c.avail += slice_
         c.accrued = hour
 
     def _spend(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 4:
+        if len(tokens) < 4:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
         hour_tok, req_tok = tokens[2], tokens[3]
-        if not _digits(hour_tok) or len(hour_tok) != 2 or int(hour_tok) > 23:
+        if not _digits(hour_tok) or not 1 <= len(hour_tok) <= 2 or int(hour_tok) > 23:
             return f"N {camp} HOUR"
         hour = int(hour_tok)
         if not _digits(req_tok) or len(req_tok) > 7 or int(req_tok) < 1:
@@ -107,8 +133,15 @@ class Engine:
             return f"N {camp} FMT"
         if hour < c.accrued:
             return f"N {camp} ORDER"
+        if hour == c.closed:
+            return f"N {camp} REQ"
         self._accrue(c, hour)
-        granted = min(req, c.avail)
+        cap = c.avail
+        if c.daily >= DAMPER_MIN_DAILY and hour <= DAMPER_LAST_HOUR:
+            cap //= 2
+        granted = min(req, cap)
+        if req == cap:
+            c.closed = hour
         c.avail -= granted
         c.spent += granted
         c.grants[hour] += granted
@@ -117,21 +150,24 @@ class Engine:
 
     def _trueup(self, tokens: list[str]) -> str:
         camp = tokens[1] if len(tokens) >= 2 else NO_CAMP
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {camp} FMT"
         if not _valid_id(tokens[1]):
             return f"N {camp} FMT"
         c = self._find(tokens[1])
         if c is None:
             return f"N {camp} FMT"
-        total = c.spent
+        hour_cap = c.daily // HOURS
+        total = sum(min(g, hour_cap) for g in c.grants)
         raw = max(0, c.daily - total)
         carry = min(raw, c.daily // CARRY_CAP_DIV)
         c.carry = carry
+        c.debt = raw - carry
         c.spent = 0
         c.grants = [0] * HOURS
         c.avail = 0
         c.accrued = -1
+        c.closed = -1
         self.trueups += 1
         return f"U {total} {carry}"
 
@@ -140,9 +176,7 @@ def process(lines: list[str], out=None) -> list[str]:
     engine = Engine()
     replies = []
     for raw in lines:
-        line = raw.rstrip("\r\n")
-        if not line:
-            continue
+        line = raw.split("\n", 1)[0].split("\r", 1)[0]
         reply = engine.handle(line)
         if reply:
             replies.append(reply)
@@ -154,7 +188,12 @@ def process(lines: list[str], out=None) -> list[str]:
 
 
 def main() -> None:
-    process(sys.stdin.readlines(), out=sys.stdout)
+    data = sys.stdin.buffer.read().decode("latin-1")
+    lines = data.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    out = "".join(r + "\n" for r in process(lines))
+    sys.stdout.buffer.write(out.encode("latin-1"))
 
 
 if __name__ == "__main__":
