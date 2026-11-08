@@ -33,7 +33,7 @@ from itertools import (
     zip_longest,
 )
 from math import prod, comb, isqrt, gcd
-from operator import mul, getitem, index, is_, itemgetter, truediv
+from operator import ge, getitem, index, is_, itemgetter, le, mul, truediv
 from random import randrange, sample, choice, shuffle
 from sys import hexversion
 
@@ -74,8 +74,12 @@ __all__ = [
     'random_product',
     'repeatfunc',
     'roundrobin',
+    'Stats',
+    'running_max',
     'running_mean',
     'running_median',
+    'running_min',
+    'running_statistics',
     'sieve',
     'sliding_window',
     'subslices',
@@ -1408,8 +1412,23 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _running_mean_windowed(iterator, maxlen):
+    "Yield the average of values in a sliding window."
+
+    window = deque()
+    total = 0
+
+    for x in iterator:
+        window.append(x)
+        total += x
+        if len(window) > maxlen:
+            total -= window.popleft()
+        yield total / len(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of all values seen so far, or of the values in a
+    sliding window when *maxlen* is a positive integer.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1438,150 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+    >>> list(running_mean([40, 30, 50, 46, 39, 44], maxlen=3))
+    [40.0, 35.0, 40.0, 42.0, 45.0, 43.0]
     """
-    return map(truediv, accumulate(iterable), count(1))
+    if maxlen is None:
+        return map(truediv, accumulate(iterable), count(1))
+
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return _running_mean_windowed(iter(iterable), maxlen)
+
+
+def _running_extreme_windowed(iterator, maxlen, dominates):
+    """Yield the extreme value of a sliding window.
+
+    *dominates(new, old)* is true when *new* makes *old* irrelevant
+    for the extreme, so *old* can be dropped from the candidates.
+    """
+
+    candidates = deque()  # (position, value) with monotonic values
+
+    for position, value in enumerate(iterator):
+        if candidates and candidates[0][0] <= position - maxlen:
+            candidates.popleft()
+        while candidates and dominates(value, candidates[-1][1]):
+            candidates.pop()
+        candidates.append((position, value))
+        yield candidates[0][1]
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the minimum of all values seen so far, or of the values in a
+    sliding window when *maxlen* is a positive integer.
+
+    >>> list(running_min([4, 3, 7, 0, 8, 1]))
+    [4, 3, 3, 0, 0, 0]
+    >>> list(running_min([4, 3, 7, 0, 8, 1], maxlen=3))
+    [4, 3, 3, 0, 0, 0]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    if maxlen is None:
+        return accumulate(iterable, min)
+
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return _running_extreme_windowed(iter(iterable), maxlen, le)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the maximum of all values seen so far, or of the values in a
+    sliding window when *maxlen* is a positive integer.
+
+    >>> list(running_max([4, 3, 7, 0, 8, 1]))
+    [4, 4, 7, 7, 8, 8]
+    >>> list(running_max([4, 3, 7, 0, 8, 1], maxlen=2))
+    [4, 4, 7, 7, 8, 8]
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    if maxlen is None:
+        return accumulate(iterable, max)
+
+    maxlen = index(maxlen)
+    if maxlen <= 0:
+        raise ValueError('Window size should be positive')
+    return _running_extreme_windowed(iter(iterable), maxlen, ge)
+
+
+class Stats:
+    """Immutable record of summary statistics for a set of values.
+
+    Fields, in order: ``size``, ``minimum``, ``median``, ``maximum``, ``mean``.
+    Build it positionally or by keyword. It is not a sequence.
+    """
+
+    __slots__ = ('size', 'minimum', 'median', 'maximum', 'mean')
+
+    def __init__(self, size, minimum, median, maximum, mean):
+        object.__setattr__(self, 'size', size)
+        object.__setattr__(self, 'minimum', minimum)
+        object.__setattr__(self, 'median', median)
+        object.__setattr__(self, 'maximum', maximum)
+        object.__setattr__(self, 'mean', mean)
+
+    def _astuple(self):
+        return (self.size, self.minimum, self.median, self.maximum, self.mean)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f'{type(self).__name__!r} object is immutable')
+
+    def __delattr__(self, name):
+        raise AttributeError(f'{type(self).__name__!r} object is immutable')
+
+    def __eq__(self, other):
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return self._astuple() == other._astuple()
+
+    def __hash__(self):
+        return hash((type(self), self._astuple()))
+
+    def __repr__(self):
+        fields = ', '.join(f'{name}={getattr(self, name)!r}' for name in self.__slots__)
+        return f'{type(self).__name__}({fields})'
+
+    def __reduce__(self):
+        return (type(self), self._astuple())
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record for all values seen so far, or for the
+    values in a sliding window when *maxlen* is a positive integer.
+
+    Each record holds the number of values, their minimum, median (as
+    :func:`running_median` computes it), maximum and mean (as
+    :func:`running_mean` computes it).
+
+    >>> [s.mean for s in running_statistics([4, 3, 7])]
+    [4.0, 3.5, 4.666666666666667]
+    >>> list(running_statistics([4, 3, 7], maxlen=2))[-1]
+    Stats(size=2, minimum=3, median=5.0, maximum=7, mean=5.0)
+
+    Supports numeric types such as int, float, Decimal, and Fraction,
+    but not complex numbers which are unorderable.
+    """
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+
+    iterables = tee(iterable, 4)
+    sizes = count(1) if maxlen is None else map(min, count(1), repeat(maxlen))
+    return map(
+        Stats,
+        sizes,
+        running_min(iterables[0], maxlen=maxlen),
+        running_median(iterables[1], maxlen=maxlen),
+        running_max(iterables[2], maxlen=maxlen),
+        running_mean(iterables[3], maxlen=maxlen),
+    )
 
 
 def random_derangement(iterable):
