@@ -207,6 +207,21 @@ class DuckDBParser(parser.Parser):
         "@": lambda self: exp.Abs(this=self._parse_bitwise()),
     }
 
+    # JSON extraction arrows share Postgres's "any other operator" precedence tier in DuckDB
+    BINARY_JSON_OPERATORS = {
+        k: v
+        for k, v in parser.Parser.COLUMN_OPERATORS.items()
+        if k
+        in (TokenType.ARROW, TokenType.DARROW, TokenType.HASH_ARROW, TokenType.DHASH_ARROW)
+    }
+
+    COLUMN_OPERATORS = {
+        k: v
+        for k, v in parser.Parser.COLUMN_OPERATORS.items()
+        if k
+        not in (TokenType.ARROW, TokenType.DARROW, TokenType.HASH_ARROW, TokenType.DHASH_ARROW)
+    }
+
     PLACEHOLDER_PARSERS = {
         **parser.Parser.PLACEHOLDER_PARSERS,
         TokenType.PARAMETER: lambda self: (
