@@ -14,8 +14,11 @@ import sys
 
 KEY_MAX = 8
 VAL_MAX = 12
+SER_VAL_MAX = 10
 VERSION = "Z1"
+LEGACY_VERSION = "Z0"
 PAIR_SEP = ";"
+LEGACY_PAIR_SEP = ","
 
 _WEIGHTS = (3, 7)
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -35,6 +38,11 @@ def _valid_val(token: str) -> bool:
     return 1 <= len(token) <= VAL_MAX and token.isascii() and token.isalnum()
 
 
+def _ser_val(val: str) -> str:
+    # The legacy writer clips only values at the full 12 characters.
+    return val[:SER_VAL_MAX] if len(val) >= VAL_MAX else val
+
+
 class Engine:
     """Session-state store with serialize/load and batch counters."""
 
@@ -44,6 +52,7 @@ class Engine:
         self.gets = 0
         self.loads = 0
         self.rejected = 0
+        self.pending_sort = False
 
     def handle(self, line: str) -> str:
         if line == "S":
@@ -75,7 +84,7 @@ class Engine:
         return f"X {self.puts} {self.gets} {self.loads} {self.rejected}"
 
     def _put(self, tokens: list[str]) -> str:
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return "R FMT"
         key, val = tokens[1], tokens[2]
         if not _valid_key(key) or not _valid_val(val):
@@ -84,7 +93,7 @@ class Engine:
         return f"OK {len(self.state)}"
 
     def _get(self, tokens: list[str]) -> str:
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return "R FMT"
         key = tokens[1]
         if not _valid_key(key):
@@ -94,35 +103,47 @@ class Engine:
         return "NIL"
 
     def _serialize(self) -> str:
-        pairs = PAIR_SEP.join(f"{k}={v}" for k, v in self.state.items())
+        if self.pending_sort:
+            self.state = dict(sorted(self.state.items()))
+            self.pending_sort = False
+        pairs = PAIR_SEP.join(
+            f"{k}={_ser_val(v)}" for k, v in self.state.items()
+        )
         body = VERSION + "|" + pairs
         return "B " + body + "|" + checksum(body)
 
     def _load(self, blob: str) -> str:
-        # Validation order per SPEC: structure, version, checksum, pairs.
+        # Validation order: structure, version, checksum, pairs.
         if blob.count("|") != 2:
             return "R FMT"
         ver, pairs_str, check = blob.split("|")
         if len(check) != 1:
             return "R FMT"
-        if ver != VERSION:
+        if ver not in (VERSION, LEGACY_VERSION):
             return "R VER"
         if check != checksum(ver + "|" + pairs_str):
             return "R CHK"
-        if not pairs_str:
-            return "R FMT"  # SPEC: a blob carries at least one pair
-        new_state: dict[str, str] = {}
-        for piece in pairs_str.split(PAIR_SEP):
+        legacy = ver == LEGACY_VERSION
+        sep = LEGACY_PAIR_SEP if legacy else PAIR_SEP
+        pieces = pairs_str.split(sep) if pairs_str else []
+        folded: dict[str, list[str]] = {}
+        collided = False
+        for piece in pieces:
             if piece.count("=") != 1:
                 return "R FMT"
             key, val = piece.split("=")
             if not _valid_key(key) or not _valid_val(val):
                 return "R FMT"
-            if key in new_state:
-                return "R FMT"  # SPEC: duplicate keys reject
-            new_state[key] = val
-        self.state = new_state
-        return f"OK {len(self.state)}"
+            fk = key.lower()
+            if fk in folded:
+                collided = True
+                folded[fk][1] = val
+            else:
+                folded[fk] = [key, val]
+        items = [(k, v) for k, v in folded.values()]
+        self.pending_sort = collided or legacy
+        self.state = dict(items)
+        return f"OK {len(pieces)}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
