@@ -251,6 +251,10 @@ class AlterField(FieldOperation):
             operation
         ):
             return [operation]
+        elif isinstance(operation, AlterField) and self.is_same_field_operation(
+            operation
+        ):
+            return [operation]
         elif (
             isinstance(operation, RenameField)
             and self.is_same_field_operation(operation)
