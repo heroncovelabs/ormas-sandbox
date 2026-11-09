@@ -4,6 +4,20 @@ Replaces the retired legacy binary (see ``legacy/README.md``). One batch
 per process: movement lines on stdin, result lines on stdout, trailer at
 end of input. Format reference: ``docs/SPEC.md`` (mind the drift warning;
 the engine's behavior is the contract).
+
+Engine behaviors that differ from the written spec, reproduced here:
+
+- SKUs are case-insensitive; output uses the spelling first seen by a
+  movement that reached the stock stage (accepted or rejected ``STOCK``).
+- Tokens beyond the required ones are ignored.
+- A quantity of 0 (well-formed) produces no output and is not counted.
+- Unit costs above ``COST_CAP`` are valued at ``COST_CAP``.
+- A receipt at the same unit cost as the SKU's newest layer merges into it.
+- While a SKU has more than one layer, the newest layer is not issuable.
+- An issue above the issuable quantity, but no more than twice it, is
+  filled with the issuable quantity; beyond that it is rejected ``STOCK``.
+- An issue consuming at least ``SHRINK_MIN_QTY`` units that empties the
+  bin is surcharged 2%, rounded half up.
 """
 
 from __future__ import annotations
@@ -12,12 +26,16 @@ import sys
 
 MAX_QTY = 999_999
 MAX_COST = 9_999_999
+COST_CAP = 9_000_000
+SHRINK_MIN_QTY = 100
 
 
 class Engine:
     def __init__(self, out=None):
-        # Per-SKU FIFO cost layers: sku -> list of [qty, unit_cost].
+        # Per-SKU FIFO cost layers: folded sku -> list of [qty, unit_cost].
         self.layers: dict[str, list[list[int]]] = {}
+        # Folded sku -> spelling used in output.
+        self.names: dict[str, str] = {}
         self.count_rcpt = 0
         self.count_iss = 0
         self.count_rej = 0
@@ -31,8 +49,8 @@ class Engine:
         self._emit(f"E {sku} {code}")
         self.count_rej += 1
 
-    def _onhand(self, sku: str) -> int:
-        return sum(qty for qty, _cost in self.layers.get(sku, []))
+    def _onhand(self, key: str) -> int:
+        return sum(qty for qty, _cost in self.layers.get(key, []))
 
     def handle(self, line: str) -> None:
         parts = line.rstrip("\r\n").split()
@@ -40,36 +58,44 @@ class Engine:
             return
         kind = parts[0]
         sku = parts[1] if len(parts) > 1 else ""
-        sku_ok = 1 <= len(sku) <= 8 and sku.isalnum()
+        sku_ok = 1 <= len(sku) <= 8 and sku.isascii() and sku.isalnum()
         need = 4 if kind == "R" else 3 if kind == "I" else 0
-        if need == 0 or not sku_ok or len(parts) != need:
+        if need == 0 or not sku_ok or len(parts) < need:
             self._emit(f"E {sku if sku_ok else '????????'} FMT")
             self.count_rej += 1
             return
         qty_tok = parts[2]
-        if not (qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
+        if not (qty_tok.isascii() and qty_tok.isdigit() and 1 <= len(qty_tok) <= 6):
             self._reject(sku, "QTY")
             return
         qty = int(qty_tok)
-        if not 1 <= qty <= MAX_QTY:
-            self._reject(sku, "QTY")
+        if qty == 0:
             return
         if kind == "R":
             cost_tok = parts[3]
-            if not (cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
+            if not (cost_tok.isascii() and cost_tok.isdigit() and 1 <= len(cost_tok) <= 7):
                 self._reject(sku, "COST")
                 return
-            cost = int(cost_tok)
-            # Every receipt opens its own cost layer, newest last.
-            self.layers.setdefault(sku, []).append([qty, cost])
-            self._emit(f"A {sku} {self._onhand(sku)}")
+            cost = min(int(cost_tok), COST_CAP)
+        key = sku.upper()
+        name = self.names.setdefault(key, sku)
+        stack = self.layers.setdefault(key, [])
+        if kind == "R":
+            if stack and stack[-1][1] == cost:
+                stack[-1][0] += qty
+            else:
+                stack.append([qty, cost])
+            self._emit(f"A {name} {self._onhand(key)}")
             self.count_rcpt += 1
             return
-        # Issue: FIFO, oldest layers consumed first.
-        if qty > self._onhand(sku):
-            self._reject(sku, "STOCK")
-            return
-        stack = self.layers[sku]
+        # Issue: FIFO over the issuable layers (all but the newest when
+        # there are several).
+        avail = stack[0][0] if len(stack) == 1 else sum(q for q, _c in stack[:-1])
+        if qty > avail:
+            if qty > 2 * avail:
+                self._reject(name, "STOCK")
+                return
+            qty = avail
         remaining = qty
         cogs = 0
         while remaining > 0:
@@ -80,7 +106,9 @@ class Engine:
             remaining -= got
             if layer[0] == 0:
                 stack.pop(0)
-        self._emit(f"C {sku} {cogs} {self._onhand(sku)}")
+        if not stack and qty >= SHRINK_MIN_QTY:
+            cogs = (cogs * 102 + 50) // 100
+        self._emit(f"C {name} {cogs} {self._onhand(key)}")
         self.count_iss += 1
         self.sum_cogs += cogs
 
