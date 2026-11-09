@@ -14,4 +14,20 @@ def apply(ops, a):
     "keep"/"del" ops must match the next line of ``a`` (else PatchError); "ins"
     ops add a line. Every line of ``a`` must be consumed (else PatchError).
     """
-    raise NotImplementedError
+    result = []
+    i = 0
+    for op in ops:
+        kind, line = op
+        if kind == "ins":
+            result.append(line)
+            continue
+        if kind not in ("keep", "del"):
+            raise PatchError("unknown op kind: %r" % (kind,))
+        if i >= len(a) or a[i] != line:
+            raise PatchError("script does not match source at line %d" % i)
+        if kind == "keep":
+            result.append(line)
+        i += 1
+    if i != len(a):
+        raise PatchError("source not fully consumed (%d of %d lines)" % (i, len(a)))
+    return result
