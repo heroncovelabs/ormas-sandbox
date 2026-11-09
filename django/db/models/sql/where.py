@@ -227,6 +227,13 @@ class WhereNode(tree.Node):
             clone.children.append(child.replace_expressions(replacements))
         return clone
 
+    def get_refs(self):
+        refs = set()
+        for child in self.children:
+            if hasattr(child, "get_refs"):
+                refs |= child.get_refs()
+        return refs
+
     @classmethod
     def _contains_aggregate(cls, obj):
         if isinstance(obj, tree.Node):
