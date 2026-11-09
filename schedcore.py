@@ -12,7 +12,7 @@ import sys
 
 
 class Job:
-    __slots__ = ("name", "prio", "deps", "defseq", "executed")
+    __slots__ = ("name", "prio", "deps", "defseq", "executed", "fails", "stale")
 
     def __init__(self, name: str, prio: int, deps: list[str], defseq: int):
         self.name = name
@@ -20,6 +20,13 @@ class Job:
         self.deps = deps
         self.defseq = defseq
         self.executed = False
+        self.fails = 0
+        self.stale = False
+
+    def key(self):
+        eff = max(1, self.prio - 7 * max(0, self.fails - 1))
+        boost = 1 if self.fails == 0 and len(self.deps) >= 2 and self.prio % 10 == 0 else 0
+        return (eff, boost, -self.defseq)
 
 
 class Engine:
@@ -27,6 +34,7 @@ class Engine:
         self.jobs: list[Job] = []
         self.by_name: dict[str, Job] = {}
         self.def_next = 1
+        self.retry_next = 0
         self.c_def = 0
         self.c_exec = 0
         self.c_fail = 0
@@ -42,7 +50,7 @@ class Engine:
 
     def _deps_ready(self, j: Job) -> bool:
         for d in j.deps:
-            k = self.by_name.get(d)
+            k = self.by_name.get(d.lower())
             if k is None or not k.executed:
                 return False
         return True
@@ -57,7 +65,7 @@ class Engine:
         echo = job if job_ok else "????????"
 
         if kind == "J":
-            if len(parts) != 4 or not job_ok:
+            if len(parts) < 4 or not job_ok:
                 self._reject(echo, "FMT")
                 return
             ptok = parts[2]
@@ -76,44 +84,39 @@ class Engine:
                     if not (1 <= len(part) <= 8 and part.isalnum()):
                         bad = True
                         break
-                    if part == job:  # self-dependency
+                    if part.lower() == job.lower():  # self-dependency
                         bad = True
                         break
-                    if part in deps:  # dep lists must be unique
-                        bad = True
-                        break
-                    deps.append(part)
+                    if part.lower() in deps:
+                        continue
+                    deps.append(part.lower())
             if bad:
                 self._reject(job, "DEPS")
                 return
-            if job in self.by_name:
-                self._reject(job, "DUP")
+            if job.lower() in self.by_name:
+                self._reject(self.by_name[job.lower()].name, "DUP")
                 return
             j = Job(job, prio, deps, self.def_next)
             self.def_next += 1
             self.jobs.append(j)
-            self.by_name[job] = j
+            self.by_name[job.lower()] = j
             self.c_def += 1
             self._emit(f"OK {self.c_def}")
             return
 
         if kind == "G":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
             executed_this = 0
+            for j in self.jobs:
+                if not j.executed and any(d not in self.by_name for d in j.deps):
+                    j.stale = True
             while True:
                 best: Job | None = None
                 for j in self.jobs:
-                    if j.executed:
+                    if j.executed or j.stale:
                         continue
                     if not self._deps_ready(j):
                         continue
-                    if (
-                        best is None
-                        or j.prio > best.prio
-                        or (j.prio == best.prio and j.defseq < best.defseq)
-                    ):
+                    if best is None or j.key() > best.key():
                         best = j
                 if best is None:
                     break
@@ -126,15 +129,16 @@ class Engine:
             return
 
         if kind == "F":
-            if len(parts) != 2 or not job_ok:
+            if len(parts) < 2 or not job_ok:
                 self._reject(echo, "FMT")
                 return
-            j = self.by_name.get(job)
+            j = self.by_name.get(job.lower())
             if j is None or not j.executed:
-                self._reject(job, "STATE")
+                self._reject(j.name if j is not None else job, "STATE")
                 return
             j.executed = False
-            invalidated = {j.name}
+            self._penalize(j)
+            invalidated = {j.name.lower()}
             count = 1
             changed = True
             while changed:
@@ -144,7 +148,8 @@ class Engine:
                         continue
                     if any(d in invalidated for d in k.deps):
                         k.executed = False
-                        invalidated.add(k.name)
+                        self._penalize(k)
+                        invalidated.add(k.name.lower())
                         count += 1
                         changed = True
             self.c_fail += 1
@@ -152,6 +157,11 @@ class Engine:
             return
 
         self._reject(echo, "FMT")
+
+    def _penalize(self, j: Job) -> None:
+        j.fails += 1
+        j.defseq = self.retry_next
+        self.retry_next -= 1
 
     def finish(self) -> None:
         self._emit(f"X {self.c_def} {self.c_exec} {self.c_fail} {self.c_rej}")
