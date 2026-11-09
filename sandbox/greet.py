@@ -1,2 +1,2 @@
 def greet(name: str) -> str:
-    return "hello"
+    return f"Hello, {name.strip()}."
