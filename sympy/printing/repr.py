@@ -250,6 +250,17 @@ class ReprPrinter(Printer):
         else:
             return "(%s)" % self.reprify(expr, ", ")
 
+    def _print_dict(self, d):
+        return "{%s}" % ", ".join(sorted(
+            "%s: %s" % (self._print(key), self._print(d[key])) for key in d))
+
+    def _print_set(self, s):
+        from sympy.core.sorting import default_sort_key
+        if not s:
+            return "set()"
+        items = sorted(s, key=default_sort_key)
+        return "{%s}" % ", ".join(self._print(item) for item in items)
+
     def _print_WildFunction(self, expr):
         return "%s('%s')" % (expr.__class__.__name__, expr.name)
 
