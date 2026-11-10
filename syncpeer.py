@@ -19,7 +19,7 @@ MAX_KEYS = 4096
 class Peer:
     def __init__(self):
         self.store: dict[str, str] = {}  # insertion-ordered
-        self.connections = 0
+        self.sessions: dict[str, int] = {}
 
     # -- one connection -----------------------------------------------------
 
@@ -28,13 +28,12 @@ class Peer:
             wfile.write((line + "\n").encode())
             wfile.flush()
 
-        self.connections += 1
         raw = rfile.readline()
         if not raw:
             return
         parts = raw.decode(errors="replace").strip().split()
         if (
-            len(parts) != 3
+            len(parts) < 3
             or parts[0] != "HELLO"
             or not parts[1].isdigit()
             or not 1 <= int(parts[1]) <= 9
@@ -42,37 +41,44 @@ class Peer:
         ):
             send("ERR HANDSHAKE")
             return
-        negotiated = min(int(parts[1]), 3)
-        send(f"WELCOME {negotiated} S{self.connections}")
+        negotiated = 1 if int(parts[1]) <= 2 else 3
+        session = self.sessions.setdefault(parts[2], len(self.sessions) + 1)
+        send(f"WELCOME {negotiated} S{session}")
 
-        commands = 0
+        commands = 1
         for raw in iter(rfile.readline, b""):
             line = raw.decode(errors="replace").rstrip("\r\n")
             if not line:
                 continue
             commands += 1
             parts = line.split()
-            cmd = parts[0]
+            cmd = parts[0] if parts else ""
             if cmd == "BYE":
-                send(f"GOODBYE {commands - 1}")
+                send(f"GOODBYE {commands}")
                 return
-            if cmd == "PUT" and len(parts) == 3 and _alnum(parts[1], 1, 16) and 1 <= len(parts[2]) <= 64:
+            if cmd == "PUT" and len(parts) >= 3 and _alnum(parts[1], 1, 16) and 1 <= len(parts[2].encode()) <= 64:
                 if parts[1] not in self.store and len(self.store) >= MAX_KEYS:
                     send("ERR FULL")
                     continue
-                self.store[parts[1]] = parts[2]
-                send("OK")
-            elif cmd == "GET" and len(parts) == 2 and _alnum(parts[1], 1, 16):
+                value = parts[2].encode()[:48].decode(errors="ignore")
+                old = self.store.get(parts[1])
+                self.store[parts[1]] = value
+                send("OK" if old is None or old == value else f"OK {old}")
+            elif cmd == "GET" and len(parts) >= 2 and _alnum(parts[1], 1, 16):
                 value = self.store.get(parts[1])
-                send(f"VAL {value}" if value is not None else "ERR NOTFOUND")
-            elif cmd == "DEL" and len(parts) == 2 and _alnum(parts[1], 1, 16):
+                if value is not None:
+                    send(f"VAL {value}")
+                else:
+                    send("ERR NOTFOUND" if negotiated >= 3 else "NIL")
+            elif cmd == "DEL" and len(parts) >= 2 and _alnum(parts[1], 1, 16):
                 if parts[1] in self.store:
                     del self.store[parts[1]]
                     send("OK")
                 else:
                     send("ERR NOTFOUND")
-            elif cmd == "KEYS" and len(parts) == 2 and len(parts[1]) <= 16:
-                matches = sorted(k for k in self.store if k.startswith(parts[1]))
+            elif cmd == "KEYS" and len(parts) >= 2 and len(parts[1].encode()) <= 16:
+                prefix = parts[1].lower()
+                matches = sorted(k for k in self.store if k.lower().startswith(prefix))
                 for key in matches:
                     send(f"KEY {key}")
                 send(f"END {len(matches)}")
@@ -105,7 +111,7 @@ class Peer:
 
 
 def _alnum(value: str, lo: int, hi: int) -> bool:
-    return lo <= len(value) <= hi and value.isalnum()
+    return lo <= len(value.encode()) <= hi and value.isascii() and value.isalnum()
 
 
 def main() -> None:
