@@ -100,6 +100,7 @@ def submit_row(context):
                 and context.get("show_delete", True)
             ),
             "show_save_as_new": not is_popup
+            and has_add_permission
             and has_change_permission
             and change
             and save_as,
