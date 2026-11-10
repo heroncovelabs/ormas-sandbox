@@ -67,6 +67,9 @@ A ``(major, minor)`` integer pair describing an Apple OS version.
 """
 _T = TypeVar("_T")
 
+# Interpreter tag components must be identifiers (e.g. "py3", "cp312", "_custom").
+_INTERPRETER_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
 INTERPRETER_SHORT_NAMES: dict[str, str] = {
     "python": "py",  # Generic.
     "cpython": "cp",
@@ -273,6 +276,13 @@ def parse_tag(
         if "" in parts:
             component = ".".join(parts)
             raise InvalidTag(f"Tag {tag!r} has an empty component: {component!r}")
+    if component_parts and len(component_parts) == 3:
+        for interpreter in component_parts[0]:
+            if _INTERPRETER_IDENTIFIER.fullmatch(interpreter) is None:
+                raise InvalidTag(
+                    f"Tag {tag!r} has an invalid interpreter: {interpreter!r}"
+                )
+    for parts in component_parts:
         if validate_order and parts != sorted(parts):
             component = ".".join(parts)
             raise UnsortedTagsError(
