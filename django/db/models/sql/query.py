@@ -206,6 +206,8 @@ class Query(BaseExpression):
 
     # SQL annotation-related attributes.
     annotation_select_mask = None
+    # Whether annotation_select_mask was only set to hide alias() annotations.
+    annotation_select_mask_from_alias = False
     _annotation_select_cache = None
 
     # Set combination attributes.
@@ -266,7 +268,12 @@ class Query(BaseExpression):
     @property
     def has_select_fields(self):
         return bool(
-            self.select or self.annotation_select_mask or self.extra_select_mask
+            self.select
+            or (
+                self.annotation_select_mask
+                and not self.annotation_select_mask_from_alias
+            )
+            or self.extra_select_mask
         )
 
     @cached_property
@@ -1115,7 +1122,14 @@ class Query(BaseExpression):
         if select:
             self.append_annotation_mask([alias])
         else:
+            # The mask only hides the alias; it doesn't mean that the selected
+            # fields were explicitly specified (e.g. by values()).
+            from_alias = (
+                self.annotation_select_mask is None
+                or self.annotation_select_mask_from_alias
+            )
             self.set_annotation_mask(set(self.annotation_select).difference({alias}))
+            self.annotation_select_mask_from_alias = from_alias
         self.annotations[alias] = annotation
 
     def resolve_expression(self, query, *args, **kwargs):
@@ -2364,10 +2378,13 @@ class Query(BaseExpression):
         else:
             self.annotation_select_mask = set(names)
         self._annotation_select_cache = None
+        self.annotation_select_mask_from_alias = False
 
     def append_annotation_mask(self, names):
         if self.annotation_select_mask is not None:
+            from_alias = self.annotation_select_mask_from_alias
             self.set_annotation_mask(self.annotation_select_mask.union(names))
+            self.annotation_select_mask_from_alias = from_alias
 
     def set_extra_mask(self, names):
         """
