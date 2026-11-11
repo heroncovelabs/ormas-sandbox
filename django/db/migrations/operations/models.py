@@ -823,6 +823,15 @@ class AddIndex(IndexOperation):
     def state_forwards(self, app_label, state):
         state.add_index(app_label, self.model_name_lower, self.index)
 
+    def reduce(self, operation, app_label):
+        if (
+            isinstance(operation, RemoveIndex)
+            and self.model_name_lower == operation.model_name_lower
+            and self.index.name == operation.name
+        ):
+            return []
+        return super().reduce(operation, app_label)
+
     def database_forwards(self, app_label, schema_editor, from_state, to_state):
         model = to_state.apps.get_model(app_label, self.model_name)
         if self.allow_migrate_model(schema_editor.connection.alias, model):
