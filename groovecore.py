@@ -29,11 +29,26 @@ def _digits(token: str) -> bool:
     return token.isascii() and token.isdigit()
 
 
+LONGPLAY = 90  # sides longer than this consume two allotments
+WEAR = 7  # quality lost per side cut since the last remaster
+TAX_SIDES = 4  # sides in one remaster window that cost an extra allotment
+CONTENTION = 15  # quality lost on a 4th side with a busy board
+BUSY = 3  # titles in progress that make the board busy
+
+
 class Title:
-    def __init__(self, minutes: int) -> None:
+    def __init__(self, minutes: int, wear: int = 0) -> None:
         self.minutes = minutes
         self.remaining = ALLOT  # live allotment
         self.sides = 0  # ledger: sides cut
+        self.wear = wear  # sides cut since the last remaster (inherited)
+        self.window = 0  # real sides cut since the last remaster
+        self.tax = 0  # accumulated remaster shortfall
+        self.courtesy = False  # one-time revive after being spent
+
+    @property
+    def cost(self) -> int:
+        return 2 if self.minutes > LONGPLAY else 1
 
 
 class Engine:
@@ -48,7 +63,7 @@ class Engine:
         self.cut_since_remaster = 0
 
     def handle(self, line: str) -> str:
-        tokens = line.split()
+        tokens = [tok for tok in line.split(" ") if tok]
         if not tokens:
             return ""
         if tokens[0] == "T":
@@ -87,7 +102,8 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        wear = max((t.wear for t in self.titles.values()), default=0)
+        self.titles[tokens[1]] = Title(int(minutes), wear)
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -100,11 +116,21 @@ class Engine:
         t = self._find(tokens[1])
         if t is None:
             return f"N {title} UNKNOWN"
-        if t.remaining < 1:
+        if t.remaining < t.cost:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        quality = Q_BASE - t.minutes * Q_CUT - WEAR * t.wear
+        if t.sides == 3:
+            busy = sum(
+                1
+                for o in self.titles.values()
+                if 0 < o.sides < ALLOT and o.remaining > 0
+            )
+            if busy >= BUSY:
+                quality -= CONTENTION
+        t.remaining -= t.cost
         t.sides += 1
+        t.wear += 1
+        t.window += 1
         self.cut_since_remaster += 1
         self.sides += 1
         return f"Q {tokens[1]} {quality}"
@@ -112,13 +138,19 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
         lines = []
         for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
+            if self.cut_since_remaster:
+                # An idle remaster only reports; it recomputes nothing.
+                if t.window >= TAX_SIDES:
+                    t.tax += 1
+                remaining = ALLOT - t.sides - t.tax
+                if t.remaining == 0 and not t.courtesy:
+                    t.courtesy = True
+                    remaining = 1
+                t.remaining = remaining
+                t.wear = 0
+                t.window = 0
             lines.append(f"R {name} {t.remaining}")
         lines.append(f"MEND {len(self.titles)}")
         self.cut_since_remaster = 0
