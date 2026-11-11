@@ -15,7 +15,7 @@ RECLEN = 80
 OUTLEN = 47
 
 RATE_BP = {
-    1: 25, 2: 50, 3: 75, 4: 100, 5: 150, 6: 200, 7: 250, 8: 300, 9: 350,
+    1: 25, 2: 50, 3: 75, 4: 100, 5: 150, 6: 200, 7: 245, 8: 300, 9: 350,
 }
 FEE_CAP = 250_000
 
@@ -34,18 +34,46 @@ def check_char(data: str, upto: int) -> str:
 
 
 def _round_nearest(numerator: int, denominator: int) -> int:
-    """Round to the nearest unit (halves up), per the spec's fee rule."""
+    """Round to the nearest unit (halves up)."""
     quotient, remainder = divmod(numerator, denominator)
     if 2 * remainder >= denominator:
         return quotient + 1
     return quotient
 
 
+def _round_half_even(numerator: int, denominator: int) -> int:
+    quotient, remainder = divmod(numerator, denominator)
+    if 2 * remainder > denominator or (2 * remainder == denominator and quotient % 2):
+        return quotient + 1
+    return quotient
+
+
+def _round_fee(numerator: int, denominator: int, record_type: str, currency: str) -> int:
+    """Engine rounding: JPY halves up; otherwise refunds truncate and
+    settlements round half to even."""
+    if currency == "JPY":
+        return _round_nearest(numerator, denominator)
+    if record_type == "RF":
+        return numerator // denominator
+    return _round_half_even(numerator, denominator)
+
+
 def _days_in_month(year: int, month: int) -> int:
     days = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+    # The engine uses the plain every-fourth-year leap rule.
+    if month == 2 and year % 4 == 0:
         return 29
     return days[month - 1]
+
+
+def _weekday(year: int, month: int, day: int) -> int:
+    """Monday=0 .. Sunday=6 (Gregorian; Feb 29 of a non-leap year counts
+    as the day after Feb 28, as the engine does)."""
+    offsets = (0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4)
+    if month < 3:
+        year -= 1
+    sunday_based = (year + year // 4 - year // 100 + year // 400 + offsets[month - 1] + day) % 7
+    return (sunday_based + 6) % 7
 
 
 class Record:
@@ -81,11 +109,13 @@ class Record:
             self.error = "ERRACCT"
             return
         sign, digits = raw[12], raw[13:24]
-        if sign not in "+-" or not digits.isdigit():
+        padded = digits.lstrip(" ")
+        if sign not in "+-" or not padded or not padded.isdigit():
             self.error = "ERRAMT"
             return
+        digits = padded
         self.negative = sign == "-"
-        if self.negative:
+        if self.negative and self.type != "RF":
             self.error = "ERRAMT"
             return
         self.amount = int(digits)
@@ -116,8 +146,14 @@ class Record:
         self.mcc = int(mcc)
 
     def compute(self) -> None:
-        fee = _round_nearest(self.amount * RATE_BP[self.tier], 10_000)
-        fee = min(fee, FEE_CAP)
+        fee = _round_fee(self.amount * RATE_BP[self.tier], 10_000, self.type, self.currency)
+        # Weekend surcharge and EUR levy are rounded separately (halves up).
+        if 5960 <= self.mcc <= 5969 and _weekday(self.year, self.month, self.day) >= 5:
+            fee += _round_nearest(self.amount * 25, 10_000)
+        if self.currency == "EUR" and self.amount > 5_000_000:
+            fee += _round_nearest(self.amount * 10, 10_000)
+        if self.tier != 9:
+            fee = min(fee, FEE_CAP)
         self.fee = fee
         if self.type == "RF":
             self.net = -(self.amount - fee)
@@ -149,7 +185,8 @@ def process(lines: list[str]) -> list[str]:
             record.compute()
         records.append(record)
 
-    out = [record.emit() for record in records]
+    ordered = [r for r in records if r.error is None] + [r for r in records if r.error]
+    out = [record.emit() for record in ordered]
     accepted = sum(1 for r in records if r.error is None)
     rejected = len(records) - accepted
     fee_sum = sum(r.fee for r in records if r.error is None)
