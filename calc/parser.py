@@ -1,8 +1,7 @@
 """Recursive-descent parser: token stream -> expression tree.
 
-NOTE: this implementation is buggy. It folds every binary operator at a single
-precedence level, left to right, so it does not honor the precedence and
-associativity documented in the README/issue.
+Precedence, lowest to highest: ``+ -`` (left), ``* / // %`` (left), unary
+``+ -``, then ``**`` (right-associative).
 """
 
 from __future__ import annotations
@@ -21,6 +20,8 @@ _BINOP = {
     "DSTAR": "**",
 }
 _UNARY = {"PLUS": "+", "MINUS": "-"}
+_ADD_OPS = ("PLUS", "MINUS")
+_MUL_OPS = ("STAR", "SLASH", "DSLASH", "PERCENT")
 
 
 class _Parser:
@@ -46,20 +47,39 @@ class _Parser:
         return node
 
     def expression(self) -> Node:
-        # BUG: all binary operators share one precedence level and fold left to
-        # right, so e.g. 2 + 3 * 4 parses as (2 + 3) * 4 and 2 ** 3 ** 2 as
-        # (2 ** 3) ** 2.
-        node = self.atom()
-        while self.cur.kind in _BINOP:
+        # Level 1: + - (left-associative)
+        node = self.term()
+        while self.cur.kind in _ADD_OPS:
             op = _BINOP[self.advance().kind]
-            node = BinOp(op, node, self.atom())
+            node = BinOp(op, node, self.term())
+        return node
+
+    def term(self) -> Node:
+        # Level 2: * / // % (left-associative)
+        node = self.unary()
+        while self.cur.kind in _MUL_OPS:
+            op = _BINOP[self.advance().kind]
+            node = BinOp(op, node, self.unary())
+        return node
+
+    def unary(self) -> Node:
+        # Level 3: unary + - (binds looser than **)
+        tok = self.cur
+        if tok.kind in _UNARY:
+            self.advance()
+            return UnaryOp(_UNARY[tok.kind], self.unary())
+        return self.power()
+
+    def power(self) -> Node:
+        # Level 4: ** (right-associative; the exponent may carry a unary sign)
+        node = self.atom()
+        if self.cur.kind == "DSTAR":
+            self.advance()
+            return BinOp("**", node, self.unary())
         return node
 
     def atom(self) -> Node:
         tok = self.cur
-        if tok.kind in _UNARY:
-            self.advance()
-            return UnaryOp(_UNARY[tok.kind], self.atom())
         if tok.kind == "NUMBER":
             self.advance()
             return Num(tok.value)
