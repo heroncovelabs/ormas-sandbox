@@ -1071,6 +1071,10 @@ class Parser:
         TokenType.DCOLON,
     }
 
+    # Column operators that are instead parsed as left-associative binary operators at the
+    # same precedence tier as || (e.g. Postgres' JSON operators ->, ->>, #>, #>> and ?)
+    BINARY_COLUMN_OPERATORS: t.ClassVar[frozenset] = frozenset()
+
     EXPRESSION_PARSERS: t.ClassVar = {
         exp.Cluster: lambda self: self._parse_sort(exp.Cluster, TokenType.CLUSTER_BY),
         exp.Column: lambda self: self._parse_column(),
@@ -6249,6 +6253,9 @@ class Parser:
                         safe=not self.dialect.STRICT_STRING_CONCAT,
                     )
                 )
+            elif self._match_set(self.BINARY_COLUMN_OPERATORS):
+                op = self.COLUMN_OPERATORS[self._prev.token_type]
+                this = op(self, this, self._parse_term())
             elif self._match(TokenType.DQMARK):
                 this = self.expression(
                     exp.Coalesce(this=this, expressions=ensure_list(self._parse_term()))
@@ -6943,10 +6950,11 @@ class Parser:
 
         column_operators = self.COLUMN_OPERATORS
         cast_column_operators = self.CAST_COLUMN_OPERATORS
+        binary_column_operators = self.BINARY_COLUMN_OPERATORS
         while self._curr:
             op_token = self._curr.token_type
 
-            if op_token not in column_operators:
+            if op_token not in column_operators or op_token in binary_column_operators:
                 break
             op = column_operators[op_token]
             self._advance()

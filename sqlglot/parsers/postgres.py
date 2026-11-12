@@ -204,6 +204,16 @@ class PostgresParser(parser.Parser):
         ),
     }
 
+    BINARY_COLUMN_OPERATORS = frozenset(
+        {
+            TokenType.ARROW,
+            TokenType.DARROW,
+            TokenType.HASH_ARROW,
+            TokenType.DHASH_ARROW,
+            TokenType.PLACEHOLDER,
+        }
+    )
+
     ARG_MODE_TOKENS: t.ClassVar = {TokenType.IN, TokenType.OUT, TokenType.INOUT, TokenType.VARIADIC}
 
     def _parse_parameter_mode(self) -> TokenType | None:
