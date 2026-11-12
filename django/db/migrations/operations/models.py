@@ -528,6 +528,18 @@ class AlterTogetherOptionOperation(ModelOptionOperation):
     def migration_name_fragment(self):
         return 'alter_%s_%s' % (self.name_lower, self.option_name)
 
+    def reduce(self, operation, app_label):
+        # An AlterUniqueTogether and an AlterIndexTogether on the same model
+        # touch different constraints, so the optimizer may move past one
+        # another to merge operations of the same type.
+        if (
+            isinstance(operation, AlterTogetherOptionOperation) and
+            type(operation) is not type(self) and
+            self.name_lower == operation.name_lower
+        ):
+            return True
+        return super().reduce(operation, app_label)
+
 
 class AlterUniqueTogether(AlterTogetherOptionOperation):
     """
