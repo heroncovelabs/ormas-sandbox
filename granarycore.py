@@ -25,6 +25,18 @@ class Engine:
         self.shares: dict[str, int] = {}
         self.mseq: dict[str, int] = {}
         self.morder: list[str] = []
+        self.mmeas: dict[str, int] = {}
+        self.reserved: set[str] = set()
+        self.streak: dict = {}
+        self.s_draw: set = set()
+        self.s_dep_members: set = set()
+        self.s_drawn_bins: set = set()
+        self.s_dep_any = False
+        self.s_draw_any = False
+        self.prev_top = None
+        self.prev_quiet = False
+        self.prev_last = None
+        self.resquare = None
         self.bins: dict[str, dict] = {}
         self.next_mseq = 0
         self.next_bseq = 0
@@ -51,6 +63,59 @@ class Engine:
     def _held_total(self, name: str) -> int:
         return sum(b["holds"].get(name, 0) for b in self.bins.values())
 
+    def _season_end(self, order) -> None:
+        # levy: a member drawing from a bin, without depositing, three
+        # seasons straight
+        levied = set()
+        for key in set(self.streak) | self.s_draw:
+            m = key[0]
+            if key in self.s_draw and m not in self.s_dep_members:
+                self.streak[key] = self.streak.get(key, 0) + 1
+                if self.streak[key] == 3 and m not in levied:
+                    levied.add(m)
+                    self.mmeas[m] -= 2 * self.shares[m]
+            else:
+                self.streak[key] = 0
+        # favor: the same brimming bin topped two quiet turnings running
+        quiet = self.s_dep_any and not self.s_draw_any
+        top = None
+        if order:
+            name, b = order[0]
+            if b["total"] == b["cap"]:
+                top = b["seq"]
+            if top is not None and top == self.prev_top and quiet and self.prev_quiet:
+                for m in b["holders"]:
+                    self.mmeas[m] += self.shares[m]
+        self.prev_top = top
+        self.prev_quiet = quiet
+        # resquare: trailed twice running, drawn and topped back to level
+        last = None
+        if order:
+            name, b = order[-1]
+            last = (b["seq"], b["total"])
+            if self.prev_last == last and b["seq"] in self.s_drawn_bins:
+                self.resquare = name
+        self.prev_last = last
+        self.s_draw = set()
+        self.s_dep_members = set()
+        self.s_drawn_bins = set()
+        self.s_dep_any = False
+        self.s_draw_any = False
+
+    def _fold(self, b: dict, d: dict) -> None:
+        d["total"] += b["total"]
+        d["meas"] += b["total"]
+        for name in b["holders"]:
+            n = b["holds"].get(name, 0)
+            if n == 0:
+                continue
+            d["holds"][name] = d["holds"].get(name, 0) + n
+            if name not in d["holders"]:
+                d["holders"].append(name)
+        b["total"] = 0
+        b["holds"] = {}
+        b["holders"] = []
+
     def handle(self, line: str) -> None:
         parts = line.rstrip("\r\n").split()
         if not parts:
@@ -72,6 +137,7 @@ class Engine:
             self.shares[parts[1]] = val
             self.mseq[parts[1]] = self.next_mseq
             self.morder.append(parts[1])
+            self.mmeas[parts[1]] = 0
             self.c_j += 1
             self._emit(f"OK {len(self.morder)}")
             return
@@ -84,7 +150,7 @@ class Engine:
             if not 1 <= cap <= 999:
                 self._reject("RNG")
                 return
-            if parts[1] in self.bins:
+            if parts[1] in self.bins or parts[1] in self.reserved:
                 self._reject("DUP")
                 return
             self.next_bseq += 1
@@ -92,6 +158,7 @@ class Engine:
                 "cap": cap,
                 "seq": self.next_bseq,
                 "total": 0,
+                "meas": 0,
                 "holders": [],
                 "holds": {},
             }
@@ -119,6 +186,10 @@ class Engine:
                 self._reject("FULL")
                 return
             b["total"] += count
+            b["meas"] += count
+            self.mmeas[parts[1]] += count
+            self.s_dep_members.add(parts[1])
+            self.s_dep_any = True
             b["holds"][parts[1]] = b["holds"].get(parts[1], 0) + count
             if parts[1] not in b["holders"]:
                 b["holders"].append(parts[1])
@@ -146,8 +217,12 @@ class Engine:
                 self._reject("LOW")
                 return
             b["total"] -= count
+            b["meas"] -= count + count // 6
+            self.mmeas[parts[1]] -= count + count // 4
+            self.s_draw.add((parts[1], b["seq"]))
+            self.s_drawn_bins.add(b["seq"])
+            self.s_draw_any = True
             b["holds"][parts[1]] -= count
-            self._drop_if_empty(b, parts[1])
             self.c_w += 1
             self._emit("OK")
             return
@@ -182,9 +257,13 @@ class Engine:
                 self._reject("FULL")
                 return
             src["total"] -= count
+            src["meas"] -= count
             src["holds"][parts[1]] -= count
             self._drop_if_empty(src, parts[1])
             dst["total"] += count
+            dst["meas"] += count - count // 10
+            self.mmeas[parts[1]] -= 1
+            self.s_draw_any = True
             dst["holds"][parts[1]] = dst["holds"].get(parts[1], 0) + count
             if parts[1] not in dst["holders"]:
                 dst["holders"].append(parts[1])
@@ -198,15 +277,41 @@ class Engine:
                 return
             self.c_t += 1
             order = sorted(
-                self.bins.items(), key=lambda kv: (-kv[1]["total"], kv[1]["seq"])
+                self.bins.items(),
+                key=lambda kv: (-kv[1]["meas"], len(kv[1]["holders"]), kv[1]["seq"]),
             )
             self._emit(f"TURN {len(order)}")
             for name, _ in order:
                 self._emit(f"B {name}")
+            self._season_end(order)
+            folded = set()
             for name, b in order:
                 if b["total"] == 0:
                     self._emit(f"SHUT {name}")
                     del self.bins[name]
+                    continue
+                if 2 * b["meas"] >= b["total"] or b["total"] == b["cap"]:
+                    continue
+                for dname, d in order:
+                    if dname == name or dname not in self.bins or dname in folded:
+                        continue
+                    if d["total"] + b["total"] > d["cap"]:
+                        continue
+                    self._emit(f"FOLD {name} {dname}")
+                    self._fold(b, d)
+                    folded.add(name)
+                    self.reserved.add(name)
+                    self.c_m += 1
+                    break
+            for name, b in order:
+                if name in folded:
+                    del self.bins[name]
+            for b in self.bins.values():
+                b["meas"] -= b["meas"] // 16
+            if self.resquare is not None and self.resquare in self.bins:
+                rb = self.bins[self.resquare]
+                rb["meas"] = rb["total"]
+            self.resquare = None
             return
 
         if kind == "Y":
@@ -215,8 +320,10 @@ class Engine:
                 return
             self.c_y += 1
             ranked = sorted(
-                self.morder, key=lambda n: (-self._held_total(n), self.mseq[n])
+                self.morder, key=lambda n: (-self.mmeas[n], self.mseq[n])
             )
+            for b in self.bins.values():
+                b["meas"] += (b["total"] - b["meas"]) // 2
             self._emit(f"RECK {len(ranked)}")
             for name in ranked:
                 self._emit(f"S {name}")
