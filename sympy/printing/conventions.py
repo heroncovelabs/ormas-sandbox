@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterable
 from sympy import Derivative
 
-_name_with_digits_p = re.compile(r'^([a-zA-Z]+)([0-9]+)$')
+_name_with_digits_p = re.compile(r'^([^\W\d_]+)(\d+)$', re.U)
 
 
 def split_super_sub(text):
