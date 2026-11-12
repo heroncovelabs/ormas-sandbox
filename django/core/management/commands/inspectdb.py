@@ -128,6 +128,12 @@ class Command(BaseCommand):
                             field_type = '%s(%s' % (rel_type, rel_to)
                         else:
                             field_type = "%s('%s'" % (rel_type, rel_to)
+                        # Add to_field if the foreign key doesn't reference the
+                        # primary key of the related table.
+                        ref_db_column, ref_db_table = relations[column_name]
+                        ref_pk_column = connection.introspection.get_primary_key_column(cursor, ref_db_table)
+                        if ref_db_column != ref_pk_column:
+                            extra_params['to_field'] = ref_db_column
                     else:
                         # Calling `get_field_type` to get the field type string and any
                         # additional parameters and notes.
