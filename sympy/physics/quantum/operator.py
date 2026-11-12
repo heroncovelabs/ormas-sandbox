@@ -310,6 +310,9 @@ class IdentityOperator(Operator):
         if isinstance(other, Operator):
             return other
 
+        if isinstance(other, Dagger) and isinstance(other.args[0], Operator):
+            return other
+
         return Mul(self, other)
 
     def _represent_default_basis(self, **options):
