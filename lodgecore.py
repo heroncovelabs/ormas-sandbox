@@ -26,7 +26,7 @@ def _is_num(tok: str, maxlen: int) -> bool:
 
 class Party:
     __slots__ = ("pid", "size", "regseq", "status", "room", "occ",
-                 "completed", "early")
+                 "completed", "early", "bookseq", "hist", "moves", "porch")
 
     def __init__(self, pid: str, size: int, regseq: int):
         self.pid = pid
@@ -37,21 +37,52 @@ class Party:
         self.occ = 0
         self.completed = 0  # G and L departures
         self.early = 0      # E departures
+        self.bookseq = 0
+        self.hist = []      # (kind, room id) per departure, in order
+        self.moves = 0      # rota relocations
+        self.porch = False  # booked while the room was resting
 
     @property
     def standing(self) -> int:
-        """Trail standing per docs/SPEC.md."""
-        return 10 * self.size + 5 * self.completed - 15 * self.early
+        """Trail standing (engine behaviour, not docs/SPEC.md)."""
+        total = 10 * self.size
+        done = False
+        prev = ""
+        for k, _ in self.hist:
+            if k == "G":
+                total += 7 if done else 5
+                done = True
+            elif k == "L":
+                total += 1
+                done = True
+            else:
+                total -= 22 if prev == "E" else 15
+            prev = k
+        return total - 2 * max(0, self.moves - 3)
+
+    @property
+    def settle_standing(self) -> int:
+        """Standing used by the seasonal settling: an early departure
+        later followed by a G departure from the same room is forgiven."""
+        total = 10 * self.size
+        for i, (k, rid) in enumerate(self.hist):
+            if k == "E":
+                if ("G", rid) not in self.hist[i + 1:]:
+                    total -= 15
+            else:
+                total += 5
+        return total - 2 * max(0, self.moves - 3)
 
 
 class Room:
-    __slots__ = ("rid", "bunks", "openseq", "resting", "occupants")
+    __slots__ = ("rid", "bunks", "openseq", "resting", "occupants", "aired")
 
     def __init__(self, rid: str, bunks: int, openseq: int):
         self.rid = rid
         self.bunks = bunks
         self.openseq = openseq
         self.resting = False
+        self.aired = 0  # airing count when last rested (0: never)
         self.occupants: list[Party] = []  # berth order
 
 
@@ -63,6 +94,8 @@ class Engine:
         self.ptr = 0
         self.resting: Room | None = None
         self.regseq_next = 1
+        self.bookseq = 0
+        self.wraps = 0
         self.cP = 0
         self.cO = 0
         self.cB = 0
@@ -84,6 +117,14 @@ class Engine:
     def _no(self, parts: list[str], code: str) -> None:
         self._emit(f"NO {self._echo(parts)} {code}")
 
+    def _key(self, p: Party):
+        tie = -p.regseq if self.wraps >= 2 else p.regseq
+        return (-p.standing, tie)
+
+    def _settle_key(self, p: Party):
+        tie = -p.regseq if self.wraps >= 2 else p.regseq
+        return (-p.settle_standing, tie)
+
     def _free(self, room: Room) -> int:
         return room.bunks - sum(p.occ for p in room.occupants)
 
@@ -91,10 +132,9 @@ class Engine:
         """Berth ordering: standing descending, registration order on
         ties (docs/SPEC.md, Berth order)."""
         pos = len(room.occupants)
+        key = self._key(p)
         for i, o in enumerate(room.occupants):
-            if p.standing > o.standing or (
-                p.standing == o.standing and p.regseq < o.regseq
-            ):
+            if key < self._key(o):
                 pos = i
                 break
         room.occupants.insert(pos, p)
@@ -158,12 +198,15 @@ class Engine:
             self._no(parts, "STATE")
             return
         room = self.roomix.get(rid)
-        if room is None or room.resting:
+        if room is None:
             self._no(parts, "STATE")
             return
         p.status = BOOKED
         p.room = room
         self.cB += 1
+        self.bookseq += 1
+        p.bookseq = self.bookseq
+        p.porch = room.resting
         pending = sum(
             1 for q in self.parties.values()
             if q.status == BOOKED and q.room is room
@@ -180,10 +223,12 @@ class Engine:
             self._no(parts, "STATE")
             return
         room = p.room
-        if room.resting or self._free(room) < p.size:
+        free = self._free(room)
+        if room.resting or free < (p.size + 1) // 2:
             self._no(parts, "STATE")
             return
         self._berth(room, p)
+        p.occ = min(p.size, free)
         self._emit(f"IN {room.rid}")
 
     def _depart(self, parts: list[str], kind: str) -> None:
@@ -197,6 +242,7 @@ class Engine:
             return
         room = p.room
         room.occupants.remove(p)
+        p.hist.append((kind, room.rid))
         if kind == "E":
             p.early += 1
         else:  # G and L both count as completed stays
@@ -213,14 +259,28 @@ class Engine:
             return
         # reopen phase
         if self.resting is not None:
-            self.resting.resting = False
+            opened = self.resting
+            opened.resting = False
             self.resting = None
+            waiting = sorted(
+                (q for q in self.parties.values()
+                 if q.status == BOOKED and q.room is opened and q.porch),
+                key=lambda q: q.bookseq)
+            for q in waiting:
+                if self._free(opened) >= q.size:
+                    self._berth(opened, q)
+                else:
+                    self._turnout(q)
         # rest phase
         target = self.rooms[self.ptr]
+        again = target.aired != 0
         self.cW += 1
         target.resting = True
+        target.aired = self.cW
         self.resting = target
         moving = list(target.occupants)
+        if again:
+            moving.reverse()
         target.occupants = []
         lines = []
         for p in moving:
@@ -236,12 +296,15 @@ class Engine:
             if dest is not None:
                 p.occ = p.size
                 p.status = LODGED
+                p.moves += 1
                 self._insert(dest, p)
                 lines.append(f"MV {p.pid} {dest.rid}")
             else:
                 self._turnout(p)
                 lines.append(f"MV {p.pid} -")
         self.ptr = (self.ptr + 1) % len(self.rooms)
+        if self.ptr == 0:
+            self.wraps += 1
         self._emit(f"AIRED {target.rid} {len(lines)}")
         for line in lines:
             self._emit(line)
@@ -251,8 +314,10 @@ class Engine:
         lodged = [p for p in self.parties.values() if p.status == LODGED]
         for r in self.rooms:
             r.occupants = []
-        room_order = [r for r in self.rooms if not r.resting]
-        order = sorted(lodged, key=lambda p: (-p.standing, p.regseq))
+        room_order = sorted(
+            (r for r in self.rooms if not r.resting),
+            key=lambda r: (r.aired == 0, -r.aired, r.openseq))
+        order = sorted(lodged, key=self._settle_key)
         placed = 0
         remaining = order
         for r in room_order:
@@ -260,13 +325,16 @@ class Engine:
             for p in remaining:
                 if self._free(r) >= p.size:
                     p.occ = p.size
-                    self._insert(r, p)
+                    r.occupants.append(p)
+                    p.room = r
                     placed += 1
                 else:
                     left.append(p)
             remaining = left
         for p in remaining:
             self._turnout(p)
+        if self.resting is not None:
+            self.ptr = self.rooms.index(self.resting)
         self._emit(f"SETTLED {placed}")
         for r in self.rooms:
             ids = "".join(f" {p.pid}" for p in r.occupants)
