@@ -4,6 +4,24 @@ Replaces the retired legacy binary (see ``legacy/README.md``). One
 matching session per process: messages on stdin, responses on stdout.
 Protocol reference: ``docs/SPEC.md`` (mind the drift warning at the top;
 the engine's behavior is the contract).
+
+Engine behavior that differs from the written spec:
+
+- Priority class: at a price level, orders whose original quantity is at
+  least ``LARGE_QTY`` match before smaller ones (time priority within a
+  class).
+- Self-trade: the same account's resting order is cancelled (``X``) and
+  matching continues.
+- Cancel/replace: a new order reusing a live clordid from the same account
+  cancels the live order and is then processed as a fresh order.
+- ``X`` acknowledgements report the order's original quantity.
+- Volatility band: once an order has filled, it only keeps matching at
+  prices within ``BAND_WIDTH`` of its first fill price.
+- Tick regime: prices of at least ``TICK_FLOOR`` must be multiples of
+  ``TICK_SIZE``.
+- Book hash: orders with fewer than ``HASH_MIN_QTY`` remaining are left
+  out of the hash.
+- Tokens beyond the expected count are ignored.
 """
 
 from __future__ import annotations
@@ -13,6 +31,11 @@ import sys
 PRICE_MAX = 10_000_000
 QTY_MAX = 999_999
 HASH_MOD = 1_000_000_007
+LARGE_QTY = 1000
+TICK_FLOOR = 100_000
+TICK_SIZE = 5
+HASH_MIN_QTY = 100
+BAND_WIDTH = 500
 
 
 class Order:
@@ -58,6 +81,8 @@ class Engine:
                 better = True
             elif order.price != best.price:
                 better = order.price < best.price if side == "B" else order.price > best.price
+            elif (order.orig >= LARGE_QTY) != (best.orig >= LARGE_QTY):
+                better = order.orig >= LARGE_QTY
             else:
                 better = order.seq < best.seq
             if better:
@@ -71,21 +96,32 @@ class Engine:
             self._emit(f"R {clordid} QTY")
             return
         is_market = type_ == "M"
-        if not is_market and not 0 < price < PRICE_MAX:
-            self._emit(f"R {clordid} PRICE")
-            return
-        if self._find_live(acct, clordid) is not None:
-            self._emit(f"R {clordid} DUP")
-            return
+        if not is_market:
+            if not 0 < price < PRICE_MAX:
+                self._emit(f"R {clordid} PRICE")
+                return
+            if price >= TICK_FLOOR and price % TICK_SIZE:
+                self._emit(f"R {clordid} TICK")
+                return
+        previous = self._find_live(acct, clordid)
+        if previous is not None:
+            previous.live = False
+            self._emit(f"X {previous.clordid} {previous.orig}")
 
         remaining = qty
+        band_ref = 0
         while remaining:
             counter = self._best_counter(side, price, is_market)
             if counter is None:
                 break
             if counter.acct == acct:
-                self._emit(f"R {clordid} STP")
-                return
+                counter.live = False
+                self._emit(f"X {counter.clordid} {counter.orig}")
+                continue
+            if band_ref and abs(counter.price - band_ref) > BAND_WIDTH:
+                break
+            if not band_ref:
+                band_ref = counter.price
             take = min(remaining, counter.qty)
             self._emit(f"F {counter.clordid} {clordid} {counter.price} {take}")
             counter.qty -= take
@@ -107,7 +143,7 @@ class Engine:
             self._emit(f"R {clordid} UNKNOWN")
             return
         order.live = False
-        self._emit(f"X {order.clordid} {order.qty}")
+        self._emit(f"X {order.clordid} {order.orig}")
 
     def end_session(self) -> None:
         bid = ask = 0
@@ -119,7 +155,8 @@ class Engine:
                 bid = max(bid, order.price)
             elif ask == 0 or order.price < ask:
                 ask = order.price
-            book_hash = (book_hash + order.price * order.qty) % HASH_MOD
+            if order.qty >= HASH_MIN_QTY:
+                book_hash = (book_hash + order.price * order.qty) % HASH_MOD
         self._emit(f"S {bid} {ask} {book_hash}")
 
     # -- line protocol ------------------------------------------------------
@@ -128,12 +165,14 @@ class Engine:
         line = line.rstrip("\r\n")
         if not line:
             return
-        parts = line.split(" ")
-        if parts == ["E"]:
+        if line == "E":
             self.end_session()
             return
-        if parts[0] == "N" and len(parts) == 7:
-            _, acct, clordid, side, type_, price, qty = parts
+        parts = line.split()
+        if line[0].isspace():
+            parts = []
+        if parts and parts[0] == "N" and len(parts) >= 7:
+            _, acct, clordid, side, type_, price, qty = parts[:7]
             if (
                 _token(acct, 4, 4)
                 and _token(clordid, 1, 8)
@@ -148,10 +187,10 @@ class Engine:
                 return
             self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
             return
-        if parts[0] == "C" and len(parts) == 3:
-            _, acct, clordid = parts
-            if _token(acct, 4, 4) and _token(clordid, 1, 8):
-                self.cancel(acct, clordid)
+        if parts and parts[0] in ("N", "C") and len(parts) >= 3:
+            clordid = parts[2]
+            if parts[0] == "C" and _token(parts[1], 4, 4) and _token(clordid, 1, 8):
+                self.cancel(parts[1], clordid)
                 return
             self._emit(f"R {clordid if _token(clordid, 1, 8) else '????????'} FMT")
             return
@@ -159,7 +198,7 @@ class Engine:
 
 
 def _token(value: str, lo: int, hi: int) -> bool:
-    return lo <= len(value) <= hi and value.isalnum()
+    return lo <= len(value) <= hi and value.isascii() and value.isalnum()
 
 
 def main() -> None:
