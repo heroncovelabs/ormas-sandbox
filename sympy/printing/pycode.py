@@ -440,6 +440,12 @@ class PythonCodePrinter(AbstractPythonCodePrinter):
     def _print_Pow(self, expr, rational=False):
         return self._hprint_Pow(expr, rational=rational)
 
+    def _print_Min(self, expr):
+        return "min({})".format(", ".join(self._print(arg) for arg in expr.args))
+
+    def _print_Max(self, expr):
+        return "max({})".format(", ".join(self._print(arg) for arg in expr.args))
+
     def _print_Rational(self, expr):
         return '{}/{}'.format(expr.p, expr.q)
 
