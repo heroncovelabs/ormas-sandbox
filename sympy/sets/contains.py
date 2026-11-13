@@ -45,4 +45,7 @@ class Contains(BooleanFunction):
             isinstance(i, (Eq, Ne))])
 
     def as_set(self):
-        raise NotImplementedError()
+        """
+        Rewrites Contains in terms of the set it tests membership in.
+        """
+        return self.args[1]
