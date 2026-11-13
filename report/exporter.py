@@ -21,10 +21,24 @@ def to_json(rows: List[Row]) -> str:
     return json.dumps(payload)
 
 
+def _csv_field(value) -> str:
+    """Render one CSV field per RFC 4180 (quote only when required)."""
+    text = "" if value is None else str(value)
+    if any(ch in text for ch in ',"\r\n'):
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
+
 def to_csv(rows: List[Row]) -> str:
     """Serialize ``rows`` to an RFC 4180 CSV string.
 
     The first line is the header (column names); one line follows per row.
-    Not implemented yet — see issue.md.
+    Records are terminated by CRLF, including the last one.
     """
-    raise NotImplementedError("CSV export is not implemented yet")
+    if not rows:
+        return ""
+    columns = _columns(rows)
+    lines = [",".join(_csv_field(col) for col in columns)]
+    for row in rows:
+        lines.append(",".join(_csv_field(row.get(col)) for col in columns))
+    return "".join(line + "\r\n" for line in lines)
