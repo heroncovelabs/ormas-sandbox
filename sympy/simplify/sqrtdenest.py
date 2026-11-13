@@ -156,7 +156,8 @@ def _sqrt_match(p):
         res = (p, S.Zero, S.Zero)
     elif p.is_Add:
         pargs = sorted(p.args, key=default_sort_key)
-        if all((x**2).is_Rational for x in pargs):
+        if all((x**2).is_Rational for x in pargs) and any(
+                x.as_coeff_Mul()[1].is_Pow for x in pargs):
             r, b, a = split_surds(p)
             res = a, b, r
             return list(res)
