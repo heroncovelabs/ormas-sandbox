@@ -46,6 +46,10 @@ def _valid_int(token: str, max_digits: int) -> bool:
     return 1 <= len(token) <= max_digits and token.isdigit()
 
 
+def _scale(pair: str) -> int:
+    return 100 if pair.endswith("JPY") else 1
+
+
 class Book:
     def __init__(self) -> None:
         self.pos: dict[str, int] = {}
@@ -53,14 +57,26 @@ class Book:
 
     def netvalue(self) -> int:
         return sum(
-            _round_half_even(self.pos[pair] * self.rate[pair], DIVISOR)
+            _round_half_even(
+                self.pos[pair] * self.rate[pair] * _scale(pair), DIVISOR
+            )
             for pair in self.pos
         )
+
+    def revalue(self, fixes: dict[str, int]) -> int:
+        total = 0
+        for pair in self.pos:
+            scale = _scale(pair) if pair in fixes else 1
+            # each pair is floored to a tenth of a cent, then the sum is
+            # rounded half up to whole cents
+            total += (self.pos[pair] * self.rate[pair] * scale) // (DIVISOR // 10)
+        return (total + 5) // 10
 
 
 class Engine:
     def __init__(self, out=None) -> None:
         self.books: dict[str, Book] = {}
+        self.names: dict[str, str] = {}
         self.trades = 0
         self.revals = 0
         self.rejected = 0
@@ -80,17 +96,17 @@ class Engine:
         if line.startswith("V "):
             self._reval(line[2:])
         elif line == "T" or line.startswith("T "):
-            self._trade(line.split())
+            self._trade([t for t in line.split(" ") if t])
         else:
             self._reject("????????", "FMT")
 
     def _trade(self, tokens: list[str]) -> None:
         book = tokens[1] if len(tokens) > 1 else ""
         book_ok = _valid_book(book)
-        if len(tokens) != 6 or not book_ok:
+        if len(tokens) < 6 or not book_ok:
             self._reject(book if book_ok else "????????", "FMT")
             return
-        _, book, pair, side, amt_tok, rate_tok = tokens
+        _, book, pair, side, amt_tok, rate_tok = tokens[:6]
         if not _valid_pair(pair):
             self._reject(book, "PAIR")
             return
@@ -101,19 +117,26 @@ class Engine:
             self._reject(book, "AMT")
             return
         amount = int(amt_tok)
-        if amount == 0:
-            self._reject(book, "AMT")
-            return
         if not _valid_int(rate_tok, RATE_DIGITS) or int(rate_tok) == 0:
             self._reject(book, "RATE")
             return
         rate = int(rate_tok)
+        if amount == 0:
+            return
 
-        entry = self.books.setdefault(book, Book())
+        key = book.lower()
+        if key not in self.books:
+            self.books[key] = Book()
+            self.names[key] = book
+        entry = self.books[key]
         delta = amount if side == "B" else -amount
-        entry.pos[pair] = entry.pos.get(pair, 0) + delta
+        old = entry.pos.get(pair, 0)
+        new = old + delta
+        if old != 0 and new != 0 and (old > 0) != (new > 0):
+            rate -= 5
+        entry.pos[pair] = new
         entry.rate[pair] = rate
-        self._emit(f"P {book} {entry.netvalue()}")
+        self._emit(f"P {self.names[key]} {entry.netvalue()}")
         self.trades += 1
 
     def _reval(self, arg: str) -> None:
@@ -134,11 +157,11 @@ class Engine:
                 self._reject("????????", "FMT")
                 return
             fixes[pair] = int(rate_tok)
-        for book, entry in self.books.items():
+        for key, entry in self.books.items():
             for pair in entry.pos:
                 if pair in fixes:
                     entry.rate[pair] = fixes[pair]
-            self._emit(f"P {book} {entry.netvalue()}")
+            self._emit(f"P {self.names[key]} {entry.revalue(fixes)}")
         self.revals += 1
 
     def finish(self) -> None:
