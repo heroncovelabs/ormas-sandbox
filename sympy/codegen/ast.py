@@ -900,9 +900,17 @@ class String(Token):
 
     @classmethod
     def _construct_text(cls, text):
+        from sympy.core.symbol import Str
+        if isinstance(text, Str):
+            text = text.name
         if not isinstance(text, str):
             raise TypeError("Argument text is not a string type.")
         return text
+
+    @property
+    def args(self):
+        from sympy.core.symbol import Str
+        return (Str(self.text),)
 
     def _sympystr(self, printer, *args, **kwargs):
         return self.text
