@@ -123,9 +123,16 @@ class Mod(Function):
             for arg in p.args:
                 both_l[isinstance(arg, cls)].append(arg)
 
-            if mod_l and all(inner.args[1] == q for inner in mod_l):
-                # finding distributive term
+            changed = False
+            if q.is_integer and all(i.is_integer for i in non_mod_l):
+                # distributivity of Mod over products holds for integers
+                was = non_mod_l[:]
                 non_mod_l = [cls(x, q) for x in non_mod_l]
+                changed = was != non_mod_l
+            elif mod_l and all(inner.args[1] == q for inner in mod_l):
+                non_mod_l = [cls(x, q) for x in non_mod_l]
+            if changed or mod_l and all(inner.args[1] == q for inner in mod_l):
+                # finding distributive term
                 mod = []
                 non_mod = []
                 for j in non_mod_l:
