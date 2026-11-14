@@ -13,6 +13,7 @@ import random
 from bisect import bisect_left, insort
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import lru_cache, reduce
 from heapq import heappush, heappushpop
 from itertools import (
@@ -74,8 +75,12 @@ __all__ = [
     'random_product',
     'repeatfunc',
     'roundrobin',
+    'Stats',
+    'running_max',
     'running_mean',
     'running_median',
+    'running_min',
+    'running_statistics',
     'sieve',
     'sliding_window',
     'subslices',
@@ -1408,8 +1413,27 @@ def running_median(iterable, *, maxlen=None):
     return _running_median_minheap_and_maxheap(iterator)  # pragma: no cover
 
 
-def running_mean(iterable):
-    """Yield the average of all values seen so far.
+def _check_window(maxlen):
+    "Validate an optional sliding-window size."
+
+    if maxlen is not None:
+        maxlen = index(maxlen)
+        if maxlen <= 0:
+            raise ValueError('Window size should be positive')
+    return maxlen
+
+
+def _windowed_apply(iterator, maxlen, func):
+    "Yield func(window) for each sliding window of at most *maxlen* values."
+
+    window = deque(maxlen=maxlen)
+    for x in iterator:
+        window.append(x)
+        yield func(window)
+
+
+def running_mean(iterable, *, maxlen=None):
+    """Yield the average of all values seen so far, or of a sliding window.
 
     >>> iterable = [100, 200, 600]
     >>> all_means = running_mean(iterable)
@@ -1419,8 +1443,76 @@ def running_mean(iterable):
     150.0
     >>> next(all_means)
     300.0
+    >>> list(running_mean([40, 30, 50, 46], maxlen=2))
+    [40.0, 35.0, 40.0, 48.0]
     """
-    return map(truediv, accumulate(iterable), count(1))
+    iterator = iter(iterable)
+    maxlen = _check_window(maxlen)
+    if maxlen is not None:
+        return _windowed_apply(iterator, maxlen, lambda w: sum(w) / len(w))
+    return map(truediv, accumulate(iterator), count(1))
+
+
+@dataclass(frozen=True, slots=True)
+class Stats:
+    """Summary statistics of a window of values, as produced by
+    :func:`running_statistics`."""
+
+    size: int
+    minimum: object
+    median: object
+    maximum: object
+    mean: object
+
+
+def _window_stats(window):
+    ordered = sorted(window)
+    n = len(ordered)
+    m = n // 2
+    median = ordered[m] if n & 1 else (ordered[m - 1] + ordered[m]) / 2
+    return Stats(n, ordered[0], median, ordered[-1], sum(window) / n)
+
+
+def running_min(iterable, *, maxlen=None):
+    """Yield the minimum of all values seen so far, or of a sliding window.
+
+    >>> list(running_min([4, 3, 7, 0, 8]))
+    [4, 3, 3, 0, 0]
+    >>> list(running_min([4, 3, 7, 0, 8], maxlen=2))
+    [4, 3, 3, 0, 0]
+    """
+    iterator = iter(iterable)
+    maxlen = _check_window(maxlen)
+    if maxlen is not None:
+        return _windowed_apply(iterator, maxlen, min)
+    return accumulate(iterator, min)
+
+
+def running_max(iterable, *, maxlen=None):
+    """Yield the maximum of all values seen so far, or of a sliding window.
+
+    >>> list(running_max([4, 3, 7, 0, 8]))
+    [4, 4, 7, 7, 8]
+    >>> list(running_max([4, 3, 7, 0, 8], maxlen=2))
+    [4, 4, 7, 7, 8]
+    """
+    iterator = iter(iterable)
+    maxlen = _check_window(maxlen)
+    if maxlen is not None:
+        return _windowed_apply(iterator, maxlen, max)
+    return accumulate(iterator, max)
+
+
+def running_statistics(iterable, *, maxlen=None):
+    """Yield a :class:`Stats` record (size, minimum, median, maximum, mean)
+    for all values seen so far, or for a sliding window.
+
+    >>> [s.median for s in running_statistics([4, 3, 7], maxlen=2)]
+    [4, 3.5, 5.0]
+    """
+    iterator = iter(iterable)
+    maxlen = _check_window(maxlen)
+    return _windowed_apply(iterator, maxlen, _window_stats)
 
 
 def random_derangement(iterable):
