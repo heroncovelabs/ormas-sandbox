@@ -53,7 +53,7 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         The function expects 'b' (lowercase) as a bit identifier, e.g. 'Mb'/'Kb'/etc.
         if 'MB'/'KB'/... is passed, the ValueError will be rased.
     """
-    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
+    m = re.search(r'^([0-9]*\.?[0-9]*)\s*([A-Za-z]+)?$', str(number), flags=re.IGNORECASE)
     if m is None:
         raise ValueError("human_to_bytes() can't interpret following string: %s" % str(number))
     try:
@@ -87,9 +87,12 @@ def human_to_bytes(number, default_unit=None, isbits=False):
         if range_key == 'B':
             expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
 
-        if unit_class_name in unit.lower():
+        full_names = {'Y': 'yotta', 'Z': 'zetta', 'E': 'exa', 'P': 'peta', 'T': 'tera',
+                      'G': 'giga', 'M': 'mega', 'K': 'kilo', 'B': ''}
+        full_unit = full_names[range_key] + unit_class_name
+        if unit.lower() in (full_unit, full_unit + 's'):
             pass
-        elif unit[1] != unit_class:
+        elif unit[1:] != unit_class:
             raise ValueError("human_to_bytes() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
 
     return int(round(num * limit))
