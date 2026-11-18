@@ -23,4 +23,4 @@ def decode_cursor(token):
 
 def is_after(record, token):
     """True if ``record`` sorts strictly after the position named by ``token``."""
-    return (record["ts"], record["id"]) >= decode_cursor(token)
+    return (record["ts"], record["id"]) > decode_cursor(token)
