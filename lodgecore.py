@@ -26,7 +26,7 @@ def _is_num(tok: str, maxlen: int) -> bool:
 
 class Party:
     __slots__ = ("pid", "size", "regseq", "status", "room", "occ",
-                 "completed", "early")
+                 "good", "late", "early", "last", "acc", "porch", "moves", "eroom")
 
     def __init__(self, pid: str, size: int, regseq: int):
         self.pid = pid
@@ -35,23 +35,35 @@ class Party:
         self.status = REG
         self.room = None
         self.occ = 0
-        self.completed = 0  # G and L departures
-        self.early = 0      # E departures
+        self.good = 0   # G departures
+        self.late = 0   # L departures
+        self.early = 0  # E departures
+        self.last = None
+        self.acc = 0
+        self.porch = False
+        self.moves = 0
+        self.eroom = {}  # room id -> unforgiven E departures there
+
+    settling = False
 
     @property
     def standing(self) -> int:
-        """Trail standing per docs/SPEC.md."""
-        return 10 * self.size + 5 * self.completed - 15 * self.early
+        if Party.settling:
+            return (10 * self.size + 5 * (self.good + self.late)
+                    - 15 * sum(self.eroom.values()) - 2 * max(0, self.moves - 3))
+        return 10 * self.size + self.acc - 2 * max(0, self.moves - 3)
 
 
 class Room:
-    __slots__ = ("rid", "bunks", "openseq", "resting", "occupants")
+    __slots__ = ("rid", "bunks", "openseq", "resting", "occupants", "rests", "lastrest")
 
     def __init__(self, rid: str, bunks: int, openseq: int):
         self.rid = rid
         self.bunks = bunks
         self.openseq = openseq
         self.resting = False
+        self.rests = 0
+        self.lastrest = 0
         self.occupants: list[Party] = []  # berth order
 
 
@@ -93,7 +105,8 @@ class Engine:
         pos = len(room.occupants)
         for i, o in enumerate(room.occupants):
             if p.standing > o.standing or (
-                p.standing == o.standing and p.regseq < o.regseq
+                p.standing == o.standing
+                and (p.regseq < o.regseq) != (room.rests >= 2)
             ):
                 pos = i
                 break
@@ -158,11 +171,12 @@ class Engine:
             self._no(parts, "STATE")
             return
         room = self.roomix.get(rid)
-        if room is None or room.resting:
+        if room is None:
             self._no(parts, "STATE")
             return
         p.status = BOOKED
         p.room = room
+        p.porch = room.resting
         self.cB += 1
         pending = sum(
             1 for q in self.parties.values()
@@ -180,7 +194,7 @@ class Engine:
             self._no(parts, "STATE")
             return
         room = p.room
-        if room.resting or self._free(room) < p.size:
+        if room.resting or 2 * self._free(room) < p.size:
             self._no(parts, "STATE")
             return
         self._berth(room, p)
@@ -198,9 +212,22 @@ class Engine:
         room = p.room
         room.occupants.remove(p)
         if kind == "E":
+            p.eroom[room.rid] = p.eroom.get(room.rid, 0) + 1
+        elif kind == "G":
+            p.eroom.pop(room.rid, None)
+        if kind == "E":
+            p.acc += -22 if p.last == "E" else -15
+        elif kind == "G":
+            p.acc += 7 if (p.good or p.late) else 5
+        else:
+            p.acc += 1
+        p.last = kind
+        if kind == "E":
             p.early += 1
-        else:  # G and L both count as completed stays
-            p.completed += 1
+        elif kind == "G":
+            p.good += 1
+        else:
+            p.late += 1
         p.status = DEPARTED
         p.room = None
         p.occ = 0
@@ -213,14 +240,25 @@ class Engine:
             return
         # reopen phase
         if self.resting is not None:
-            self.resting.resting = False
+            rr = self.resting
+            rr.resting = False
             self.resting = None
+            for q in list(self.parties.values()):
+                if q.status == BOOKED and q.porch and q.room is rr:
+                    if self._free(rr) >= q.size:
+                        self._berth(rr, q)
+                    else:
+                        self._turnout(q)
         # rest phase
         target = self.rooms[self.ptr]
         self.cW += 1
         target.resting = True
+        target.rests += 1
+        target.lastrest = self.cW
         self.resting = target
         moving = list(target.occupants)
+        if target.rests >= 2:
+            moving.reverse()
         target.occupants = []
         lines = []
         for p in moving:
@@ -236,6 +274,7 @@ class Engine:
             if dest is not None:
                 p.occ = p.size
                 p.status = LODGED
+                p.moves += 1
                 self._insert(dest, p)
                 lines.append(f"MV {p.pid} {dest.rid}")
             else:
@@ -248,10 +287,14 @@ class Engine:
 
     def _cmd_S(self, parts: list[str]) -> None:
         self.cS += 1
+        Party.settling = True
+        if self.resting is not None:
+            self.ptr = self.rooms.index(self.resting)
         lodged = [p for p in self.parties.values() if p.status == LODGED]
         for r in self.rooms:
             r.occupants = []
-        room_order = [r for r in self.rooms if not r.resting]
+        room_order = sorted((r for r in self.rooms if not r.resting),
+                            key=lambda r: -r.lastrest)
         order = sorted(lodged, key=lambda p: (-p.standing, p.regseq))
         placed = 0
         remaining = order
@@ -267,6 +310,7 @@ class Engine:
             remaining = left
         for p in remaining:
             self._turnout(p)
+        Party.settling = False
         self._emit(f"SETTLED {placed}")
         for r in self.rooms:
             ids = "".join(f" {p.pid}" for p in r.occupants)
