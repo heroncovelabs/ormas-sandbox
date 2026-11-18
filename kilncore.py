@@ -16,6 +16,11 @@ import sys
 ID_MAX = 8
 TARGET_MIN = 100
 NO_LOT = "????????"
+WALK_IN_TARGET = 1000
+COLD_LIMIT = 100
+COLD_TARGET = 10000
+COLD_PENALTY = 150
+PLATEAU_RUN = 4
 
 
 def _valid_id(token: str) -> bool:
@@ -27,9 +32,14 @@ def _digits(token: str) -> bool:
 
 
 class Lot:
-    def __init__(self, target: int) -> None:
+    def __init__(self, name: str, target: int) -> None:
+        self.name = name
         self.target = target
         self.accum = 0
+        self.ledger = 0
+        self.prev: int | None = None
+        self.run = 0
+        self.cold = False
         self.certified = False
 
 
@@ -63,11 +73,11 @@ class Engine:
         return f"X {self.registered} {self.segments} {self.certs} {self.rejected}"
 
     def _find(self, lot: str) -> Lot | None:
-        return self.lots.get(lot)
+        return self.lots.get(lot.lower())
 
     def _register(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
@@ -80,31 +90,50 @@ class Engine:
             return f"N {lot} TARGET"
         if self._find(tokens[1]) is not None:
             return f"N {lot} DUP"
-        self.lots[tokens[1]] = Lot(int(target_tok))
+        self.lots[tokens[1].lower()] = Lot(tokens[1], int(target_tok))
         self.registered += 1
         return f"OK {len(self.lots)}"
 
     def _heat(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 3:
+        if len(tokens) < 3:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
         seg_tok = tokens[2]
-        if not _digits(seg_tok) or len(seg_tok) > 4 or int(seg_tok) < 1:
+        if not _digits(seg_tok) or len(seg_tok) > 4:
             return f"N {lot} SEG"
         k = self._find(tokens[1])
         if k is None:
-            return f"N {lot} UNKNOWN"
+            k = Lot(tokens[1], WALK_IN_TARGET)
+            self.lots[tokens[1].lower()] = k
         if k.certified:
             return f"N {lot} DONE"
-        k.accum += int(seg_tok)
+        seg = int(seg_tok)
+        prev = k.prev
+        if prev is None:
+            k.cold = seg < COLD_LIMIT and k.target >= COLD_TARGET
+            k.run = 1
+        elif seg == prev:
+            k.run += 1
+        else:
+            k.run = 1
+        if k.run >= PLATEAU_RUN:
+            k.accum += seg // 2
+            k.ledger += seg
+        elif prev is not None and seg < prev:
+            k.accum += seg + seg // 8
+            k.ledger += seg + (seg // 8 if 2 * seg <= prev else 0)
+        else:
+            k.accum += seg
+            k.ledger += seg
+        k.prev = seg
         self.segments += 1
-        return f"W {tokens[1]} {k.accum}"
+        return f"W {k.name} {k.accum}"
 
     def _certify(self, tokens: list[str]) -> str:
         lot = tokens[1] if len(tokens) >= 2 else NO_LOT
-        if len(tokens) != 2:
+        if len(tokens) < 2:
             return f"N {lot} FMT"
         if not _valid_id(tokens[1]):
             return f"N {lot} FMT"
@@ -113,15 +142,12 @@ class Engine:
             return f"N {lot} UNKNOWN"
         if k.certified:
             return f"N {lot} DONE"
-        # SPEC: certification recomputes the lot's heatwork from its
-        # segment ledger; the total always equals the live accumulated
-        # heatwork, so the running sum stands in for the ledger.
-        total = k.accum
+        total = k.ledger - (COLD_PENALTY if k.cold else 0)
         k.certified = True
         self.certs += 1
         if total >= k.target:
-            return f"C {tokens[1]} PASS"
-        return f"C {tokens[1]} SHORT {k.target - total}"
+            return f"C {k.name} PASS"
+        return f"C {k.name} SHORT {k.target - total}"
 
 
 def process(lines: list[str], out=None) -> list[str]:
