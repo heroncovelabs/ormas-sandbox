@@ -304,19 +304,25 @@ def intersection_sets(self, other): # noqa:F811
             return None
         else:
             # univarite imaginary part in same variable
-            x, xis = zip(*[solve_linear(i, 0) for i in Mul.make_args(im) if n in i.free_symbols])
+            # only the numerator determines where the imaginary part
+            # vanishes (zeros of denominators are excluded below)
+            imn = im.as_numer_denom()[0]
+            x, xis = zip(*[solve_linear(i, 0) for i in Mul.make_args(imn) if n in i.free_symbols])
             if x and all(i == n for i in x):
-                base_set -= FiniteSet(xis)
+                base_set = base_set.intersect(FiniteSet(*xis))
             else:
-                base_set -= ConditionSet(n, Eq(im, 0), S.Integers)
+                base_set = base_set.intersect(
+                    ConditionSet(n, Eq(im, 0), S.Integers))
         # exclude values that make denominators 0
         for i in denoms(f):
             if i.has(n):
-                sol = list(zip(*[solve_linear(i, 0) for i in Mul.make_args(im) if n in i.free_symbols]))
+                sol = list(zip(*[solve_linear(j, 0) for j in Mul.make_args(i) if n in j.free_symbols]))
                 if sol != []:
                     x, xis = sol
-                    if x and all(i == n for i in x):
-                        base_set -= FiniteSet(xis)
+                    if x and all(j == n for j in x):
+                        base_set -= FiniteSet(*xis)
+                    else:
+                        base_set -= ConditionSet(n, Eq(i, 0), S.Integers)
                 else:
                     base_set -= ConditionSet(n, Eq(i, 0), S.Integers)
         return imageset(lam, base_set)
