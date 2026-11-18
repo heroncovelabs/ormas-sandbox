@@ -11,13 +11,16 @@ from __future__ import annotations
 import sys
 
 SILVER = 5_000
-GOLD = 20_000
+GOLD = 19_500
+THRESHOLDS = (SILVER, GOLD)
+TIER_BP = (0, 1_000, 2_500)
 CAT_BP = {"G": 10_000, "F": 20_000, "E": 30_000, "T": 15_000}
 
 
 class Engine:
     def __init__(self, out=None):
         self.balance: dict[str, int] = {}
+        self.display: dict[str, str] = {}
         self.count_ok = 0
         self.count_rej = 0
         self.sum_earned = 0
@@ -30,24 +33,26 @@ class Engine:
         self._emit(f"R {member} {code}")
         self.count_rej += 1
 
-    def _tier_bonus_bp(self, balance: int) -> int:
+    @staticmethod
+    def _tier(balance: int) -> int:
         if balance >= GOLD:
-            return 2_500
+            return 2
         if balance >= SILVER:
-            return 1_000
+            return 1
         return 0
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
-        if not parts:
+        raw = line.rstrip("\r\n")
+        if not raw:
             return
+        parts = raw.split()
         member = parts[1] if len(parts) > 1 else ""
-        id_ok = 1 <= len(member) <= 8 and member.isalnum()
-        if parts[0] != "L" or len(parts) != 5 or not id_ok:
+        id_ok = 1 <= len(member) <= 8 and member.isascii() and member.isalnum()
+        if not parts or parts[0] != "L" or len(parts) < 5 or not id_ok:
             self._emit(f"R {member if id_ok else '????????'} FMT")
             self.count_rej += 1
             return
-        _, member, spend_tok, cat, promo = parts
+        _, member, spend_tok, cat, promo = parts[:5]
         if not (spend_tok.isdigit() and 1 <= len(spend_tok) <= 9):
             self._reject(member, "SPEND")
             return
@@ -61,12 +66,28 @@ class Engine:
             self._reject(member, "PROMO")
             return
 
+        # The engine silently drops sub-dollar spends (no line, not counted).
+        if spend < 100:
+            return
+        # Member ids are matched case-insensitively; the first spelling seen
+        # in the batch is the one reported.
+        key = member.upper()
+        member = self.display.setdefault(key, member)
+        old = self.balance.get(key, 0)
+
         base = spend // 100
-        multiplied = _round_nearest(base * CAT_BP[cat], 10_000)
-        bonus_bp = self._tier_bonus_bp(self.balance.get(member, 0))
-        earned = _round_nearest(multiplied * (10_000 + bonus_bp), 10_000)
-        new_balance = self.balance.get(member, 0) + earned
-        self.balance[member] = new_balance
+        cat_bp = CAT_BP[cat]
+        if cat == "E" and "K" in promo and promo != "KKK":
+            cat_bp = 40_000
+        # Tier is re-evaluated against the balance this record would produce:
+        # a record that crosses a threshold earns at the new tier.
+        tier = self._tier(old)
+        earned = _earn(base, cat, cat_bp, TIER_BP[tier])
+        while tier < 2 and old + earned >= THRESHOLDS[tier]:
+            tier += 1
+            earned = _earn(base, cat, cat_bp, TIER_BP[tier])
+        new_balance = old + earned
+        self.balance[key] = new_balance
         self._emit(f"E {member} {earned} {new_balance}")
         self.count_ok += 1
         self.sum_earned += earned
@@ -75,9 +96,19 @@ class Engine:
         self._emit(f"X {self.count_ok} {self.count_rej} {self.sum_earned}")
 
 
-def _round_nearest(numerator: int, denominator: int) -> int:
+def _earn(base: int, cat: str, cat_bp: int, bonus_bp: int) -> int:
+    """Category and tier multipliers applied together, rounded once.
+
+    Travel truncates; every other category rounds half to even.
+    """
+    numerator = base * cat_bp * (10_000 + bonus_bp)
+    denominator = 10_000 * 10_000
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
+    if cat == "T":
+        return quotient
+    if 2 * remainder > denominator or (
+        2 * remainder == denominator and quotient % 2 == 1
+    ):
         return quotient + 1
     return quotient
 
