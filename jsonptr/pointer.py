@@ -18,6 +18,19 @@ def resolve(document: Any, pointer: str) -> Any:
     if not pointer.startswith("/"):
         raise JSONPointerError(f"invalid JSON Pointer {pointer!r}: must be empty or start with '/'")
     current = document
-    for token in pointer.split("/")[1:]:
-        current = current[token]
+    for raw in pointer.split("/")[1:]:
+        token = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            if token not in current:
+                raise JSONPointerError(f"member {token!r} not found in {pointer!r}")
+            current = current[token]
+        elif isinstance(current, list):
+            if not (token.isdigit() and (token == "0" or not token.startswith("0"))):
+                raise JSONPointerError(f"invalid array index {token!r} in {pointer!r}")
+            index = int(token)
+            if index >= len(current):
+                raise JSONPointerError(f"array index {index} out of range in {pointer!r}")
+            current = current[index]
+        else:
+            raise JSONPointerError(f"cannot descend into scalar at {token!r} in {pointer!r}")
     return current
