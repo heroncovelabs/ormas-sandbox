@@ -1378,6 +1378,7 @@ class BaseDatabaseSchemaEditor:
         # - adding only a db_column and the column name is not changed
         non_database_attrs = [
             "blank",
+            "choices",
             "db_column",
             "editable",
             "error_messages",
