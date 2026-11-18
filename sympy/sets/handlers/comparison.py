@@ -49,6 +49,20 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
     return tfn[fuzzy_and(map(fuzzy_bool, eqs))]
 
 
+@dispatch(ProductSet, Interval) # type:ignore
+def _eval_is_eq(lhs, rhs): # noqa: F811
+    return False
+
+
+@dispatch(ProductSet, FiniteSet) # type:ignore
+def _eval_is_eq(lhs, rhs): # noqa: F811
+    if not lhs.is_iterable:
+        return None
+    return tfn[fuzzy_and([
+        fuzzy_and(rhs.contains(x) for x in lhs),
+        fuzzy_and(lhs.contains(x) for x in rhs)])]
+
+
 @dispatch(Set, Basic) # type:ignore
 def _eval_is_eq(lhs, rhs): # noqa: F811
     return False
