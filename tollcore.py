@@ -19,9 +19,9 @@ EVENING_START, EVENING_END = 1600, 1859
 
 
 def _round_nearest(numerator: int, denominator: int) -> int:
-    """Round to the nearest cent (halves up), per the spec's toll rule."""
+    """Round to the nearest cent (halves down), per the spec's toll rule."""
     quotient, remainder = divmod(numerator, denominator)
-    if 2 * remainder >= denominator:
+    if 2 * remainder > denominator:
         return quotient + 1
     return quotient
 
@@ -50,7 +50,7 @@ class Engine:
             return
         tag_valid = len(parts) > 1 and _tag_ok(parts[1])
         tag = parts[1] if tag_valid else "??????????"
-        if parts[0] != "T" or len(parts) != 7 or not tag_valid:
+        if parts[0] != "T" or len(parts) < 7 or not tag_valid:
             self._reject(tag, "FMT")
             return
         gate_tok, axles_tok, time_tok, dow_tok, class_tok = parts[2:7]
@@ -75,15 +75,17 @@ class Engine:
             self._reject(tag, "TIME")
             return
         hh, mm = int(time_tok[:2]), int(time_tok[2:])
-        if hh > 23 or mm > 59:
+        if (hh > 23 and not (hh == 24 and mm == 0)) or mm > 59:
             self._reject(tag, "TIME")
             return
-        hhmm = hh * 100 + mm
+        hhmm = 0 if hh == 24 else hh * 100 + mm
 
         if not (len(dow_tok) == 1 and dow_tok.isdigit()):
             self._reject(tag, "DOW")
             return
         dow = int(dow_tok)
+        if dow == 0:
+            dow = 7
         if not 1 <= dow <= 7:
             self._reject(tag, "DOW")
             return
@@ -93,12 +95,21 @@ class Engine:
             return
 
         base = BASE_CENTS + PER_AXLE_CENTS * (axles - 1)
+        morning_start = 645 if gate >= 30 else MORNING_START
+        evening_end = 1929 if gate <= 5 else EVENING_END
         peak = 1 <= dow <= 5 and (
-            MORNING_START <= hhmm <= MORNING_END
-            or EVENING_START <= hhmm <= EVENING_END
+            morning_start <= hhmm <= MORNING_END
+            or EVENING_START <= hhmm <= evening_end
         )
+        class_bp = CLASS_BP[class_tok]
+        if class_tok == "M" and axles >= 3:
+            class_bp = 10_000
+        elif class_tok == "B" and peak:
+            class_bp = 13_300
+        elif class_tok == "T" and dow >= 6 and 12 <= gate <= 17:
+            class_bp = 11_700
         toll = _round_nearest(base * (PEAK_BP if peak else 10_000), 10_000)
-        toll = _round_nearest(toll * CLASS_BP[class_tok], 10_000)
+        toll = _round_nearest(toll * class_bp, 10_000)
 
         self._emit(f"F {tag} {toll}")
         self.count_ok += 1
