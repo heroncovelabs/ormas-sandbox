@@ -30,8 +30,12 @@ def _digits(token: str) -> bool:
 
 
 class Title:
-    def __init__(self, minutes: int) -> None:
+    def __init__(self, minutes: int, wear: int = 0) -> None:
         self.minutes = minutes
+        self.window = 0  # own cuts since the last remaster
+        self.tax = 0  # sticky stamper tax
+        self.revived = False
+        self.wear = wear  # stamper wear, in cuts
         self.remaining = ALLOT  # live allotment
         self.sides = 0  # ledger: sides cut
 
@@ -87,7 +91,9 @@ class Engine:
             return f"N {title} MIN"
         if self._find(tokens[1]) is not None:
             return f"N {title} DUP"
-        self.titles[tokens[1]] = Title(int(minutes))
+        self.titles[tokens[1]] = Title(
+            int(minutes), max((x.wear for x in self.titles.values()), default=0)
+        )
         self.registered += 1
         return f"OK {len(self.titles)}"
 
@@ -102,8 +108,15 @@ class Engine:
             return f"N {title} UNKNOWN"
         if t.remaining < 1:
             return f"N {title} SPENT"
-        quality = Q_BASE - t.minutes * Q_CUT
-        t.remaining -= 1
+        cost = 2 if t.minutes >= 91 else 1
+        if t.remaining < cost:
+            return f"N {title} SPENT"
+        quality = Q_BASE - t.minutes * Q_CUT - 7 * t.wear
+        if t.sides == 3 and sum(1 for x in self.titles.values() if x.sides and x.remaining > 0) >= 3:
+            quality -= 15
+        t.window += 1
+        t.remaining -= cost
+        t.wear += 1
         t.sides += 1
         self.cut_since_remaster += 1
         self.sides += 1
@@ -112,13 +125,19 @@ class Engine:
     def _remaster(self, tokens: list[str]) -> str:
         if len(tokens) != 1:
             return f"N {NO_TITLE} FMT"
-        if self.cut_since_remaster == 0:
-            # An idle remaster is a no-op: only the MEND line, and it is
-            # not counted in the trailer.
-            return f"MEND {len(self.titles)}"
         lines = []
+        recompute = self.cut_since_remaster > 0
         for name, t in self.titles.items():
-            t.remaining = ALLOT - t.sides
+            if recompute:
+                if t.window >= 4:
+                    t.tax = 1
+                if t.remaining == 0 and not t.revived:
+                    t.revived = True
+                    t.remaining = 1
+                else:
+                    t.remaining = ALLOT - t.sides - t.tax
+            t.wear = 0
+            t.window = 0
             lines.append(f"R {name} {t.remaining}")
         lines.append(f"MEND {len(self.titles)}")
         self.cut_since_remaster = 0
