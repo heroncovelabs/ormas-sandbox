@@ -23,7 +23,7 @@ from sympy.core import S, sympify, Expr
 from sympy.core.add import Add
 from sympy.core.containers import Tuple
 from sympy.core.numbers import Float
-from sympy.core.parameters import global_parameters
+from sympy.core.parameters import global_parameters, evaluate as _evaluate
 from sympy.simplify import nsimplify, simplify
 from sympy.geometry.exceptions import GeometryError
 from sympy.functions.elementary.miscellaneous import sqrt
@@ -152,7 +152,11 @@ class Point(GeometryEntity):
                         'warn' or 'ignore'.'''))
         if any(coords[dim:]):
             raise ValueError('Nonzero coordinates cannot be removed.')
-        if any(a.is_number and im(a) for a in coords):
+        # im() must be evaluated even when evaluate(False) is in effect,
+        # otherwise an unevaluated im(1) would be considered truthy
+        with _evaluate(True):
+            has_imag = any(a.is_number and im(a) for a in coords)
+        if has_imag:
             raise ValueError('Imaginary coordinates are not permitted.')
         if not all(isinstance(a, Expr) for a in coords):
             raise TypeError('Coordinates must be valid SymPy expressions.')
