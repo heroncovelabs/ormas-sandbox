@@ -8,10 +8,13 @@ the engine's behavior is the contract).
 
 from __future__ import annotations
 
+import re
 import sys
 
 CAP = 100
 DMOD = 99991
+
+_SEP = re.compile("[ \t]+")
 
 
 class Engine:
@@ -19,8 +22,12 @@ class Engine:
         self.size: dict[str, int] = {}
         self.seq: dict[str, int] = {}
         self.bin: dict[str, int] = {}
+        self.name: dict[str, str] = {}
+        self.scar: dict[str, int] = {}
         self.live: set[str] = set()
         self.used: list[int] = []
+        self.ghost = 0
+        self.last_bin = -1
         self.seq_next = 1
         self.c_place = 0
         self.c_free = 0
@@ -35,8 +42,10 @@ class Engine:
         self._emit(f"N {item} {code}")
         self.c_rej += 1
 
-    def _fit(self, size: int) -> int:
+    def _fit(self, size: int, skip=()) -> int:
         for i, u in enumerate(self.used):
+            if i in skip:
+                continue
             if u + size <= CAP:
                 return i
         return -1
@@ -46,68 +55,83 @@ class Engine:
         return len(self.used) - 1
 
     def _digest(self) -> int:
-        d = 0
+        d = self.ghost
         for i, u in enumerate(self.used):
             w = 2 if i % 2 == 0 else 7
             d = (d + w * u) % DMOD
-        return d
+        return d % DMOD
 
     def handle(self, line: str) -> None:
-        parts = line.rstrip("\r\n").split()
+        line = line.split("\n", 1)[0].split("\r", 1)[0]
+        if not line:
+            return
+        parts = [p for p in _SEP.split(line) if p]
         if not parts:
+            self._reject("????????", "FMT")
             return
         kind = parts[0]
         item = parts[1] if len(parts) > 1 else ""
-        item_ok = 1 <= len(item) <= 8 and item.isalnum()
+        item_ok = 1 <= len(item) <= 8 and item.isascii() and item.isalnum()
         echo = item if item_ok else "????????"
+        key = item.lower()
 
         if kind == "P":
-            if len(parts) != 3 or not item_ok:
+            if len(parts) < 3 or not item_ok:
                 self._reject(echo, "FMT")
                 return
             stok = parts[2]
-            if not (stok.isdigit() and 1 <= len(stok) <= 3):
+            if not (stok.isascii() and stok.isdigit() and 1 <= len(stok) <= 3):
                 self._reject(item, "SIZE")
                 return
             size = int(stok)
-            if not 1 <= size <= 100:
+            if size > 100:
                 self._reject(item, "SIZE")
                 return
-            if item in self.live:
-                self._reject(item, "DUP")
+            if size == 0:
+                return
+            if key in self.live:
+                self._reject(self.name[key], "DUP")
                 return
             b = self._fit(size)
+            if b >= 0 and (
+                (size == 50 and len(self.used) == 1) or key in self.scar
+            ):
+                b = self._fit(size, (b,))
             if b < 0:
                 b = self._open()
             self.used[b] += size
-            self.size[item] = size
-            self.seq[item] = self.seq_next
+            self.size[key] = size
+            self.seq[key] = self.seq_next
             self.seq_next += 1
-            self.bin[item] = b
-            self.live.add(item)
+            self.bin[key] = b
+            self.name.setdefault(key, item)
+            self.live.add(key)
+            self.last_bin = b
             self.c_place += 1
             self._emit(f"B {len(self.used)}")
             return
 
         if kind == "F":
-            if len(parts) != 2 or not item_ok:
+            if len(parts) < 2 or not item_ok:
                 self._reject(echo, "FMT")
                 return
-            if item not in self.live:
-                self._reject(item, "STATE")
+            if key not in self.live:
+                self._reject(self.name.get(key, item), "STATE")
                 return
-            self.used[self.bin[item]] -= self.size[item]
-            self.live.discard(item)
+            b = self.bin[key]
+            self.used[b] -= self.size[key]
+            if self.used[b] == 0 and b > 0:
+                self.ghost += self.size[key] * (2 if (b - 1) % 2 == 0 else 7)
+            self.scar[key] = b
+            self.live.discard(key)
             self.c_free += 1
             self._emit(f"B {len(self.used)}")
             return
 
         if kind == "K":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
-            order = sorted(self.live, key=lambda it: self.seq[it])
+            order = sorted(self.live, key=lambda it: (-self.size[it], self.seq[it]))
             self.used = []
+            self.ghost = 0
             for it in order:
                 b = self._fit(self.size[it])
                 if b < 0:
@@ -119,9 +143,6 @@ class Engine:
             return
 
         if kind == "D":
-            if len(parts) != 1:
-                self._reject(echo, "FMT")
-                return
             self._emit(f"D {self._digest()}")
             return
 
@@ -133,7 +154,8 @@ class Engine:
 
 def main() -> None:
     engine = Engine()
-    for line in sys.stdin:
+    data = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+    for line in data.split("\n"):
         engine.handle(line)
     engine.finish()
 
